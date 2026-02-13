@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(file:*)",
+      "Bash(wc:*)",
+      "WebFetch(domain:www.figma.com)",
+      "Bash(npm create:*)",
+      "Bash(echo:*)",
+      "Bash(python3:*)",
+      "Bash(node --version:*)",
+      "Bash(npm --version:*)",
+      "Bash(/opt/homebrew/bin/node --version)",
+      "Bash(/opt/homebrew/bin/npm --version)",
+      "Bash(npx tsc:*)",
+      "Bash(export PATH=\"/opt/homebrew/bin:$PATH\")",
+      "Bash(export PATH=\"/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH\")",
+      "WebFetch(domain:figma)",
+      "Bash(export PATH=\"/opt/homebrew/bin:/usr/bin:/bin:$PATH\")",
+      "Bash(npm run build:*)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)"
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Check if user has access to puppy (via Custom Claims)
+    function hasPuppyAccess(puppyId) {
+      return request.auth != null
+        && request.auth.token.puppyIds != null
+        && request.auth.token.puppyIds.hasAny([puppyId]);
+    }
+
+    // Helper: Validate task fields
+    function validTaskData() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+        'puppyId', 'date', 'scheduledTime', 'actualTime',
+        'activityType', 'title', 'isCompleted', 'isEdited',
+        'isUserAdded', 'lastEditedBy', 'createdAt'
+      ])
+      && data.puppyId is string
+      && data.date is string  // YYYY-MM-DD
+      && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
+      && data.lastEditedBy == request.auth.uid
+      && data.lastEditedAt == request.time;
+    }
+
+    // Tasks collection
+    match /tasks/{taskId} {
+      // Read: User must have access to puppy
+      allow read: if hasPuppyAccess(resource.data.puppyId);
+
+      // Create: User must have access AND provide valid data
+      allow create: if hasPuppyAccess(request.resource.data.puppyId)
+        && validTaskData();
+
+      // Update: User must have access
+      allow update: if hasPuppyAccess(resource.data.puppyId)
+        && request.resource.data.lastEditedBy == request.auth.uid
+        && request.resource.data.lastEditedAt == request.time;
+
+      // Delete: User must have access
+      allow delete: if hasPuppyAccess(resource.data.puppyId);
+    }
+  }
+}
