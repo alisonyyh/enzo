@@ -431,6 +431,8 @@ Conflict resolution (rare):
 
 ### Flow 6B: Delete a Task
 
+**Applies to all task types:** Both AI-generated routine tasks and user-added custom tasks can be deleted using the same swipe-to-delete interaction.
+
 #### Scenario: Puppy skipped afternoon training session entirely
 
 ```

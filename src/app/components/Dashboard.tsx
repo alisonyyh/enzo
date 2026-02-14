@@ -1,11 +1,21 @@
 import { useState, useEffect } from "react";
-import { CheckCircle2, Circle, XCircle, Settings } from "lucide-react";
-import { toast } from "sonner";
+import { CheckCircle2, Circle, Settings } from "lucide-react";
 import { RoutineReveal } from "./RoutineReveal";
+import { SwipeableTaskCard } from "./SwipeableTaskCard";
+import { AddTaskFAB } from "./AddTaskFAB";
+import { NetworkStatusBanner } from "./NetworkStatusBanner";
 import { CompletionAvatar } from "./CompletionAvatar";
-import { completeActivity, undoActivity, getTodayLogs, subscribeToActivityLogs } from "../../lib/services/activity-logs";
-import type { ActivityLog } from "../../lib/database.types";
-import type { ActivityLogWithProfile } from "../../lib/services/activity-logs";
+import { SwipeableRoutineCard } from "./SwipeableRoutineCard";
+import { subscribeToTasks, Task } from "../../lib/services/tasks";
+import { subscribeToDeletedRoutineItems } from "../../lib/services/deleted-routine-items";
+import { signInToFirebase } from "../../lib/firebase";
+import {
+  getTodayLogs,
+  completeActivity,
+  undoActivity,
+  subscribeToActivityLogs,
+  type ActivityLogWithProfile
+} from "../../lib/services/activity-logs";
 
 interface DashboardProps {
   routine: any;
@@ -18,20 +28,41 @@ interface DashboardProps {
   onOpenSettings: () => void;
 }
 
-// Category color mapping
+// Category color mapping (matches original Figma design)
 const CATEGORY_COLORS: Record<string, string> = {
-  feeding: "#E8722A", // Orange for meals
-  potty: "#4A9B5E", // Green for potty breaks
-  exercise: "#5B8FD4", // Blue for exercise and play
-  play: "#5B8FD4", // Blue for play
-  training: "#8B6FC0", // Purple for training
-  rest: "#8B7355", // Brown for rest/sleep
-  bonding: "#8B7355", // Brown for bonding
-  default: "#8B7355" // Brown for other activities
+  feeding: "#E8722A",
+  potty: "#4A9B5E",
+  exercise: "#5B8FD4",
+  play: "#5B8FD4",
+  training: "#8B6FC0",
+  rest: "#8B7355",
+  bonding: "#8B7355",
+  sleep: "#8B7355",
+  default: "#8B7355"
 };
 
-export function Dashboard({ routine, accountData, puppyName, puppyId, userId, userRole, isFirstTime = false, onOpenSettings }: DashboardProps) {
+export function Dashboard({
+  routine,
+  accountData,
+  puppyName,
+  puppyId,
+  userId,
+  userRole,
+  isFirstTime = false,
+  onOpenSettings
+}: DashboardProps) {
+  // Flow 6 custom tasks (Firebase)
+  const [customTasks, setCustomTasks] = useState<Task[]>([]);
+  const [isLoadingCustomTasks, setIsLoadingCustomTasks] = useState(true);
+  const [customTasksError, setCustomTasksError] = useState<string | null>(null);
+
+  // Original routine activity logs (Supabase)
   const [activityLogs, setActivityLogs] = useState<Map<string, ActivityLogWithProfile>>(new Map());
+  const [isLoadingLogs, setIsLoadingLogs] = useState(true);
+
+  // Deleted routine item IDs (Firebase — persists across refresh)
+  const [deletedRoutineItemIds, setDeletedRoutineItemIds] = useState<Set<string>>(new Set());
+
   const [showReveal, setShowReveal] = useState(isFirstTime);
   const [showFirstTimeTooltip, setShowFirstTimeTooltip] = useState(false);
 
@@ -42,26 +73,93 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
     hour12: false
   });
 
-  // Load today's activity logs from Supabase
+  // Load routine activity logs from Supabase
   useEffect(() => {
-    if (!puppyId) return;
+    async function loadLogs() {
+      try {
+        const logs = await getTodayLogs(puppyId);
+        const logMap = new Map<string, ActivityLogWithProfile>();
+        logs.forEach(log => {
+          logMap.set(log.routine_item_id, log);
+        });
+        setActivityLogs(logMap);
+        setIsLoadingLogs(false);
+      } catch (err) {
+        console.error('Failed to load activity logs:', err);
+        setIsLoadingLogs(false);
+      }
+    }
 
-    getTodayLogs(puppyId).then((logs) => {
-      const logMap = new Map<string, ActivityLog>();
-      logs.forEach((log) => logMap.set(log.routine_item_id, log));
-      setActivityLogs(logMap);
-    }).catch(console.error);
+    loadLogs();
 
-    // Subscribe to real-time updates
-    const channel = subscribeToActivityLogs(puppyId, (log) => {
-      setActivityLogs((prev) => {
-        const next = new Map(prev);
-        next.set(log.routine_item_id, log);
-        return next;
-      });
-    });
+    // Subscribe to real-time updates (INSERT/UPDATE and DELETE)
+    const channel = subscribeToActivityLogs(
+      puppyId,
+      (log) => {
+        setActivityLogs(prev => {
+          const newMap = new Map(prev);
+          newMap.set(log.routine_item_id, log);
+          return newMap;
+        });
+      },
+      (routineItemId) => {
+        setActivityLogs(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(routineItemId);
+          return newMap;
+        });
+      }
+    );
 
-    return () => { channel.unsubscribe(); };
+    return () => {
+      channel.unsubscribe();
+    };
+  }, [puppyId]);
+
+  // Initialize Firebase and subscribe to custom tasks + deleted routine items
+  useEffect(() => {
+    let unsubscribeTasks: (() => void) | null = null;
+    let unsubscribeDeleted: (() => void) | null = null;
+
+    async function init() {
+      try {
+        await signInToFirebase();
+
+        unsubscribeTasks = subscribeToTasks(
+          puppyId,
+          (updatedTasks) => {
+            setCustomTasks(updatedTasks);
+            setIsLoadingCustomTasks(false);
+          },
+          (err) => {
+            setCustomTasksError(err.message);
+            setIsLoadingCustomTasks(false);
+          }
+        );
+
+        // Subscribe to deleted routine item IDs
+        unsubscribeDeleted = subscribeToDeletedRoutineItems(
+          puppyId,
+          (deletedIds) => {
+            setDeletedRoutineItemIds(deletedIds);
+          },
+          (err) => {
+            console.error('Failed to load deleted routine items:', err);
+          }
+        );
+      } catch (err) {
+        console.error('Dashboard: Firebase init failed:', err);
+        setCustomTasksError(err instanceof Error ? err.message : 'Failed to load custom tasks');
+        setIsLoadingCustomTasks(false);
+      }
+    }
+
+    init();
+
+    return () => {
+      unsubscribeTasks?.();
+      unsubscribeDeleted?.();
+    };
   }, [puppyId]);
 
   const handleRevealDismiss = () => {
@@ -74,58 +172,130 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
     }
   };
 
-  const toggleActivity = async (activityId: string, activityTitle: string) => {
-    const existing = activityLogs.get(activityId);
-    if (existing) {
-      // Undo
-      try {
-        await undoActivity(activityId);
-        setActivityLogs((prev) => {
-          const next = new Map(prev);
-          next.delete(activityId);
-          return next;
+  const handleRoutineActivityComplete = async (routineItemId: string) => {
+    // Optimistic update — show completed immediately
+    setActivityLogs(prev => {
+      const newMap = new Map(prev);
+      newMap.set(routineItemId, {
+        routine_item_id: routineItemId,
+        puppy_id: puppyId,
+        status: 'completed',
+        completed_by: userId,
+        completed_at: new Date().toISOString(),
+        date: new Date().toISOString().split('T')[0],
+        completer_profile: { display_name: accountData.name, avatar_url: null },
+      } as ActivityLogWithProfile);
+      return newMap;
+    });
+    try {
+      await completeActivity(routineItemId, puppyId, userId);
+    } catch (err) {
+      console.error('Error completing routine activity:', err);
+      // Revert optimistic update on error
+      setActivityLogs(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(routineItemId);
+        return newMap;
+      });
+    }
+  };
+
+  const handleRoutineActivityUndo = async (routineItemId: string) => {
+    // Optimistic update — remove completed state immediately
+    const previousLog = activityLogs.get(routineItemId);
+    setActivityLogs(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(routineItemId);
+      return newMap;
+    });
+    try {
+      await undoActivity(routineItemId);
+    } catch (err) {
+      console.error('Error undoing routine activity:', err);
+      // Revert optimistic update on error
+      if (previousLog) {
+        setActivityLogs(prev => {
+          const newMap = new Map(prev);
+          newMap.set(routineItemId, previousLog);
+          return newMap;
         });
-      } catch (err) {
-        console.error("Error undoing activity:", err);
-      }
-    } else {
-      // Complete
-      try {
-        const log = await completeActivity(activityId, puppyId, userId);
-        setActivityLogs((prev) => {
-          const next = new Map(prev);
-          next.set(activityId, log);
-          return next;
-        });
-        toast.success(`${activityTitle} completed!`);
-      } catch (err) {
-        console.error("Error completing activity:", err);
-        toast.error("Failed to save. Try again.");
       }
     }
   };
 
-  // Determine activity status
-  const getActivityStatus = (activityId: string, activityTime: string) => {
-    const isCompleted = activityLogs.has(activityId);
+  // Determine activity status (matches original Figma logic)
+  const getActivityStatus = (activityTime: string) => {
     const isPast = activityTime < currentTime;
-    const isCurrent = !isCompleted && isPast;
-
-    return { isCompleted, isPast, isCurrent };
+    return { isPast };
   };
 
   const getCategoryColor = (category: string) => {
-    return CATEGORY_COLORS[category] || CATEGORY_COLORS.default;
+    return CATEGORY_COLORS[category?.toLowerCase()] || CATEGORY_COLORS.default;
   };
 
-  // Calculate stats
-  const totalActivities = routine.dailySchedule.length;
-  const completedCount = activityLogs.size;
-  const completionPercentage = Math.round((completedCount / totalActivities) * 100);
+  // Calculate combined stats (routine + custom tasks), excluding deleted routine items
+  const allRoutineItems = routine?.dailySchedule || [];
+  const routineItems = allRoutineItems.filter((item: any) => !deletedRoutineItemIds.has(item.id));
+  const completedRoutineCount = routineItems.filter((item: any) => {
+    const log = activityLogs.get(item.id);
+    return log?.status === 'completed';
+  }).length;
+
+  const completedCustomTasksCount = customTasks.filter(t => t.isCompleted).length;
+
+  const totalTasks = routineItems.length + customTasks.length;
+  const completedCount = completedRoutineCount + completedCustomTasksCount;
+  const completionPercentage = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
+
+  const isLoading = isLoadingLogs || isLoadingCustomTasks;
+
+  // Build unified timeline: merge routine items + custom tasks, sorted by time
+  type TimelineItem =
+    | { type: 'routine'; item: any; timeMinutes: number }
+    | { type: 'custom'; task: Task; timeMinutes: number };
+
+  const timelineItems: TimelineItem[] = [];
+
+  // Add routine items
+  routineItems.forEach((item: any) => {
+    const [hours, minutes] = (item.time || '00:00').split(':').map(Number);
+    timelineItems.push({
+      type: 'routine',
+      item,
+      timeMinutes: hours * 60 + minutes,
+    });
+  });
+
+  // Add custom tasks
+  customTasks.forEach((task) => {
+    const date = task.actualTime.toDate();
+    timelineItems.push({
+      type: 'custom',
+      task,
+      timeMinutes: date.getHours() * 60 + date.getMinutes(),
+    });
+  });
+
+  // Sort by time
+  timelineItems.sort((a, b) => a.timeMinutes - b.timeMinutes);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-6xl mb-4 animate-bounce">🐶</div>
+          <p className="text-muted-foreground">Loading {puppyName}'s day...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">
       <div className="w-[390px] h-screen bg-background flex flex-col overflow-hidden" style={{ paddingTop: '48px', paddingBottom: '34px' }}>
+        {/* Network Status Banner */}
+        <NetworkStatusBanner />
+
         {/* Header */}
         <div className="px-5 py-4">
           <div className="flex items-center justify-between mb-2">
@@ -155,19 +325,17 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
           </p>
         </div>
 
-        {/* Stats Overview */}
+        {/* Stats Overview - Progress Ring */}
         <div className="px-5 pb-4">
           <div className="bg-card rounded-2xl p-5" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
-            {/* Main Progress */}
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm text-muted-foreground mb-1">Today's Progress</h3>
                 <p className="text-3xl font-bold text-foreground">
-                  {completedCount}<span className="text-lg text-muted-foreground">/{totalActivities}</span>
+                  {completedCount}<span className="text-lg text-muted-foreground">/{totalTasks}</span>
                 </p>
               </div>
               <div className="relative w-16 h-16">
-                {/* Circular Progress */}
                 <svg className="w-16 h-16 transform -rotate-90">
                   <circle
                     cx="32"
@@ -199,17 +367,37 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
         </div>
 
         {/* Timeline */}
-        <div className="flex-1 overflow-y-auto px-5 space-y-3">
-          {routine.dailySchedule.map((activity: any, index: number) => {
-            const activityId = activity.id || `${index}`;
-            const { isCompleted, isPast, isCurrent } = getActivityStatus(activityId, activity.time);
-            const categoryColor = getCategoryColor(activity.category);
+        <div className="flex-1 overflow-y-auto px-5 pb-20 space-y-3">
+          {timelineItems.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              <div className="text-4xl mb-2">🐾</div>
+              <p>No activities for today</p>
+              <p className="text-xs mt-1">Tap + to add a custom task</p>
+            </div>
+          )}
+
+          {timelineItems.map((entry, index) => {
+            if (entry.type === 'custom') {
+              // Custom task — swipeable, expandable (uses TaskCard inside)
+              return (
+                <SwipeableTaskCard key={`custom-${entry.task.id}`} task={entry.task} />
+              );
+            }
+
+            // Routine item — original Figma Make card style
+            const item = entry.item;
+            const log = activityLogs.get(item.id);
+            const isCompleted = log?.status === 'completed';
+            const completerProfile = log?.completer_profile;
+            const { isPast } = getActivityStatus(item.time);
+            const isCurrent = !isCompleted && isPast;
+            const categoryColor = getCategoryColor(item.category);
 
             return (
-              <button
-                key={activityId}
-                onClick={() => toggleActivity(activityId, activity.activity)}
-                className="w-full"
+              <SwipeableRoutineCard
+                key={`routine-${item.id}`}
+                puppyId={puppyId}
+                routineItemId={item.id}
               >
                 <div
                   className={`
@@ -222,15 +410,15 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
                     boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)'
                   }}
                 >
-                  {/* Time */}
+                  {/* Time on LEFT */}
                   <div className="flex-shrink-0 pt-0.5">
                     <div className="text-sm font-bold text-foreground w-14 text-left">
-                      {formatDisplayTime(activity.time)}
+                      {formatDisplayTime(item.time)}
                     </div>
                   </div>
 
-                  {/* Activity Content */}
-                  <div className="flex-1 text-left">
+                  {/* Activity Content in MIDDLE */}
+                  <div className="flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
@@ -240,50 +428,58 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
                             style={{ backgroundColor: categoryColor }}
                           />
                           <h3 className={`font-medium text-base text-foreground ${isCompleted ? 'line-through' : ''}`}>
-                            {activity.activity}
+                            {item.activity}
                           </h3>
                         </div>
-                        <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
-                          {activity.description}
-                        </p>
+                        {item.description && (
+                          <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
+                            {item.description}
+                          </p>
+                        )}
                       </div>
 
-                      {/* Status Icon / Completion Avatar */}
-                      <div className="flex-shrink-0 pt-0.5">
-                        {isCompleted ? (
-                          // Show completer's profile picture with green dot
-                          (() => {
-                            const log = activityLogs.get(activityId);
-                            const profile = log?.completer_profile;
-                            return (
-                              <CompletionAvatar
-                                avatarUrl={profile?.avatar_url || null}
-                                displayName={profile?.display_name || 'User'}
-                                size={24}
-                              />
-                            );
-                          })()
-                        ) : isPast && !isCurrent ? (
-                          <XCircle className="size-6 text-destructive" />
+                      {/* Tappable Status Icon on RIGHT — toggles complete/undo */}
+                      <button
+                        className="flex-shrink-0 pt-0.5 -m-1 p-1"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isCompleted) {
+                            handleRoutineActivityUndo(item.id);
+                          } else {
+                            handleRoutineActivityComplete(item.id);
+                          }
+                        }}
+                      >
+                        {isCompleted && completerProfile ? (
+                          <CompletionAvatar
+                            avatarUrl={completerProfile.avatar_url}
+                            displayName={completerProfile.display_name}
+                            size={24}
+                          />
+                        ) : isCompleted ? (
+                          <CheckCircle2 className="size-6 text-secondary" />
                         ) : (
                           <Circle className="size-6 text-border" />
                         )}
-                      </div>
+                      </button>
                     </div>
                   </div>
                 </div>
-              </button>
+              </SwipeableRoutineCard>
             );
           })}
         </div>
 
+        {/* FAB Button for Adding Custom Tasks */}
+        <AddTaskFAB puppyId={puppyId} />
+
         {/* First Time Tooltip */}
         {showFirstTimeTooltip && (
           <div
-            className="fixed left-1/2 -translate-x-1/2 bg-primary text-primary-foreground px-4 py-3 rounded-xl shadow-lg max-w-[350px] mx-auto animate-pulse"
-            style={{ bottom: '50px' }}
+            className="fixed left-1/2 -translate-x-1/2 bg-primary text-primary-foreground px-4 py-3 rounded-xl shadow-lg max-w-[350px] mx-auto animate-pulse z-50"
+            style={{ bottom: '100px' }}
           >
-            <p className="text-sm text-center">💡 Tap any activity to mark it done</p>
+            <p className="text-sm text-center">Tap the circle to mark complete, swipe left on any task to delete</p>
           </div>
         )}
 
@@ -299,6 +495,7 @@ export function Dashboard({ routine, accountData, puppyName, puppyId, userId, us
   );
 }
 
+// Format time to 12-hour display (matches original Figma design)
 function formatDisplayTime(time: string): string {
   const [hour, minute] = time.split(":").map(Number);
   const period = hour >= 12 ? "PM" : "AM";

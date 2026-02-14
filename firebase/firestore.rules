@@ -24,6 +24,19 @@ service cloud.firestore {
       && data.lastEditedAt == request.time;
     }
 
+    // Deleted routine items collection
+    match /deletedRoutineItems/{docId} {
+      // Read: User must have access to puppy
+      allow read: if hasPuppyAccess(resource.data.puppyId);
+
+      // Create/Update: User must have access to puppy
+      allow create, update: if hasPuppyAccess(request.resource.data.puppyId)
+        && request.resource.data.deletedBy == request.auth.uid;
+
+      // Delete: User must have access
+      allow delete: if hasPuppyAccess(resource.data.puppyId);
+    }
+
     // Tasks collection
     match /tasks/{taskId} {
       // Read: User must have access to puppy

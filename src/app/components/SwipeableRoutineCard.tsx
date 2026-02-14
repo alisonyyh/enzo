@@ -1,15 +1,24 @@
 import { useSwipeable } from 'react-swipeable';
 import { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { Task, deleteTask } from '../../lib/services/tasks';
-import { TaskCard } from './TaskCard';
+import { deleteRoutineItem } from '../../lib/services/deleted-routine-items';
+
+interface SwipeableRoutineCardProps {
+  puppyId: string;
+  routineItemId: string;
+  children: React.ReactNode;
+}
 
 /**
- * Wraps a custom task card with swipe-to-delete.
+ * Wraps a routine item card with swipe-to-delete.
  * Swiping left reveals a circular trash icon button to the right of the card.
- * Tapping the trash icon immediately deletes the task (no confirmation).
+ * Tapping the trash icon immediately deletes the item (no confirmation).
  */
-export function SwipeableTaskCard({ task }: { task: Task }) {
+export function SwipeableRoutineCard({
+  puppyId,
+  routineItemId,
+  children,
+}: SwipeableRoutineCardProps) {
   const [swipeOffset, setSwipeOffset] = useState(0);
 
   const handlers = useSwipeable({
@@ -30,9 +39,9 @@ export function SwipeableTaskCard({ task }: { task: Task }) {
 
   const handleDelete = async () => {
     try {
-      await deleteTask(task.id);
+      await deleteRoutineItem(puppyId, routineItemId);
     } catch (error) {
-      console.error('Failed to delete task:', error);
+      console.error('Failed to delete routine item:', error);
       alert('Failed to delete task. Please try again.');
     }
   };
@@ -57,7 +66,7 @@ export function SwipeableTaskCard({ task }: { task: Task }) {
         </button>
       </div>
 
-      {/* Task card (swipeable) */}
+      {/* Card content (swipeable) */}
       <div
         {...handlers}
         style={{
@@ -66,7 +75,7 @@ export function SwipeableTaskCard({ task }: { task: Task }) {
         }}
         className="relative z-10 w-full"
       >
-        <TaskCard task={task} />
+        {children}
       </div>
     </div>
   );

@@ -3,7 +3,6 @@ import { WelcomeScreen } from "./components/WelcomeScreen";
 import { OnboardingQuestionnaire } from "./components/OnboardingQuestionnaire";
 import { AIRoutineGenerator } from "./components/AIRoutineGenerator";
 import { Dashboard } from "./components/Dashboard";
-import { TaskManagementDashboard } from "./components/TaskManagementDashboard";
 import { Settings } from "./components/Settings";
 import { Toaster } from "./components/ui/sonner";
 import { supabase } from "../lib/supabase";
@@ -28,7 +27,6 @@ type AppState =
   | "questionnaire"
   | "generating-routine"
   | "dashboard"
-  | "task-management"
   | "settings";
 
 export interface QuestionnaireData {
@@ -371,25 +369,16 @@ export default function App() {
       )}
 
       {appState === "dashboard" && legacyRoutine && currentPuppy && (
-        <div className="relative">
-          <Dashboard
-            routine={legacyRoutine}
-            accountData={accountData}
-            puppyName={currentPuppy.name}
-            puppyId={currentPuppy.id}
-            userId={user?.id || ""}
-            userRole={currentMembership?.role || "owner"}
-            isFirstTime={isFirstTime}
-            onOpenSettings={() => setAppState("settings")}
-          />
-          {/* Flow 6 Test Button */}
-          <button
-            onClick={() => setAppState("task-management")}
-            className="fixed bottom-20 left-4 px-4 py-2 bg-purple-600 text-white rounded-lg shadow-lg hover:bg-purple-700 z-50 text-sm"
-          >
-            Test Flow 6 →
-          </button>
-        </div>
+        <Dashboard
+          routine={legacyRoutine}
+          accountData={accountData}
+          puppyName={currentPuppy.name}
+          puppyId={currentPuppy.id}
+          userId={user?.id || ""}
+          userRole={currentMembership?.role || "owner"}
+          isFirstTime={isFirstTime}
+          onOpenSettings={() => setAppState("settings")}
+        />
       )}
 
       {appState === "dashboard" && (!legacyRoutine || !currentPuppy) && (
@@ -401,22 +390,6 @@ export default function App() {
             setRoutine(activeRoutine);
           }}
         />
-      )}
-
-      {appState === "task-management" && currentPuppy && (
-        <div className="relative">
-          <TaskManagementDashboard
-            puppyId={currentPuppy.id}
-            puppyName={currentPuppy.name}
-          />
-          {/* Back to Dashboard Button */}
-          <button
-            onClick={() => setAppState("dashboard")}
-            className="fixed top-4 left-4 px-4 py-2 bg-gray-600 text-white rounded-lg shadow-lg hover:bg-gray-700 z-50 text-sm"
-          >
-            ← Back to Dashboard
-          </button>
-        </div>
       )}
 
       {appState === "settings" && currentPuppy && puppyProfile && (

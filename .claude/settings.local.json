@@ -18,7 +18,21 @@
       "Bash(export PATH=\"/opt/homebrew/bin:/usr/bin:/bin:$PATH\")",
       "Bash(npm run build:*)",
       "Bash(curl:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(chmod:*)",
+      "Bash(node diagnose.js:*)",
+      "Bash(node diagnose.cjs:*)",
+      "Bash(supabase functions:*)",
+      "Bash(supabase secrets list:*)",
+      "WebFetch(domain:supabase.com)",
+      "Bash(supabase inspection --help:*)",
+      "Bash(supabase --version:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill:*)",
+      "Bash(npx vite build:*)",
+      "Bash(npx vite:*)",
+      "Bash(npm run dev:*)",
+      "Bash(git add:*)"
     ]
   }
 }

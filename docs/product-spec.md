@@ -316,10 +316,11 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 - **Reordering:** If time is changed, task list automatically reorders chronologically with smooth animation
 
 **2. Delete Task (Swipe-to-Delete with Confirmation)**
-- **Trigger:** Swipe LEFT on task card (minimum 60px swipe distance)
+- **Scope:** Applies to ALL task types on the dashboard — both AI-generated routine items and user-added custom tasks. Every task card in the timeline supports swipe-to-delete.
+- **Trigger:** Swipe LEFT on any task card (minimum 60px swipe distance)
 - **Behavior:** Red "Delete" button appears on right side
 - **Confirmation:** Tapping Delete shows modal: "Delete this task? This cannot be undone" with Cancel/Delete options
-- **Result:** Task fades out (300ms animation), removed from list and database
+- **Result:** Task fades out (300ms animation), removed from list and database. For routine items, deletion is persisted so the task does not reappear on refresh.
 - **Empty state:** If all tasks deleted, shows: "🐾 No tasks for today. Tap + to add a task"
 - **Accessibility alternative:** Long-press (500ms) on task card shows context menu with "Edit Task" and "Delete Task" options
 

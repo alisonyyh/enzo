@@ -1,21 +1,22 @@
 import { useState } from 'react';
+import { Plus } from 'lucide-react';
 import { addTask } from '../../lib/services/tasks';
 
 const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty Break' },
-  { value: 'meal', label: 'Meal' },
-  { value: 'training', label: 'Training' },
-  { value: 'nap', label: 'Nap' },
-  { value: 'calm_time', label: 'Calm Time' },
-  { value: 'play_time', label: 'Play Time' },
-  { value: 'walk', label: 'Walk' },
+  { value: 'potty_break', label: 'Potty Break', emoji: '🚽' },
+  { value: 'meal', label: 'Meal', emoji: '🍽️' },
+  { value: 'training', label: 'Training', emoji: '🎓' },
+  { value: 'nap', label: 'Nap', emoji: '😴' },
+  { value: 'calm_time', label: 'Calm Time', emoji: '🧘' },
+  { value: 'play_time', label: 'Play Time', emoji: '🎾' },
+  { value: 'walk', label: 'Walk', emoji: '🚶' },
 ];
 
 export function AddTaskFAB({ puppyId }: { puppyId: string }) {
   const [showModal, setShowModal] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState('');
   const [selectedTime, setSelectedTime] = useState(
-    new Date().toTimeString().slice(0, 5) // HH:MM
+    new Date().toTimeString().slice(0, 5)
   );
   const [isAdding, setIsAdding] = useState(false);
 
@@ -34,7 +35,6 @@ export function AddTaskFAB({ puppyId }: { puppyId: string }) {
 
       await addTask(puppyId, selectedActivity as any, time, activityLabel);
 
-      // Reset form
       setSelectedActivity('');
       setSelectedTime(new Date().toTimeString().slice(0, 5));
       setShowModal(false);
@@ -51,60 +51,74 @@ export function AddTaskFAB({ puppyId }: { puppyId: string }) {
       {/* FAB Button */}
       <button
         onClick={() => setShowModal(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-blue-700 transition-colors z-40"
+        className="fixed bottom-10 right-6 w-14 h-14 bg-primary text-primary-foreground rounded-full flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all z-40"
+        style={{ boxShadow: '0 4px 16px rgba(232, 114, 42, 0.35)' }}
         aria-label="Add new task"
       >
-        +
+        <Plus className="size-6" strokeWidth={2.5} />
       </button>
 
-      {/* Add Task Modal */}
+      {/* Add Task Bottom Sheet */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Add New Task</h3>
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-end"
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto"
+            style={{ boxShadow: '0 -4px 24px rgba(45, 27, 14, 0.15)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4" />
+
+            <h3 className="text-xl font-bold text-foreground mb-5">Add Custom Task</h3>
 
             <div className="space-y-4">
               {/* Time Picker */}
               <div>
-                <label className="block text-sm font-medium mb-1">Time</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Time</label>
                 <input
                   type="time"
                   value={selectedTime}
                   onChange={(e) => setSelectedTime(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg"
+                  className="w-full px-3 py-2.5 bg-accent border border-border rounded-xl text-foreground text-sm"
                 />
               </div>
 
-              {/* Activity Type Dropdown */}
+              {/* Activity Type */}
               <div>
-                <label className="block text-sm font-medium mb-1">Activity Type</label>
-                <select
-                  value={selectedActivity}
-                  onChange={(e) => setSelectedActivity(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg"
-                >
-                  <option value="">Select activity</option>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Activity Type</label>
+                <div className="grid grid-cols-2 gap-2">
                   {ACTIVITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
+                    <button
+                      key={option.value}
+                      onClick={() => setSelectedActivity(option.value)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
+                        selectedActivity === option.value
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-accent text-foreground hover:bg-accent/80'
+                      }`}
+                    >
+                      <span>{option.emoji}</span>
+                      <span>{option.label}</span>
+                    </button>
                   ))}
-                </select>
+                </div>
               </div>
 
               {/* Buttons */}
-              <div className="flex gap-2 justify-end">
+              <div className="flex gap-3 pt-2">
                 <button
                   onClick={() => setShowModal(false)}
                   disabled={isAdding}
-                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg"
+                  className="flex-1 py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleAdd}
                   disabled={!selectedActivity || isAdding}
-                  className="px-4 py-2 text-white bg-blue-600 rounded-lg disabled:bg-gray-300"
+                  className="flex-1 py-3 px-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-40 transition-all"
                 >
                   {isAdding ? 'Adding...' : 'Add Task'}
                 </button>

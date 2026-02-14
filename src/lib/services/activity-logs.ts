@@ -168,7 +168,8 @@ export async function undoActivity(routineItemId: string): Promise<void> {
  */
 export function subscribeToActivityLogs(
   puppyId: string,
-  onUpdate: (log: ActivityLogWithProfile) => void
+  onUpdate: (log: ActivityLogWithProfile) => void,
+  onDelete?: (routineItemId: string) => void
 ): RealtimeChannel {
   return supabase
     .channel(`activity_logs:${puppyId}`)
@@ -181,6 +182,14 @@ export function subscribeToActivityLogs(
         filter: `puppy_id=eq.${puppyId}`,
       },
       async (payload) => {
+        // Handle DELETE events (undo) — payload.old has the deleted row
+        if (payload.eventType === 'DELETE' && payload.old && typeof payload.old === 'object' && 'routine_item_id' in payload.old) {
+          const old = payload.old as ActivityLog;
+          onDelete?.(old.routine_item_id);
+          return;
+        }
+
+        // Handle INSERT/UPDATE events
         if (payload.new && typeof payload.new === 'object' && 'id' in payload.new) {
           const log = payload.new as ActivityLog;
 

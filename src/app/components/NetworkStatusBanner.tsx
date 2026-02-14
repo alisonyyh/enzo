@@ -1,35 +1,29 @@
 import { useState, useEffect } from 'react';
-import { onSnapshot, doc } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
 
 type BannerState = 'connected' | 'offline' | 'syncing' | 'failed';
 
 export function NetworkStatusBanner() {
-  const [state, setState] = useState<BannerState>('connected');
+  const [state, setState] = useState<BannerState>(navigator.onLine ? 'connected' : 'offline');
   const [showConnected, setShowConnected] = useState(false);
 
   useEffect(() => {
-    // Listen to Firestore connection state
-    const unsubscribe = onSnapshot(
-      doc(db, '.info/connected') as any,
-      (snapshot) => {
-        const isConnected = snapshot.data()?.connected ?? false;
+    const handleOnline = () => {
+      setState('connected');
+      setShowConnected(true);
+      setTimeout(() => setShowConnected(false), 2000);
+    };
 
-        if (isConnected) {
-          setState('connected');
-          setShowConnected(true);
-          setTimeout(() => setShowConnected(false), 2000); // Auto-dismiss after 2s
-        } else {
-          setState('offline');
-        }
-      },
-      (error) => {
-        console.error('Connection state error:', error);
-        setState('failed');
-      }
-    );
+    const handleOffline = () => {
+      setState('offline');
+    };
 
-    return unsubscribe;
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
   if (state === 'connected' && !showConnected) {
