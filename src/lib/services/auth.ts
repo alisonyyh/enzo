@@ -52,3 +52,54 @@ export async function updateProfile(userId: string, updates: { display_name?: st
 export function onAuthStateChange(callback: (event: string, session: Session | null) => void) {
   return supabase.auth.onAuthStateChange(callback);
 }
+
+export async function uploadUserAvatar(userId: string, file: File): Promise<string> {
+  const fileExt = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+  const fileName = `${userId}/avatar.${fileExt}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from('user-avatars')
+    .upload(fileName, file, { upsert: true });
+
+  if (uploadError) throw uploadError;
+
+  const { data: { publicUrl } } = supabase.storage
+    .from('user-avatars')
+    .getPublicUrl(fileName);
+
+  // Cache-bust so stale images aren't served
+  return `${publicUrl}?v=${Date.now()}`;
+}
+
+// Subscribe to avatar_url changes for a set of user IDs.
+// Used by Dashboard to update task completion indicators in real-time
+// when a co-user (owner or caretaker) changes their profile picture.
+// Returns an unsubscribe function — call it in useEffect cleanup.
+export function subscribeToProfileChanges(
+  userIds: string[],
+  callback: (userId: string, newAvatarUrl: string | null) => void
+): () => void {
+  if (userIds.length === 0) return () => {};
+
+  const channel = supabase
+    .channel('profile-avatar-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'profiles',
+        // Filter to only the user IDs we care about
+        filter: `id=in.(${userIds.join(',')})`,
+      },
+      (payload) => {
+        const updated = payload.new as { id: string; avatar_url: string | null };
+        callback(updated.id, updated.avatar_url);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

@@ -2213,6 +2213,307 @@ export function Dashboard({ puppyId }: { puppyId: string }) {
 
 ---
 
+## 18. Flow 7 / F9: Profile Picture Management — Backend Plan
+
+**Added:** 2026-02-17
+**Priority:** P0 (Launch Blocker)
+**Complexity:** Low (Supabase Storage + profiles table update)
+
+---
+
+### 18.1 Overview
+
+Flow 7 allows users to upload a custom profile photo from the Settings screen. The photo is stored in Supabase Storage and its URL is written back to the `profiles` table. The frontend then propagates the new URL to all UI surfaces that display it (settings avatar, task completion indicators).
+
+**What is already built (frontend):**
+- `uploadUserAvatar()` in `src/lib/services/auth.ts` — uploads file to Supabase Storage `user-avatars` bucket, returns cache-busted URL
+- `updateProfile()` in `src/lib/services/auth.ts` — writes `avatar_url` to `profiles` table
+- Action sheet UI in `Settings.tsx` with "Take a Photo", "Choose from Photo Library", "Cancel"
+- `avatarUrl` state in `App.tsx`, seeded from profile on load, cleared on sign out
+- `onAvatarUpdate` callback propagates new URL to all consumers
+
+**What still needs to be done (backend):**
+1. Confirm `user-avatars` Supabase Storage bucket exists with correct RLS policies
+2. Confirm `profiles.avatar_url` column exists and is writable by the owner
+3. Add a Supabase Storage RLS policy so users can only write to their own folder
+4. Verify the profiles RLS `UPDATE` policy covers `avatar_url`
+5. Add a Supabase Realtime subscription on `profiles.avatar_url` so other users' views update when a profile picture changes
+
+---
+
+### 18.2 Data Model Changes
+
+No new tables required. Flow 7 uses existing schema:
+
+```
+profiles
+  - id           (UUID, FK → auth.users)  ← used as storage path prefix
+  - avatar_url   (text, nullable)          ← written after upload
+  - display_name (text, nullable)
+  - created_at   (timestamp)
+```
+
+**Storage bucket:** `user-avatars` (already created manually per D35)
+
+**Storage path convention:** `{userId}/avatar.{ext}` (deterministic, upserted on each upload — see D36)
+
+---
+
+### 18.3 Supabase Storage RLS Policies
+
+The `user-avatars` bucket must enforce that users can only read all objects (public) but only write their own folder. Add these policies in the Supabase dashboard under **Storage → Policies**, or via a migration.
+
+#### Migration file: `supabase/migrations/20260217000001_user_avatars_storage_rls.sql`
+
+```sql
+-- Allow any authenticated user to read from user-avatars bucket
+-- (bucket is public, but we still add a policy for completeness)
+CREATE POLICY "Avatar images are publicly readable"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'user-avatars');
+
+-- Allow authenticated users to upload/update ONLY their own folder
+-- Storage path format: {userId}/avatar.{ext}
+-- We check that the first path segment matches the authenticated user's ID.
+CREATE POLICY "Users can upload their own avatar"
+  ON storage.objects FOR INSERT
+  WITH CHECK (
+    bucket_id = 'user-avatars'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+CREATE POLICY "Users can update their own avatar"
+  ON storage.objects FOR UPDATE
+  USING (
+    bucket_id = 'user-avatars'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+CREATE POLICY "Users can delete their own avatar"
+  ON storage.objects FOR DELETE
+  USING (
+    bucket_id = 'user-avatars'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+```
+
+**How `storage.foldername()` works:**
+- For path `abc-123/avatar.jpg`, `storage.foldername(name)` returns `['abc-123', 'avatar.jpg']`
+- Index `[1]` is the first segment — the user's UUID
+- This ensures user `abc-123` can only write to `abc-123/*` and cannot overwrite other users' avatars
+
+---
+
+### 18.4 Profiles Table RLS Verification
+
+The existing `profiles` UPDATE policy (from Phase 4 / Section 2.2) already covers `avatar_url`:
+
+```sql
+CREATE POLICY "Users can update own profile"
+  ON profiles FOR UPDATE
+  USING (auth.uid() = id);
+```
+
+This policy allows updating any column on the user's own row, including `avatar_url`. No change needed.
+
+**Verify it's in place:**
+```sql
+SELECT policyname, cmd, qual
+FROM pg_policies
+WHERE tablename = 'profiles' AND cmd = 'UPDATE';
+```
+
+Expected output: one row with `policyname = 'Users can update own profile'` and `qual = '(auth.uid() = id)'`.
+
+---
+
+### 18.5 Supabase Realtime: Profile Picture Propagation
+
+The product spec requires that when a user updates their profile picture, other household members' views (task completion indicators) update within 1 second. This requires a Realtime subscription on the `profiles` table.
+
+**Enable Realtime on `profiles` table:**
+
+By default, Supabase Realtime only broadcasts changes for tables with `REPLICA IDENTITY FULL`. Add this migration:
+
+#### Migration file: `supabase/migrations/20260217000002_profiles_realtime.sql`
+
+```sql
+-- Enable full row replication for Realtime change detection on profiles
+ALTER TABLE profiles REPLICA IDENTITY FULL;
+
+-- Add profiles to the Supabase Realtime publication
+-- (This makes INSERT/UPDATE/DELETE events available via the Realtime API)
+ALTER PUBLICATION supabase_realtime ADD TABLE profiles;
+```
+
+**Frontend subscription** (`src/lib/services/auth.ts` — add this function):
+
+```typescript
+// Subscribe to profile picture changes for a list of user IDs
+// Used by Dashboard to update task completion indicators when a co-user changes their avatar
+export function subscribeToProfileChanges(
+  userIds: string[],
+  callback: (userId: string, newAvatarUrl: string | null) => void
+): () => void {
+  const channel = supabase
+    .channel('profile-avatar-changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'profiles',
+        filter: `id=in.(${userIds.join(',')})`,
+      },
+      (payload) => {
+        const { id, avatar_url } = payload.new as { id: string; avatar_url: string | null };
+        callback(id, avatar_url);
+      }
+    )
+    .subscribe();
+
+  // Return unsubscribe function
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+```
+
+**Where to call this in the Dashboard:**
+
+The Dashboard already has a `routine` prop with `completed_by` user IDs on each task item. After loading the routine, subscribe to profile changes for all unique `completed_by` values:
+
+```typescript
+// In Dashboard.tsx — add alongside existing Supabase Realtime subscription
+useEffect(() => {
+  if (!routine) return;
+
+  // Collect unique user IDs who have completed tasks
+  const userIds = [
+    ...new Set(
+      activityLogs
+        .filter((log) => log.completed_by)
+        .map((log) => log.completed_by as string)
+    ),
+  ];
+
+  if (userIds.length === 0) return;
+
+  const unsubscribe = subscribeToProfileChanges(userIds, (userId, newAvatarUrl) => {
+    // Update the local avatarCache map so task indicators re-render
+    setAvatarCache((prev) => ({ ...prev, [userId]: newAvatarUrl }));
+  });
+
+  return unsubscribe;
+}, [routine, activityLogs]);
+```
+
+> **Note:** The exact integration point depends on how task completion indicators are currently rendered in `Dashboard.tsx`. The pattern above shows the intent — read the current Dashboard implementation before wiring this in.
+
+---
+
+### 18.6 Implementation Steps
+
+```
+Step 1: Apply Storage RLS migration
+  File: supabase/migrations/20260217000001_user_avatars_storage_rls.sql
+  Command: supabase db push
+  Verify: Attempt to upload to another user's folder → expect 403
+  → Unblocks: Secure avatar upload in production
+
+Step 2: Apply Realtime migration
+  File: supabase/migrations/20260217000002_profiles_realtime.sql
+  Command: supabase db push
+  Verify: supabase dashboard → Database → Replication → confirm profiles table listed
+  → Unblocks: Real-time avatar propagation to other users
+
+Step 3: Add subscribeToProfileChanges() to auth.ts
+  File: src/lib/services/auth.ts
+  → Unblocks: Dashboard can listen for avatar updates
+
+Step 4: Wire subscription into Dashboard
+  File: src/app/components/Dashboard.tsx
+  Pattern: collect completed_by userIds → call subscribeToProfileChanges → update avatarCache state
+  → Unblocks: Task completion indicators auto-update when co-user changes photo
+
+Step 5: Verify profiles RLS UPDATE policy exists
+  Query: SELECT policyname FROM pg_policies WHERE tablename = 'profiles' AND cmd = 'UPDATE';
+  If missing: add policy from Section 2.2 (already in migrations)
+  → Unblocks: updateProfile() call succeeds in production
+
+Step 6: End-to-end test
+  Scenario A: User uploads photo → Settings avatar updates → toast appears
+  Scenario B: User uploads photo → co-user's Dashboard task indicators update within 1s
+  Scenario C: User uploads file >5MB → client-side rejection, no upload
+  Scenario D: User attempts to upload to another user's storage path → 403 from Supabase
+```
+
+---
+
+### 18.7 Deployment Checklist
+
+**Supabase Storage:**
+- [ ] `user-avatars` bucket exists (public read)
+- [ ] Storage RLS migration applied (`20260217000001_user_avatars_storage_rls.sql`)
+- [ ] Test: authenticated user can upload to own path, blocked from other paths
+
+**Supabase Database:**
+- [ ] `profiles.avatar_url` column exists (type: `text`, nullable)
+- [ ] `profiles` UPDATE RLS policy exists (`Users can update own profile`)
+- [ ] Realtime migration applied (`20260217000002_profiles_realtime.sql`)
+- [ ] `profiles` table listed in Supabase Realtime replication settings
+
+**Frontend (already implemented):**
+- [ ] `uploadUserAvatar()` in `auth.ts`
+- [ ] `updateProfile()` in `auth.ts`
+- [ ] `subscribeToProfileChanges()` in `auth.ts` (Step 3 above)
+- [ ] Avatar upload UI in `Settings.tsx`
+- [ ] `avatarUrl` state in `App.tsx`
+- [ ] Dashboard wired to `subscribeToProfileChanges` (Step 4 above)
+
+**Testing:**
+- [ ] Upload flow on mobile (iOS Safari camera + library paths)
+- [ ] Upload flow on desktop (file picker)
+- [ ] 5MB limit enforced client-side
+- [ ] HEIC/PNG/JPEG all accepted
+- [ ] Co-user avatar update propagation verified in two browser tabs
+- [ ] Offline upload attempt: graceful failure, error toast shown
+
+---
+
+### 18.8 Cost Impact
+
+**Supabase Storage:**
+- Bucket: `user-avatars`, average file size ~100KB (400×400px JPEG)
+- 1000 users × 100KB = 100MB storage total
+- Supabase Pro includes 100GB storage — negligible cost
+- Each upload: 1 storage write + 1 profiles DB update = minimal Supabase usage
+
+**Supabase Realtime:**
+- 1 additional Realtime channel per active Dashboard session (profile-avatar-changes)
+- Low message frequency (only triggers when a user changes their photo)
+- No meaningful cost impact within free/Pro tier limits
+
+---
+
+### 18.9 Known Limitations & Future Improvements
+
+**v1 Limitations:**
+- No server-side image resizing to 400×400px (spec calls for it, but `react-image-crop` is not yet integrated — client sends raw file)
+- No "Reset to Google picture" option (deferred to P1 per Out of Scope table)
+- HEIC files are accepted by the file input but browser support for rendering HEIC is inconsistent on non-Apple devices — acceptable for v1, add server-side conversion in P1
+
+**P1 Improvements:**
+- Server-side image resizing via Supabase Edge Function (`resize-avatar`) — receives raw upload, resizes to 400×400, stores optimized JPEG, returns URL
+- "Reset to Google OAuth picture" — store original Google picture URL at sign-up in `profiles.google_avatar_url`, allow revert
+- Image format normalization — convert HEIC → JPEG server-side for cross-platform compatibility
+
+**P2 Improvements:**
+- CDN cache invalidation strategy (current `?v=timestamp` approach works but bypasses CDN — use Supabase Storage transform API for proper cache control)
+- Profile picture propagation via Firestore Custom Claims update (so task completion indicators in the Firestore-backed task list also refresh without a page reload)
+
+---
+
 **End of Backend Development Plan**
 
 *This document will be updated as implementation progresses. All technical decisions are subject to revision based on real-world testing and user feedback.*

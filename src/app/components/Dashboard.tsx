@@ -16,6 +16,7 @@ import {
   subscribeToActivityLogs,
   type ActivityLogWithProfile
 } from "../../lib/services/activity-logs";
+import { subscribeToProfileChanges } from "../../lib/services/auth";
 
 interface DashboardProps {
   routine: any;
@@ -115,6 +116,35 @@ export function Dashboard({
       channel.unsubscribe();
     };
   }, [puppyId]);
+
+  // Subscribe to profile picture changes for all users who have completed tasks today.
+  // When a co-user updates their avatar, update their avatar_url in the activityLogs map
+  // so CompletionAvatar re-renders with the new photo within ~1 second.
+  useEffect(() => {
+    const completedByIds = Array.from(activityLogs.values())
+      .map(log => log.completed_by)
+      .filter((id): id is string => !!id);
+
+    const uniqueIds = [...new Set(completedByIds)];
+    if (uniqueIds.length === 0) return;
+
+    const unsubscribe = subscribeToProfileChanges(uniqueIds, (userId, newAvatarUrl) => {
+      setActivityLogs(prev => {
+        const newMap = new Map(prev);
+        newMap.forEach((log, key) => {
+          if (log.completed_by === userId && log.completer_profile) {
+            newMap.set(key, {
+              ...log,
+              completer_profile: { ...log.completer_profile, avatar_url: newAvatarUrl },
+            });
+          }
+        });
+        return newMap;
+      });
+    });
+
+    return unsubscribe;
+  }, [activityLogs]);
 
   // Initialize Firebase and subscribe to custom tasks + deleted routine items
   useEffect(() => {
