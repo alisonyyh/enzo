@@ -5,7 +5,7 @@ import { saveRoutineItemEdit } from '../../lib/services/edited-routine-items';
 import { format } from 'date-fns';
 
 const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty Break', emoji: '🚽' },
+  { value: 'potty_break', label: 'Potty', emoji: '🚽' },
   { value: 'meal', label: 'Meal', emoji: '🍽️' },
   { value: 'training', label: 'Training', emoji: '🎓' },
   { value: 'nap', label: 'Nap', emoji: '😴' },
@@ -35,6 +35,7 @@ export interface EditingRoutineItem {
   category: string;      // Supabase category (feeding, potty, etc.)
   activity: string;      // Title (e.g., "Breakfast")
   description: string;   // AI description (e.g., "Take outside 15-30 min after eating")
+  pottyDetails?: { poop: boolean; pee: boolean };
 }
 
 /** Represents a custom (Firebase) task being edited */
@@ -60,6 +61,8 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
     new Date().toTimeString().slice(0, 5)
   );
   const [notes, setNotes] = useState('');
+  const [pottyPoop, setPottyPoop] = useState(false);
+  const [pottyPee, setPottyPee] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const notesRef = useRef<HTMLTextAreaElement>(null);
 
@@ -73,12 +76,16 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
         setSelectedActivity(task.activityType);
         setSelectedTime(format(task.actualTime.toDate(), 'HH:mm'));
         setNotes(task.description || '');
+        setPottyPoop(task.pottyDetails?.poop ?? false);
+        setPottyPee(task.pottyDetails?.pee ?? false);
       } else {
         // Routine item
         const mappedActivity = CATEGORY_TO_ACTIVITY[editingItem.category] || 'nap';
         setSelectedActivity(mappedActivity);
         setSelectedTime(editingItem.time);
         setNotes(editingItem.description || '');
+        setPottyPoop(editingItem.pottyDetails?.poop ?? false);
+        setPottyPee(editingItem.pottyDetails?.pee ?? false);
       }
       setShowModal(true);
     }
@@ -96,6 +103,8 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
     setSelectedActivity('');
     setSelectedTime(new Date().toTimeString().slice(0, 5));
     setNotes('');
+    setPottyPoop(false);
+    setPottyPee(false);
     setShowModal(false);
     onEditDone?.();
   };
@@ -109,9 +118,15 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
       const time = new Date();
       time.setHours(hours, minutes, 0, 0);
 
-      const activityLabel = ACTIVITY_OPTIONS.find(
-        (opt) => opt.value === selectedActivity
-      )?.label || selectedActivity;
+      // Use "Potty Break" for the persisted title (timeline display), even though the grid label says "Potty"
+      const activityLabel = selectedActivity === 'potty_break'
+        ? 'Potty Break'
+        : (ACTIVITY_OPTIONS.find((opt) => opt.value === selectedActivity)?.label || selectedActivity);
+
+      // Only include pottyDetails when activity type is potty_break
+      const pottyDetailsPayload = selectedActivity === 'potty_break'
+        ? { poop: pottyPoop, pee: pottyPee }
+        : undefined;
 
       if (isEditMode && editingItem) {
         if (editingItem.type === 'custom') {
@@ -121,6 +136,7 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
             activityType: selectedActivity as Task['activityType'],
             title: activityLabel,
             description: notes,
+            pottyDetails: pottyDetailsPayload,
           });
         } else {
           // Edit routine item — save override in Firebase editedRoutineItems collection
@@ -129,11 +145,12 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
             activityType: selectedActivity,
             title: activityLabel,
             description: notes,
+            pottyDetails: pottyDetailsPayload,
           });
         }
       } else {
         // Add mode: create new custom task
-        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined);
+        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined, pottyDetailsPayload);
       }
 
       resetAndClose();
@@ -154,6 +171,8 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
     setSelectedActivity('');
     setSelectedTime(new Date().toTimeString().slice(0, 5));
     setNotes('');
+    setPottyPoop(false);
+    setPottyPee(false);
     setShowModal(true);
   };
 
@@ -176,17 +195,17 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
           onClick={handleCancel}
         >
           <div
-            className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto"
+            className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto max-h-[70vh] flex flex-col"
             style={{ boxShadow: '0 -4px 24px rgba(45, 27, 14, 0.15)' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4" />
+            <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4 flex-shrink-0" />
 
-            <h3 className="text-xl font-bold text-foreground mb-5">
+            <h3 className="text-xl font-bold text-foreground mb-5 flex-shrink-0">
               {isEditMode ? 'Edit Task' : 'Add Custom Task'}
             </h3>
 
-            <div className="space-y-4">
+            <div className="space-y-4 overflow-y-auto flex-1 min-h-0">
               {/* Time Picker */}
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1.5">Time</label>
@@ -205,7 +224,14 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
                   {ACTIVITY_OPTIONS.map((option) => (
                     <button
                       key={option.value}
-                      onClick={() => setSelectedActivity(option.value)}
+                      onClick={() => {
+                        setSelectedActivity(option.value);
+                        // Clear potty details when switching away from potty
+                        if (option.value !== 'potty_break') {
+                          setPottyPoop(false);
+                          setPottyPee(false);
+                        }
+                      }}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
                         selectedActivity === option.value
                           ? 'bg-primary text-primary-foreground'
@@ -218,6 +244,39 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
                   ))}
                 </div>
               </div>
+
+              {/* Potty Details — conditional, only when activity type is potty_break (D53) */}
+              {selectedActivity === 'potty_break' && (
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1.5">Details</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPottyPoop(!pottyPoop)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
+                        pottyPoop
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-accent text-foreground hover:bg-accent/80'
+                      }`}
+                    >
+                      <span>💩</span>
+                      <span>Poop</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPottyPee(!pottyPee)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
+                        pottyPee
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-accent text-foreground hover:bg-accent/80'
+                      }`}
+                    >
+                      <span>💦</span>
+                      <span>Pee</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Notes Field */}
               <div>
@@ -243,26 +302,27 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
                 )}
               </div>
 
-              {/* Buttons */}
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={handleCancel}
-                  disabled={isSaving}
-                  className="flex-1 py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSubmit}
-                  disabled={!selectedActivity || isSaving}
-                  className="flex-1 py-3 px-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-40 transition-all"
-                >
-                  {isSaving
-                    ? (isEditMode ? 'Saving...' : 'Adding...')
-                    : (isEditMode ? 'Save Changes' : 'Add Task')
-                  }
-                </button>
-              </div>
+            </div>
+
+            {/* Buttons — pinned at bottom outside scrollable area */}
+            <div className="flex gap-3 pt-4 flex-shrink-0">
+              <button
+                onClick={handleCancel}
+                disabled={isSaving}
+                className="flex-1 py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={!selectedActivity || isSaving}
+                className="flex-1 py-3 px-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-40 transition-all"
+              >
+                {isSaving
+                  ? (isEditMode ? 'Saving...' : 'Adding...')
+                  : (isEditMode ? 'Save Changes' : 'Add Task')
+                }
+              </button>
             </div>
           </div>
         </div>

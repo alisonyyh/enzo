@@ -379,8 +379,9 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
   - **Notes field** pre-populated with the task's description (see Notes field spec below)
   - Primary button reads "Save Changes" (instead of "Add Task")
   - Save updates the existing task in place (instead of creating a new one)
+- **Details field (conditional — Potty only):** When the selected activity type is "Potty," a "Details" section appears between the Activity Type grid and the Notes field with 💩 (poop) and 💦 (pee) emoji toggles. See F11 for full specification.
 - **Notes field (new):**
-  - Multiline text area positioned below the Activity Type grid
+  - Multiline text area positioned below the Activity Type grid (or below the Details field when activity type = Potty)
   - Label: "Notes"
   - Placeholder text: "Add a note..." (shown when field is empty)
   - **AI-generated tasks:** Pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). User can edit, replace, or clear this text.
@@ -409,7 +410,8 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 - **Trigger:** Tap FAB opens modal/bottom sheet
 - **Modal fields:**
   - Time picker (defaults to current time)
-  - Activity type grid (2-column emoji-labeled buttons, no default — user must select)
+  - Activity type grid (2-column emoji-labeled buttons, no default — user must select). Label for potty_break type reads "Potty" (not "Potty Break").
+  - **Details field** (conditional — only visible when activity type = Potty is selected; contains 💩 poop and 💦 pee toggles. See F11.)
   - **Notes field** (multiline text area, empty by default, placeholder: "Add a note...", optional, max 200 chars)
   - "Add Task" button (disabled until activity selected, gray → primary when enabled)
   - "Cancel" button
@@ -435,7 +437,9 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 - Bottom sheet title reads "Edit Task", primary button reads "Save Changes"
 - Time picker is pre-populated with the task's current time
 - Activity type grid shows the task's current activity type as pre-selected
-- **Notes field is visible below the Activity Type grid in both Add and Edit modes**
+- **Details field (conditional) appears between Activity Type grid and Notes when activity type = Potty; contains 💩 and 💦 toggles (see F11 for full criteria)**
+- **Activity type grid label for potty_break reads "Potty" (not "Potty Break")**
+- **Notes field is visible below the Activity Type grid (or below Details field for Potty tasks) in both Add and Edit modes**
 - **For AI-generated tasks: Notes field is pre-populated with the AI description text**
 - **For custom tasks: Notes field is empty unless user previously saved a note**
 - **Notes field placeholder reads "Add a note..." when empty**
@@ -471,12 +475,15 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 
 **Visual States:**
 ```
-Uncompleted, unedited:     7:00 AM  [ ] Breakfast
-Uncompleted, edited:       7:15 AM  [ ] Breakfast  ✏️
-Completed, unedited:       7:00 AM  [👤+🟢] Breakfast
-Completed, edited:         7:15 AM  [👤+🟢] Breakfast  ✏️
-User-added, uncompleted:   11:30 AM  [ ] Potty Break  ✏️
-User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
+Uncompleted, unedited:           7:00 AM  [ ] Breakfast
+Uncompleted, edited:             7:15 AM  [ ] Breakfast  ✏️
+Completed, unedited:             7:00 AM  [👤+🟢] Breakfast
+Completed, edited:               7:15 AM  [👤+🟢] Breakfast  ✏️
+User-added, uncompleted:         11:30 AM  [ ] Potty Break  ✏️
+User-added, completed:           11:30 AM  [👤+🟢] Potty Break  ✏️
+Potty with details, uncompleted: 8:30 AM  [ ] Potty Break 💩💦
+Potty with details, completed:   8:30 AM  [👤+🟢] Potty Break 💩  ✏️
+Potty with pee only, completed:  8:30 AM  [👤+🟢] Potty Break 💦
 ```
 
 **Technical Implementation:**
@@ -501,6 +508,80 @@ User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
 
 ---
 
+#### F11: Potty Details — Poop & Pee Tracking
+**Priority: P0 (Launch Blocker)**
+
+**Description:** A conditional "Details" section in the Edit Task and Add Custom Task bottom sheets that appears only when the selected activity type is "Potty." Contains two independent emoji toggles — 💩 (poop) and 💦 (pee) — allowing users to record what type of potty event occurred. Selected emojis are displayed inline next to the task title on the task card in the daily routine timeline. This also includes renaming the activity type grid label from "Potty Break" to "Potty" in the bottom sheet.
+
+**Context:** Potty breaks are the highest-frequency task type in a puppy's daily routine (6-8 per day for young puppies). Distinguishing between pee and poop is critical for housebreaking progress tracking and health monitoring. Without structured input, users either type "poop" or "pee" into the free-text Notes field (inconsistent, not machine-readable) or skip recording the distinction entirely.
+
+**Behavior:**
+
+**Conditional "Details" Field:**
+- Position: Between the Activity Type grid and the Notes field in the bottom sheet
+- Visibility: Only appears when activity type = "Potty" (🚽) is selected
+- Contains two tappable emoji toggle buttons displayed side by side:
+  - 💩 **Poop** — independent toggle (on/off)
+  - 💦 **Pee** — independent toggle (on/off)
+- Both can be selected simultaneously (poop + pee in one trip)
+- Neither is required — user can save a Potty task without selecting either
+- Unselected state: emoji at reduced opacity, no border/background highlight
+- Selected state: emoji at full opacity, highlighted border or subtle background fill
+- When editing an existing Potty task, toggles are pre-populated from saved `pottyDetails`
+- If user switches activity type away from Potty, the Details section hides immediately and `pottyDetails` values are cleared on save
+
+**Timeline Display:**
+- When a Potty task has details saved, the selected emoji(s) appear inline next to the task title on the card:
+  - `8:30 AM  [ ] Potty Break 💩💦` (both)
+  - `8:30 AM  [ ] Potty Break 💩` (poop only)
+  - `8:30 AM  [ ] Potty Break 💦` (pee only)
+  - `8:30 AM  [ ] Potty Break` (no details selected)
+- Order is always 💩 first, then 💦 (if both selected)
+- Emojis appear after the title text, before the ✏️ edit indicator
+
+**Activity Type Label Rename:**
+- In the Activity Type grid (both Edit Task and Add Custom Task bottom sheets), the button label changes from "Potty Break" to "Potty"
+- The emoji remains 🚽
+- The underlying `activityType` value remains `"potty_break"` — no data migration needed
+- Task titles in the timeline remain "Potty Break" (matching existing AI-generated routine titles)
+
+**Data Persistence:**
+- `pottyDetails` field is stored alongside other task fields in Firebase Firestore
+- Only saved when `activityType === "potty_break"`
+- If activity type changes away from potty_break during edit, `pottyDetails` is removed from the document
+- Syncs to all users via real-time Firestore listeners (same 3-second sync as other task fields)
+- For edited routine items (AI-generated tasks), `pottyDetails` is included in the `RoutineItemEdit` data
+
+**Acceptance Criteria:**
+- Details section only appears when activity type = Potty is selected in the bottom sheet
+- Details section hides immediately when user selects a different activity type
+- 💩 and 💦 toggles work independently — each can be on/off regardless of the other
+- Both toggles can be active simultaneously
+- Selected toggle state is visually distinct from unselected (opacity + border/background change)
+- Saving a Potty task persists `pottyDetails` to Firebase
+- Re-opening the Edit Task bottom sheet for a Potty task pre-populates the toggles from saved `pottyDetails`
+- Selected emojis display inline next to the task title on the timeline card
+- Emoji display order is always 💩 then 💦
+- Emojis appear before the ✏️ edit indicator
+- Non-potty tasks are completely unaffected (no Details section, no emojis on card)
+- Switching activity type away from Potty clears `pottyDetails` on save
+- A Potty task can be saved without selecting either toggle (Details field is optional)
+- Activity type grid label reads "Potty" (not "Potty Break") in both Edit and Add bottom sheets
+- `pottyDetails` syncs to all users within 3 seconds
+- Offline support: `pottyDetails` changes queue locally and sync on reconnection
+- Works with both AI-generated Potty tasks and user-added custom Potty tasks
+
+**Data Model Addition:**
+```typescript
+// Added to Task interface
+pottyDetails?: {
+  poop: boolean;  // True if 💩 was selected
+  pee: boolean;   // True if 💦 was selected
+};
+```
+
+---
+
 ### Out of Scope (v1)
 
 | Feature | Rationale |
@@ -521,7 +602,7 @@ User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
 | Reset to Google profile picture | Reverting a custom photo back to the Google OAuth picture is P1. In v1, once a custom photo is set it stays until replaced with a new upload. |
 | Task completion history/changelog | Who completed → uncompleted → re-completed tracking is P2. |
 | Multi-day task editing | Only today's tasks are editable in v1. Editing past/future days is P1. |
-| Custom activity types | Pre-defined activity list only (Potty Break, Meal, Training, etc.). Custom activities are P1. |
+| Custom activity types | Pre-defined activity list only (Potty, Meal, Training, etc.). Custom activities are P1. |
 | Rich text notes / markdown in Notes field | Notes field supports plain text only (max 200 chars). Rich text, markdown, or link rendering is P2. |
 | Task duration tracking | Tracking how long an activity actually took (vs. scheduled duration) is P2. |
 | Undo/redo for task edits | Once saved, edits are permanent. Undo is P1. |
@@ -529,6 +610,9 @@ User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
 | Granular task edit conflict resolution | Last-write-wins is sufficient for v1. UI showing "Mike edited this after you" is P1. |
 | Recurring task templates | "Apply this change to all future occurrences" is P2. |
 | Task edit version history/audit log | Full audit trail (who edited, what changed, when) is P1. Detail view shows "Last edited by" only. |
+| Potty analytics / health dashboard | Aggregated poop/pee charts, frequency tracking, and health pattern analysis based on pottyDetails data is P2. V1 captures structured data; analytics come later. |
+| Custom potty detail types | Only poop (💩) and pee (💦) in v1. Additional detail types (e.g., consistency, color, accident vs. outdoor) are P2. |
+| Potty details for non-potty tasks | Details field is exclusive to Potty activity type in v1. Extending structured detail fields to other activity types is P2. |
 
 ---
 
@@ -681,19 +765,59 @@ User is with puppy
      - Activity type grid (no selection, user must pick one)
      - Notes field (empty, placeholder: "Add a note...")
      - "Add Task" button (grayed out, disabled)
-  -> Selects "Potty Break" from emoji grid
+  -> Selects "Potty" from emoji grid
+  -> "Details" section appears with 💩 and 💦 toggles
+  -> Taps 💦 (pee — it was an accident)
   -> "Add Task" button turns primary color (enabled)
   -> Optionally types note: "Accident near the back door"
   -> Taps "Add Task"
   -> Bottom sheet dismisses
   -> New task appears in timeline:
      11:00 AM  [✓] Mid-morning nap
-     11:30 AM  [ ] Potty Break  ✏️ ← New task with pencil indicator
+     11:30 AM  [ ] Potty Break 💦  ✏️ ← New task with pee emoji + pencil
                     Accident near the back door
      12:00 PM  [ ] Lunch
   -> New task syncs to partner's device within 3 seconds
-  -> Partner sees the unplanned potty break + note in timeline
+  -> Partner sees the unplanned potty break + pee emoji + note in timeline
   -> Partner understands puppy had accident, adjusts expectations
+```
+
+#### Flow 8: User Records Potty Details (Poop/Pee)
+```
+Scenario A: Adding a new Potty task with details
+
+User taps "+" FAB
+  -> Bottom sheet opens: "Add Custom Task"
+  -> Selects "Potty" from activity type grid
+  -> "Details" section appears (between Activity Type and Notes):
+     💩 Poop  |  💦 Pee  (both dimmed/unselected)
+  -> Taps 💩 toggle → it highlights (poop selected)
+  -> Taps 💦 toggle → it highlights (pee selected)
+  -> Optionally adds note: "After breakfast walk"
+  -> Taps "Add Task"
+  -> Task appears in timeline:
+     8:30 AM  [ ] Potty Break 💩💦  ✏️
+  -> Partner's device shows same task with emojis within 3 seconds
+
+Scenario B: Editing an existing Potty task to add details
+
+User sees in timeline:
+  10:00 AM  [ ] Potty Break
+  -> Taps on task card
+  -> Bottom sheet opens: "Edit Task"
+  -> Activity type "Potty" is pre-selected
+  -> "Details" section visible with both toggles off
+  -> Taps 💦 (pee only this time)
+  -> Taps "Save Changes"
+  -> Timeline updates:
+     10:00 AM  [ ] Potty Break 💦  ✏️
+
+Scenario C: Switching activity type clears details
+
+User edits a Potty task with 💩 selected
+  -> Changes activity type from "Potty" to "Walk"
+  -> Details section disappears immediately
+  -> Saves → pottyDetails cleared, task shows as Walk
 ```
 
 ---
@@ -771,6 +895,9 @@ Task (daily instance of RoutineItem, supports editing)
   - activity_type (potty_break | meal | training | nap | calm_time | play_time | walk)
   - title
   - description
+  - potty_details (JSON, nullable) ← only present when activity_type = potty_break
+    - poop (boolean) ← true if 💩 was selected
+    - pee (boolean) ← true if 💦 was selected
   - is_completed (boolean)
   - is_edited (boolean, true if actual_time ≠ scheduled_time OR activity_type changed)
   - is_user_added (boolean, true if created via + FAB, not from AI routine)

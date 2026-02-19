@@ -65,6 +65,12 @@ export function TaskCard({ task, onEdit }: TaskCardProps) {
               />
               <h3 className={`font-medium text-base text-foreground ${task.isCompleted ? 'line-through' : ''}`}>
                 {task.title}
+                {task.activityType === 'potty_break' && (task.pottyDetails?.poop || task.pottyDetails?.pee) && (
+                  <span className="ml-1">
+                    {task.pottyDetails.poop && '💩'}
+                    {task.pottyDetails.pee && '💦'}
+                  </span>
+                )}
               </h3>
             </div>
             {task.description ? (

@@ -1405,6 +1405,10 @@ export interface Task {
   activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
   title: string;
   description?: string;
+  pottyDetails?: {        // D52: Only present when activityType = potty_break
+    poop: boolean;
+    pee: boolean;
+  };
   isCompleted: boolean;
   isEdited: boolean;
   isUserAdded: boolean;
@@ -1748,7 +1752,7 @@ import { addTask, editTask, Task } from '../../lib/services/tasks';
 import { format } from 'date-fns';
 
 const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty Break', emoji: '🚽' },
+  { value: 'potty_break', label: 'Potty', emoji: '🚽' },  // D55: "Potty" in grid, "Potty Break" in timeline titles
   { value: 'meal', label: 'Meal', emoji: '🍽️' },
   { value: 'training', label: 'Training', emoji: '🎓' },
   { value: 'nap', label: 'Nap', emoji: '😴' },
@@ -2655,6 +2659,296 @@ The code samples in Section 17 Steps 5, 6, and 7 have been updated in-place to r
 | Deployment | None required | All changes are client-side |
 
 **Bottom line:** The D45 UX change is almost entirely a frontend concern. The only backend-adjacent fix is adding `title` to the `editTask()` service function so that changing the activity type also updates the displayed task name. No Firestore rules, no migrations, no Edge Function changes, no deployment needed.
+
+---
+
+## 20. F11 / Flow 6H: Potty Details (Poop & Pee Tracking) — Backend Plan
+
+**Added:** 2026-02-19
+**Decision References:** D52–D57 (decisions-log.md)
+**Priority:** P0 (Launch Blocker — frontend already implemented)
+**Complexity:** Minimal (Firestore rules validation update only)
+
+---
+
+### 20.1 Overview
+
+Flow 6H adds structured potty detail tracking to the task editing flow. When a user selects "Potty" as the activity type in the Edit Task or Add Custom Task bottom sheet, a conditional "Details" section appears with two emoji toggle buttons (💩 Poop, 💦 Pee). Selected details are persisted to Firestore and displayed inline on the task card in the timeline.
+
+**Frontend Components Updated (already shipped):**
+- `AddTaskFAB.tsx` — Renamed "Potty Break" → "Potty" in activity grid (D55), added conditional Details section with 💩/💦 emoji toggle buttons (D53, D54), wired `pottyDetails` into save logic for all three paths (add custom, edit custom, edit routine item)
+- `TaskCard.tsx` — Shows potty emojis inline after task title for custom tasks (D56)
+- `Dashboard.tsx` — Passes `pottyDetails` from editedRoutineItems overlay, shows emojis on routine cards, passes `pottyDetails` when opening edit sheet
+- `tasks.ts` (service layer) — Added `pottyDetails` to Task interface, `addTask()`, and `editTask()` (D52)
+- `edited-routine-items.ts` (service layer) — Added `pottyDetails` to RoutineItemEdit interface and `saveRoutineItemEdit()` (D52, D57)
+
+---
+
+### 20.2 Backend Assessment
+
+#### Firestore Security Rules: Minor Update Recommended
+
+**Current state:** The `validTaskData()` function in `firebase/firestore.rules` validates required fields using `hasAll()`:
+
+```javascript
+function validTaskData() {
+  let data = request.resource.data;
+  return data.keys().hasAll([
+    'puppyId', 'date', 'scheduledTime', 'actualTime',
+    'activityType', 'title', 'isCompleted', 'isEdited',
+    'isUserAdded', 'lastEditedBy', 'createdAt'
+  ])
+  && data.puppyId is string
+  && data.date is string
+  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
+  && data.lastEditedBy == request.auth.uid
+  && data.lastEditedAt == request.time;
+}
+```
+
+**Impact analysis:**
+- `hasAll()` checks that required keys are present — it does **not** reject extra keys. Adding `pottyDetails` to the document won't break this check.
+- `pottyDetails` is optional (`?` in TypeScript) — tasks without it (all non-potty tasks, all existing tasks) continue to pass validation.
+- The `create` rule calls `validTaskData()`, so new tasks with `pottyDetails` will pass.
+- The `update` rule does **not** call `validTaskData()`, so editing tasks to add `pottyDetails` is also fine.
+
+**Recommendation:** Add optional `pottyDetails` structure validation to `validTaskData()`. This prevents a malicious client from writing arbitrary data into the `pottyDetails` field (e.g., `pottyDetails: "hacked"` instead of `{ poop: true, pee: false }`). For 0→1 this is a nice-to-have, but the cost is minimal.
+
+**Updated `validTaskData()` function:**
+
+```javascript
+function validTaskData() {
+  let data = request.resource.data;
+  return data.keys().hasAll([
+    'puppyId', 'date', 'scheduledTime', 'actualTime',
+    'activityType', 'title', 'isCompleted', 'isEdited',
+    'isUserAdded', 'lastEditedBy', 'createdAt'
+  ])
+  && data.puppyId is string
+  && data.date is string
+  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
+  && data.lastEditedBy == request.auth.uid
+  && data.lastEditedAt == request.time
+  // Potty details validation (D52): if present, must be a map with boolean fields
+  && (!('pottyDetails' in data.keys()) || (
+    data.pottyDetails is map
+    && data.pottyDetails.keys().hasAll(['poop', 'pee'])
+    && data.pottyDetails.poop is bool
+    && data.pottyDetails.pee is bool
+  ));
+}
+```
+
+**Note:** This validation only applies to `create` operations on the `tasks` collection. The `update` rule and the `editedRoutineItems` rules do not call `validTaskData()`, so they are unaffected. For v1, this is acceptable — the `editedRoutineItems` collection has its own access control (`editedBy == request.auth.uid`) and the update rule already validates `lastEditedBy` and `lastEditedAt`.
+
+#### editedRoutineItems Rules: No Changes Needed
+
+The `editedRoutineItems` collection rules validate:
+1. `hasPuppyAccess(request.resource.data.puppyId)` — puppy membership check
+2. `request.resource.data.editedBy == request.auth.uid` — user identity check
+
+There is no field-level validation for this collection (consistent with D48's overlay pattern). `pottyDetails` is just another field in the `setDoc()` payload. No rule changes needed.
+
+#### Data Model: No Migration Needed
+
+Firestore is schema-less. Adding `pottyDetails` to documents happens automatically when the frontend writes it. Existing documents without `pottyDetails` are handled gracefully:
+- TypeScript: `task.pottyDetails?.poop ?? false` (optional chaining + nullish coalescing)
+- Firestore rules: `!('pottyDetails' in data.keys())` handles documents without the field
+
+No Firestore indexes are needed for `pottyDetails`. The field is not used in any query `where()` clause — it's only read after the document is fetched.
+
+#### Supabase Edge Functions: No Changes Needed
+
+| Edge Function | Affected? | Reason |
+|---|---|---|
+| `generate-routine` | No | Generates Supabase `routine_items`, not Firestore tasks |
+| `accept-invite` | No | Creates `puppy_memberships`, doesn't touch tasks |
+| `get-firebase-token` | No | Generates Custom Token with `puppyIds` claim — no field-level awareness |
+
+#### Supabase Database: No Changes Needed
+
+The Supabase `routine_items` table (source of AI-generated routines) does **not** need a `potty_details` column. Potty details are only captured when a user **edits** a routine item — this edit is stored in the Firestore `editedRoutineItems` collection, not in Supabase. The AI routine generator doesn't produce potty details — it generates the schedule; the user fills in details after the fact.
+
+#### Firebase Custom Token Claims: No Changes Needed
+
+The `get-firebase-token` Edge Function embeds `puppyIds` in Custom Claims. `pottyDetails` is a field within existing documents, not a new collection, so no claim changes are needed.
+
+---
+
+### 20.3 Implementation Steps
+
+```
+Step 1: Update Firestore security rules (optional — recommended)
+  File: firebase/firestore.rules
+  Change: Add pottyDetails structure validation to validTaskData()
+  Deploy: firebase deploy --only firestore:rules
+  Verify: Create a task with pottyDetails → succeeds
+          Create a task with pottyDetails: "invalid" → rejected
+  Duration: 15 minutes
+  → Unblocks: Secure pottyDetails field validation
+
+Step 2: Verify existing rules still work
+  Test: Create a non-potty task (no pottyDetails field) → succeeds
+  Test: Update a potty task to add pottyDetails → succeeds
+  Test: Update a non-potty task (no pottyDetails) → succeeds
+  Duration: 10 minutes
+  → Unblocks: Confidence that existing functionality is unbroken
+
+Step 3: End-to-end verification
+  Test A: Add custom potty task with 💩 selected → verify pottyDetails in Firestore document
+  Test B: Edit routine item to potty with 💦 selected → verify pottyDetails in editedRoutineItems document
+  Test C: Switch activity type away from potty → verify pottyDetails omitted from write
+  Test D: Multi-user sync: User A adds potty details → User B sees emojis within 3s
+  Duration: 15 minutes
+  → Unblocks: Production confidence
+```
+
+**Total backend effort: ~40 minutes** (optional rules update + verification)
+
+---
+
+### 20.4 Firestore Rules Update
+
+If applying the optional `pottyDetails` validation (Step 1), update `firebase/firestore.rules`:
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Check if user has access to puppy (via Custom Claims)
+    function hasPuppyAccess(puppyId) {
+      return request.auth != null
+        && request.auth.token.puppyIds != null
+        && request.auth.token.puppyIds.hasAny([puppyId]);
+    }
+
+    // Helper: Validate task fields
+    function validTaskData() {
+      let data = request.resource.data;
+      return data.keys().hasAll([
+        'puppyId', 'date', 'scheduledTime', 'actualTime',
+        'activityType', 'title', 'isCompleted', 'isEdited',
+        'isUserAdded', 'lastEditedBy', 'createdAt'
+      ])
+      && data.puppyId is string
+      && data.date is string  // YYYY-MM-DD
+      && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
+      && data.lastEditedBy == request.auth.uid
+      && data.lastEditedAt == request.time
+      // Potty details: optional, but if present must be valid (D52)
+      && (!('pottyDetails' in data.keys()) || (
+        data.pottyDetails is map
+        && data.pottyDetails.keys().hasAll(['poop', 'pee'])
+        && data.pottyDetails.poop is bool
+        && data.pottyDetails.pee is bool
+      ));
+    }
+
+    // ... (rest of rules unchanged)
+  }
+}
+```
+
+---
+
+### 20.5 Section 17 Code Samples — Updated for F11
+
+The Task interface code sample in Section 17.4 Step 4 should be updated to include `pottyDetails`. The current production code (`src/lib/services/tasks.ts`) already includes this field:
+
+```typescript
+export interface Task {
+  id: string;
+  puppyId: string;
+  date: string;
+  scheduledTime: Timestamp;
+  actualTime: Timestamp;
+  activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
+  title: string;
+  description?: string;
+  pottyDetails?: {        // D52: Only present when activityType = potty_break
+    poop: boolean;        // True if 💩 was selected
+    pee: boolean;         // True if 💦 was selected
+  };
+  isCompleted: boolean;
+  isEdited: boolean;
+  isUserAdded: boolean;
+  completedBy?: string;
+  completedAt?: Timestamp;
+  lastEditedBy: string;
+  lastEditedAt: Timestamp;
+  createdAt: Timestamp;
+}
+```
+
+The `addTask()` and `editTask()` functions in the code sample have also been updated to accept `pottyDetails` as an optional parameter. See the current source files for production implementation.
+
+---
+
+### 20.6 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Firestore Security Rules (`validTaskData()`) | Add optional `pottyDetails` structure validation | **Recommended** (not blocking) |
+| Firestore Security Rules (`editedRoutineItems`) | None | Already supports arbitrary edit fields |
+| Firestore Security Rules (`tasks` update rule) | None | Doesn't call `validTaskData()` |
+| Data Model (`tasks` collection) | None | Firestore is schema-less, `pottyDetails` auto-accepted |
+| Data Model (`editedRoutineItems` collection) | None | Same as above |
+| Firestore Indexes | None | `pottyDetails` not used in queries |
+| Firebase Custom Token Edge Function | None | Claims unchanged |
+| `generate-routine` Edge Function | None | Generates Supabase data, not Firestore tasks |
+| `accept-invite` Edge Function | None | Not involved in task CRUD |
+| Supabase Database (`routine_items` table) | None | Potty details captured at edit time, not generation time |
+| Supabase RLS Policies | None | Tasks are Firestore-only |
+| Frontend Service Layer (`tasks.ts`) | Already shipped | `pottyDetails` in interface, `addTask()`, `editTask()` |
+| Frontend Service Layer (`edited-routine-items.ts`) | Already shipped | `pottyDetails` in interface, `saveRoutineItemEdit()` |
+| Frontend Components | Already shipped | AddTaskFAB, TaskCard, Dashboard all updated |
+| Deployment | `firebase deploy --only firestore:rules` (if applying validation) | **One command** |
+
+**Bottom line:** The Potty Details feature is a frontend-heavy change with near-zero backend impact. The only recommended backend action is adding optional field validation to the Firestore security rules to prevent malformed `pottyDetails` data. No new collections, no new Edge Functions, no Supabase changes, no migrations. Total backend effort: ~40 minutes.
+
+---
+
+### 20.7 Cost Impact
+
+**Zero additional cost.** `pottyDetails` is a field within existing Firestore documents. Firestore charges per document read/write, not per field (D57). Adding 2 booleans to a document has no measurable impact on:
+- Read/write costs
+- Document size (adds ~30 bytes per document with `pottyDetails`)
+- Bandwidth (negligible for real-time sync)
+- Storage (well within free tier limits)
+
+---
+
+### 20.8 Deployment Checklist
+
+**Firestore:**
+- [ ] Updated `firebase/firestore.rules` with `pottyDetails` validation in `validTaskData()` (optional)
+- [ ] Deployed rules: `firebase deploy --only firestore:rules`
+- [ ] Verified: task create with valid `pottyDetails` succeeds
+- [ ] Verified: task create without `pottyDetails` still succeeds
+- [ ] Verified: task create with malformed `pottyDetails` is rejected (if validation applied)
+
+**Frontend (already shipped):**
+- [ ] `Task` interface includes `pottyDetails?: { poop: boolean; pee: boolean }`
+- [ ] `RoutineItemEdit` interface includes `pottyDetails`
+- [ ] `addTask()` accepts and persists `pottyDetails`
+- [ ] `editTask()` accepts and persists `pottyDetails`
+- [ ] `saveRoutineItemEdit()` accepts and persists `pottyDetails`
+- [ ] AddTaskFAB shows "Potty" label and conditional Details section
+- [ ] TaskCard shows inline potty emojis
+- [ ] Dashboard shows inline potty emojis on routine cards
+- [ ] Dashboard passes `pottyDetails` to edit bottom sheet
+
+**Testing:**
+- [ ] Add potty task with 💩 only → "Potty Break 💩" on timeline
+- [ ] Add potty task with 💦 only → "Potty Break 💦" on timeline
+- [ ] Add potty task with both → "Potty Break 💩💦" on timeline
+- [ ] Add potty task with neither → "Potty Break" (no emojis) on timeline
+- [ ] Edit routine item to potty with details → emojis appear on routine card
+- [ ] Switch activity type away from potty → pottyDetails cleared, no emojis
+- [ ] Multi-user sync: potty details appear on co-user's device within 3s
+- [ ] Offline: add potty details offline → sync when reconnected
+- [ ] Build succeeds: `npx vite build` with no errors in modified files
 
 ---
 

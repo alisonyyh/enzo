@@ -59,6 +59,13 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D49 | Discriminated Union for Editing State | **`EditingItem = EditingRoutineItem \| EditingCustomTask`** | The bottom sheet needs to handle two fundamentally different data sources: custom tasks (Firebase `Task` objects with Firestore doc IDs) and AI routine items (Supabase data with routine item IDs). A TypeScript discriminated union (`type: 'routine' | 'custom'`) cleanly separates the two paths. Dashboard sets `editingItem` state; AddTaskFAB switches behavior based on `editingItem.type`. On save: custom tasks call `editTask()`, routine items call `saveRoutineItemEdit()`. Rationale: (1) Type-safe — TypeScript narrows the type in each branch, preventing accidental field access. (2) Single state variable in Dashboard (replaces old `editingTask: Task \| null`). (3) AddTaskFAB becomes a tri-mode component: Add Custom / Edit Custom / Edit Routine. |
 | D50 | Category-to-Activity Mapping | **Static `CATEGORY_TO_ACTIVITY` map in AddTaskFAB** | Supabase routine items use categories like `feeding`, `potty`, `exercise`, `play`, `training`, `rest`, `bonding`, `sleep`. Firebase tasks use activity types like `meal`, `potty_break`, `walk`, `play_time`, `training`, `nap`, `calm_time`. When editing a routine item, the category must be mapped to the closest activity type for the emoji grid pre-selection. Mapping: `feeding→meal`, `potty→potty_break`, `exercise→walk`, `play→play_time`, `training→training`, `rest→nap`, `bonding→calm_time`, `sleep→nap`. Default fallback: `nap`. Rationale: (1) Static map is simple, fast, and type-safe. (2) Mapping lives in AddTaskFAB where it's consumed — no unnecessary abstraction. (3) Covers all known Supabase categories. If new categories are added in the AI routine generator, the fallback ensures graceful degradation. |
 | D51 | Description Field Handling | **`!== undefined` check (not truthy)** for description updates | Both `editTask()` and `addTask()` in `tasks.ts` use `updates.description !== undefined` instead of a truthy check. This intentional pattern allows users to clear notes by setting description to an empty string `""`. A truthy check (`if (updates.description)`) would treat `""` as falsy and skip the update, making it impossible to remove notes from a task. Same pattern applied in the Firestore `addDoc()` call for new tasks. |
+| **POTTY DETAILS — POOP & PEE TRACKING (F11 / Flow 6H)** ||||
+| D52 | Potty Details Data Model | **Optional `pottyDetails?: { poop: boolean; pee: boolean }` field on Task and RoutineItemEdit** | Two independent booleans rather than a single enum or string. Rationale: (1) Poop and pee are not mutually exclusive — a puppy can do both in one trip. An enum (`'poop' | 'pee' | 'both' | 'none'`) is clunky and grows combinatorially if more detail types are added later. (2) Booleans are the most compact Firestore representation and cheapest to query. (3) The field is optional (`?`) — omitted entirely for non-potty tasks, rather than stored as `{ poop: false, pee: false }`. This keeps Firestore documents lean (D32). (4) Added to both the `Task` interface (custom tasks) and the `RoutineItemEdit` data shape (AI-generated tasks edited via the overlay pattern, D48). No migration needed — existing tasks simply lack the field, which is handled as "no details selected." |
+| D53 | Conditional Details UI | **Activity-type-gated section in AddTaskFAB bottom sheet** | The "Details" section (containing 💩/💦 toggles) renders conditionally based on `selectedActivity === 'potty_break'`. Position: between the Activity Type grid and the Notes textarea. Rationale: (1) Only Potty tasks need structured detail input — showing it for all activity types would confuse users. (2) Conditional rendering (not hidden with CSS) means the DOM is clean and screen readers don't encounter irrelevant content. (3) When the user switches activity type away from Potty, the Details section unmounts and `pottyDetails` state resets to `{ poop: false, pee: false }`. On save, if `activityType !== 'potty_break'`, the `pottyDetails` field is omitted from the Firestore write entirely (not set to null). (4) Uses the same bottom sheet layout flow as Notes (D47) — no new layout patterns introduced. |
+| D54 | Emoji Toggle Interaction | **Independent toggle buttons (not checkboxes, not radio buttons)** | Each emoji (💩, 💦) is a standalone tappable button that toggles between selected and unselected states. Rationale: (1) Emoji toggles are faster than checkboxes for a 2-option binary choice — one tap, no label reading required. (2) Visual states: unselected = reduced opacity + no border, selected = full opacity + highlighted border/background. This matches the existing Activity Type grid's visual language (emoji + label in a tappable cell). (3) Not radio buttons because both can be active simultaneously. (4) Not checkboxes because the emoji IS the affordance — a checkbox next to an emoji adds visual noise. (5) Touch target: each toggle button is at least 44×44px (accessibility minimum). (6) Neither toggle is required — saving with both unselected is valid (e.g., user records a potty trip attempt where nothing happened). |
+| D55 | Activity Type Label Rename Scope | **"Potty" in grid buttons only; "Potty Break" persists in timeline titles** | The Activity Type grid in the bottom sheet shows "🚽 Potty" instead of "🚽 Potty Break". However, task titles in the timeline still render as "Potty Break". Rationale: (1) The grid button label "Potty Break" is unnecessarily long — "Potty" is clearer at the grid cell's constrained width and matches the brevity of other labels (Meal, Walk, Nap). (2) The underlying `activityType` enum value remains `"potty_break"` — no data migration, no backend changes, no breaking existing Firestore documents. (3) Timeline titles derive from `ACTIVITY_CONFIG[activityType].label` which keeps "Potty Break" for readability in the card context. (4) The grid and timeline use separate label lookups, so this is a display-only change scoped to the `ACTIVITIES` array in AddTaskFAB. |
+| D56 | Potty Emoji Display on Task Cards | **Inline after title text, before edit indicator** | Selected potty detail emojis (💩, 💦, or both) display inline on the TaskCard component, appended to the task title. Rationale: (1) Inline display is the most compact — no extra row, no badge, no tooltip. Users scanning the timeline can instantly see what happened at each potty event. (2) Order is always 💩 then 💦 (alphabetical by label: Pee < Poop reversed to match common logging convention — solids first). (3) Position after title but before ✏️ edit indicator maintains the existing card information hierarchy: time → status → title → details → edit marker. (4) Only rendered when `task.pottyDetails?.poop` or `task.pottyDetails?.pee` is true AND `activityType === 'potty_break'`. Non-potty tasks are completely unaffected. (5) No potty details saved = no emojis shown (clean default). |
+| D57 | Potty Details Persistence Path | **Same Firestore collections as other task fields (no new collection)** | `pottyDetails` is stored as a field within existing Firestore documents — `tasks/{taskId}` for custom tasks and `editedRoutineItems/{docId}` for AI-generated routine item edits (D48). Rationale: (1) Potty details are a property of a task, not a separate entity — storing them in a separate collection would violate the flat document model (D32) and add unnecessary query complexity. (2) Real-time sync, offline persistence, and conflict resolution all come for free — `pottyDetails` travels with the task document through Firestore's existing sync infrastructure (D30, D33). (3) `saveRoutineItemEdit()` already handles arbitrary field additions via the spread operator — adding `pottyDetails` to the edit payload requires no structural changes to the overlay pattern. (4) Firestore charges per document read/write, not per field — adding a field has zero cost impact. |
 
 ---
 
@@ -330,6 +337,17 @@ Response format is strictly JSON — no prose, no markdown. The Edge Function va
   - Firestore security rules (puppyId membership check)
   → Unblocks: Real-world usage (puppies don't follow static routines)
 
+🔲 Step 7b: Potty Details — Poop & Pee Tracking (P0 - Flow 6H / F11)
+  - Add pottyDetails field to Task interface and RoutineItemEdit shape (D52)
+  - Conditional "Details" section in AddTaskFAB (activity-type-gated, D53)
+  - 💩/💦 emoji toggle buttons with selected/unselected states (D54)
+  - Rename "Potty Break" → "Potty" in Activity Type grid (D55)
+  - Inline potty emoji display on TaskCard timeline (D56)
+  - Persist pottyDetails via existing Firestore collections (D57)
+  - Pre-populate toggles when editing existing Potty tasks
+  - Clear pottyDetails when activity type switches away from Potty
+  → Unblocks: Structured housebreaking progress tracking
+
 🔲 Step 8: Progress tracking (P1)
   - Weekly summary view
   - Completion rate calculation, streaks, activity breakdown
@@ -442,6 +460,10 @@ interface Task {
   activityType: ActivityType;    // Enum: potty_break | meal | training | nap | calm_time | play_time | walk
   title: string;                 // "Breakfast", "Morning potty break", etc.
   description?: string;          // Optional guidance text from AI routine
+  pottyDetails?: {               // Only present when activityType = potty_break (D52)
+    poop: boolean;               // True if 💩 was selected
+    pee: boolean;                // True if 💦 was selected
+  };
 
   // State flags
   isCompleted: boolean;
@@ -481,6 +503,10 @@ interface RoutineItemEdit {
   activityType: string;        // Firebase activity type (mapped from Supabase category)
   title: string;               // Display name (e.g., "Breakfast")
   description: string;         // Notes field content (can be empty string)
+  pottyDetails?: {             // Only present when activityType = potty_break (D52, D57)
+    poop: boolean;
+    pee: boolean;
+  };
   editedBy: string;            // Supabase user.id who edited
   editedAt: FieldValue;        // serverTimestamp()
 }
@@ -737,3 +763,75 @@ export async function uploadUserAvatar(userId: string, file: File): Promise<stri
 **Supabase bucket setup required:** A public `user-avatars` bucket must exist in Supabase Storage. Created manually in the Supabase dashboard (Storage → New bucket → `user-avatars` → Public). Not scripted in v1 — document in the README and onboarding checklist.
 
 **iOS future note:** The action sheet UX maps directly to `UIImagePickerController` (camera) and `PHPickerViewController` (library) on iOS. The web `capture="user"` hint is the closest web equivalent. The service layer (`uploadUserAvatar`) will be re-implemented in Swift using the Supabase Swift SDK with the same storage bucket and path convention.
+
+---
+
+## Flow 6H / F11 — Potty Details (Poop & Pee Tracking)
+
+### Summary
+
+Flow 6H adds structured potty detail tracking to the task editing flow. When a user selects "Potty" as the activity type in the Edit Task or Add Custom Task bottom sheet, a conditional "Details" section appears with two emoji toggle buttons (💩 Poop, 💦 Pee). Selected details are persisted to Firestore and displayed inline on the task card in the timeline.
+
+### Decisions
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| D52 | Data model | `pottyDetails?: { poop: boolean; pee: boolean }` | Independent booleans — not mutually exclusive. Optional field omitted for non-potty tasks. |
+| D53 | Conditional UI | Activity-type-gated render in AddTaskFAB | Conditional render (not CSS hidden). Unmounts and resets state on activity switch. |
+| D54 | Toggle interaction | Independent emoji toggle buttons | Not checkboxes, not radio buttons. 44×44px minimum touch target. Neither required. |
+| D55 | Label rename scope | "Potty" in grid only | Underlying enum stays `"potty_break"`. Timeline title stays "Potty Break". No migration. |
+| D56 | Timeline display | Inline after title, before ✏️ | 💩 always before 💦. Only shown when pottyDetails has true values. |
+| D57 | Persistence path | Existing Firestore collections | `tasks/{taskId}` for custom, `editedRoutineItems/{docId}` for AI edits. No new collection. |
+
+### Data Model Changes
+
+```typescript
+// Task interface (src/lib/services/tasks.ts)
+export interface Task {
+  // ... existing fields (D32)
+  pottyDetails?: {
+    poop: boolean;  // True if 💩 selected
+    pee: boolean;   // True if 💦 selected
+  };
+}
+
+// RoutineItemEdit shape (for editedRoutineItems collection, D48)
+// pottyDetails is included in the edit payload alongside
+// editedTime, editedActivity, description
+```
+
+### Component Changes
+
+**AddTaskFAB.tsx:**
+- Add `pottyPoop` and `pottyPee` boolean state (default `false`)
+- Render "Details" section between Activity Type grid and Notes when `selectedActivity === 'potty_break'`
+- Two emoji toggle buttons with selected/unselected visual states
+- On activity type change away from potty_break: reset both to `false`
+- On save: include `pottyDetails: { poop: pottyPoop, pee: pottyPee }` only when `selectedActivity === 'potty_break'`
+- On edit mode open for potty task: pre-populate from `editingItem.pottyDetails`
+- Rename "Potty Break" to "Potty" in the `ACTIVITIES` array label
+
+**TaskCard.tsx:**
+- After the task title text, conditionally render potty emojis:
+  ```tsx
+  {task.activityType === 'potty_break' && task.pottyDetails && (
+    <span>
+      {task.pottyDetails.poop && '💩'}
+      {task.pottyDetails.pee && '💦'}
+    </span>
+  )}
+  ```
+- Position: after title, before ✏️ edit indicator
+
+**tasks.ts (service layer):**
+- `addTask()`: Include `pottyDetails` in `addDoc()` payload when present
+- `editTask()`: Include `pottyDetails` in `updateDoc()` payload using same `!== undefined` pattern (D51)
+- No changes to `deleteTask()` or query functions
+
+**edited-routine-items.ts (service layer):**
+- `saveRoutineItemEdit()`: Include `pottyDetails` in the `setDoc()` payload
+- Existing spread pattern handles the new field without structural changes
+
+### Firestore Security Rules
+
+No changes needed. Existing rules allow authenticated users to read/write documents in `tasks` and `editedRoutineItems` collections where they are the puppy's owner or caretaker. `pottyDetails` is just another field on those documents — Firestore rules operate at the document level, not the field level.

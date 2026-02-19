@@ -310,7 +310,7 @@ export function Dashboard({
   routineItems.forEach((item: any) => {
     const edit = editedRoutineItems.get(item.id);
     const effectiveItem = edit
-      ? { ...item, time: edit.time, activity: edit.title, description: edit.description, category: edit.activityType, isEdited: true }
+      ? { ...item, time: edit.time, activity: edit.title, description: edit.description, category: edit.activityType, pottyDetails: edit.pottyDetails, isEdited: true }
       : item;
     const [hours, minutes] = (effectiveItem.time || '00:00').split(':').map(Number);
     timelineItems.push({
@@ -468,6 +468,7 @@ export function Dashboard({
                       category: item.category,
                       activity: item.activity,
                       description: item.description || '',
+                      pottyDetails: item.pottyDetails,
                     });
                   }}
                   className={`
@@ -499,6 +500,12 @@ export function Dashboard({
                           />
                           <h3 className={`font-medium text-base text-foreground ${isCompleted ? 'line-through' : ''}`}>
                             {item.activity}
+                            {(item.category === 'potty' || item.category === 'potty_break') && (item.pottyDetails?.poop || item.pottyDetails?.pee) && (
+                              <span className="ml-1">
+                                {item.pottyDetails.poop && '💩'}
+                                {item.pottyDetails.pee && '💦'}
+                              </span>
+                            )}
                           </h3>
                         </div>
                         {item.description && (

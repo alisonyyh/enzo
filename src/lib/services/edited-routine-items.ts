@@ -29,6 +29,10 @@ export interface RoutineItemEdit {
   activityType: string;
   title: string;
   description: string;   // Notes field (can be empty string)
+  pottyDetails?: {       // Only present when activityType = potty_break (D52)
+    poop: boolean;
+    pee: boolean;
+  };
   editedBy: string;
   editedAt: any;          // Firestore server timestamp
 }
@@ -79,6 +83,7 @@ export async function saveRoutineItemEdit(
     activityType: string;
     title: string;
     description: string;
+    pottyDetails?: { poop: boolean; pee: boolean };
   }
 ): Promise<void> {
   const userId = firebaseAuth.currentUser?.uid;
@@ -96,6 +101,7 @@ export async function saveRoutineItemEdit(
     activityType: updates.activityType,
     title: updates.title,
     description: updates.description,
+    ...(updates.pottyDetails !== undefined && { pottyDetails: updates.pottyDetails }),
     editedBy: userId,
     editedAt: serverTimestamp(),
   });

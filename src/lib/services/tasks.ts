@@ -22,6 +22,10 @@ export interface Task {
   activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
   title: string;
   description?: string;
+  pottyDetails?: {
+    poop: boolean;
+    pee: boolean;
+  };
   isCompleted: boolean;
   isEdited: boolean;
   isUserAdded: boolean;
@@ -73,7 +77,8 @@ export async function addTask(
   activityType: Task['activityType'],
   time: Date,
   title: string,
-  description?: string
+  description?: string,
+  pottyDetails?: { poop: boolean; pee: boolean }
 ): Promise<string> {
   const userId = firebaseAuth.currentUser?.uid;
   if (!userId) throw new Error('Not authenticated');
@@ -86,6 +91,7 @@ export async function addTask(
     activityType,
     title,
     ...(description !== undefined && { description }),
+    ...(pottyDetails !== undefined && { pottyDetails }),
     isCompleted: false,
     isEdited: true, // User-added tasks are always marked as edited
     isUserAdded: true,
@@ -105,6 +111,7 @@ export async function editTask(
     activityType?: Task['activityType'];
     title?: string;
     description?: string;
+    pottyDetails?: { poop: boolean; pee: boolean };
   }
 ): Promise<void> {
   const userId = firebaseAuth.currentUser?.uid;
@@ -118,6 +125,8 @@ export async function editTask(
     ...(updates.title && { title: updates.title }),
     // description can be set to empty string (clearing notes), so check for undefined specifically
     ...(updates.description !== undefined && { description: updates.description }),
+    // pottyDetails uses !== undefined so it can be explicitly set (or cleared when switching away from potty)
+    ...(updates.pottyDetails !== undefined && { pottyDetails: updates.pottyDetails }),
     isEdited: true,
     lastEditedBy: userId,
     lastEditedAt: serverTimestamp(),
