@@ -4,12 +4,18 @@ import { Trash2 } from 'lucide-react';
 import { Task, deleteTask } from '../../lib/services/tasks';
 import { TaskCard } from './TaskCard';
 
+interface SwipeableTaskCardProps {
+  task: Task;
+  /** Called when the user taps the card (opens edit bottom sheet). */
+  onEdit?: (task: Task) => void;
+}
+
 /**
  * Wraps a custom task card with swipe-to-delete.
  * Swiping left reveals a circular trash icon button to the right of the card.
  * Tapping the trash icon immediately deletes the task (no confirmation).
  */
-export function SwipeableTaskCard({ task }: { task: Task }) {
+export function SwipeableTaskCard({ task, onEdit }: SwipeableTaskCardProps) {
   const [swipeOffset, setSwipeOffset] = useState(0);
 
   const handlers = useSwipeable({
@@ -66,7 +72,7 @@ export function SwipeableTaskCard({ task }: { task: Task }) {
         }}
         className="relative z-10 w-full"
       >
-        <TaskCard task={task} />
+        <TaskCard task={task} onEdit={onEdit} />
       </div>
     </div>
   );

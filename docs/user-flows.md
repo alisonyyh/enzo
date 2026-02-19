@@ -111,28 +111,25 @@ Note on completion indicators:
 
 ### Completing an Activity
 ```
-User taps on "Morning play session"
+Completion is done by tapping the status icon (circle) on the
+RIGHT side of the task card — NOT by tapping the card itself.
 
--> Bottom sheet slides up:
-  Activity: Morning play session
-  Time: 7:30 AM - 7:45 AM (15 min)
-  Guidance: "Short play session with a toy. Avoid tug-of-war
-             at this age - it can encourage biting."
+User taps the circle icon (○) on "Morning play session"
 
-  [Mark as Complete] (primary button)
-  [Skip] (secondary, muted)
-  [Add Note] (text input, optional)
-
-User taps "Mark as Complete"
 -> Activity completion indicator updates:
    • Instead of a simple checkmark, the UI displays the profile
      picture of the user who completed the task (either primary
      owner or caretaker)
    • A green dot indicator appears at the top-right corner of
      the profile picture to signify completion status
-   • If viewing the activity detail, text shows "Completed by Sarah at 7:42 AM"
--> Bottom sheet dismisses
 -> Next activity highlights as current
+
+To undo: User taps the completed avatar icon again
+-> Completion is reversed, empty circle reappears
+
+Note: Tapping the CARD itself (not the status icon) opens the
+"Edit Task" bottom sheet where the user can adjust time, activity
+type, and notes. See Flow 6A for full details.
 
 Visual attribution benefit:
 - Users can scan the timeline and immediately see who completed
@@ -336,73 +333,180 @@ Screen: Access Removed
 
 **Context:** Puppies don't always follow their planned routine. Users (both primary owners and caretakers) need to adjust today's task list to reflect what actually happened. This includes editing task times and activity types, deleting tasks that didn't happen, and adding unplanned tasks.
 
-### Flow 6A: Edit an Existing Task
+### Flow 6A: Edit Any Task (Custom or AI-Generated)
 
-#### Scenario: Puppy's meal happened 15 minutes late
+**Context:** All tasks — both custom (user-added) and AI-generated routine tasks — are edited using the same bottom sheet modal. Tapping any task card in the timeline opens the "Edit Task" bottom sheet pre-populated with the task's current data. This provides a consistent, spacious editing experience regardless of task origin.
+
+The bottom sheet includes three fields: Time, Activity Type, and Notes. For AI-generated tasks, the Notes field is pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). For custom tasks, Notes is empty unless the user has previously saved a note.
+
+#### Scenario 1: User edits a custom task's time
 
 ```
 Screen: Daily Routine
 
 User sees:
-  7:00 AM  [✓] Breakfast (1/2 cup kibble)  ✅ Completed by Sarah
+  11:30 AM  [ ] Potty Break  ✏️  (custom task)
 
-User taps on the "Breakfast" task card (NOT the checkbox)
+User taps on the "Potty Break" task card (NOT the status icon)
 
--> Card expands inline with smooth animation (200ms):
+-> Bottom sheet slides up (same component as "Add Custom Task"):
 
   ┌─────────────────────────────────────────────┐
-  │ Breakfast                            [Edit] │
+  │              Edit Task                       │
   │                                             │
   │ Time                                        │
-  │ [🕐 7:15 AM ▼]  (time picker)              │
+  │ [🕐 11:30 AM]  (pre-populated with task's  │
+  │                  current time)              │
   │                                             │
   │ Activity Type                               │
-  │ [Meal ▼]  (dropdown)                       │
-  │   Options: Potty Break, Meal, Training,    │
-  │            Nap, Calm Time, Play Time, Walk │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🚽 Potty     │  │ 🍽️ Meal      │         │
+  │ │ Break  [SEL] │  │              │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🎓 Training  │  │ 😴 Nap       │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🧘 Calm Time │  │ 🎾 Play Time │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐                           │
+  │ │ 🚶 Walk      │                           │
+  │ └──────────────┘                           │
+  │                                             │
+  │ Notes                                       │
+  │ ┌───────────────────────────────────────┐   │
+  │ │                                       │   │
+  │ │  (empty — no description for this     │   │
+  │ │   custom task)                        │   │
+  │ │                                       │   │
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  │ [Cancel]              [Save Changes]       │
+  └─────────────────────────────────────────────┘
+
+User changes time from 11:30 AM to 11:45 AM
+User changes activity from "Potty Break" to "Walk"
+User taps "Save Changes"
+
+-> Bottom sheet dismisses
+-> Task updates in timeline:
+  11:45 AM  [ ] Walk  ✏️
+
+-> Task list automatically reorders chronologically (if needed)
+-> Changes sync to all users (owner & caretakers) within 3 seconds
+```
+
+#### Scenario 2: User edits an AI-generated task
+
+```
+Screen: Daily Routine
+
+User sees:
+  7:00 AM  [ ] Breakfast
+                1/2 cup kibble — wait 30 min before play
+
+User taps on the "Breakfast" task card (NOT the status icon)
+
+-> Bottom sheet slides up:
+
+  ┌─────────────────────────────────────────────┐
+  │              Edit Task                       │
+  │                                             │
+  │ Time                                        │
+  │ [🕐 7:00 AM]  (pre-populated from routine) │
+  │                                             │
+  │ Activity Type                               │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🚽 Potty     │  │ 🍽️ Meal      │         │
+  │ │ Break        │  │       [SEL]  │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🎓 Training  │  │ 😴 Nap       │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🧘 Calm Time │  │ 🎾 Play Time │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐                           │
+  │ │ 🚶 Walk      │                           │
+  │ └──────────────┘                           │
+  │                                             │
+  │ Notes                                       │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ 1/2 cup kibble — wait 30 min before  │   │
+  │ │ play                                  │   │
+  │ │                                       │   │
+  │ └───────────────────────────────────────┘   │
+  │   ↑ Pre-populated with AI description.     │
+  │     User can edit or replace this text.    │
   │                                             │
   │ [Cancel]              [Save Changes]       │
   └─────────────────────────────────────────────┘
 
 User changes time from 7:00 AM to 7:15 AM
+User edits notes from "1/2 cup kibble — wait 30 min before play"
+  to "1/2 cup kibble + a spoon of pumpkin"
 User taps "Save Changes"
 
--> Card collapses with animation
--> Task now displays:
-  7:15 AM  [✓] Breakfast (1/2 cup kibble)  ✅ Completed by Sarah ✏️
+-> Bottom sheet dismisses
+-> Task updates in timeline:
+  7:15 AM  [ ] Breakfast  ✏️
+                1/2 cup kibble + a spoon of pumpkin
 
--> Task list automatically reorders chronologically (if needed)
+-> ✏️ indicator appears (task has been edited from original)
 -> Changes sync to all users (owner & caretakers) within 3 seconds
--> Other users see the updated task with edited indicator (✏️)
+-> Other users see the updated time and notes
+```
+
+#### Key differences from "Add New Task" mode:
+```
+- Title: "Edit Task" (not "Add Custom Task")
+- Time picker: Pre-populated with existing time (not current time)
+- Activity grid: Current activity type pre-selected/highlighted
+- Notes: Pre-populated with description (AI tasks) or empty (custom tasks)
+- Primary button: "Save Changes" (not "Add Task")
+- Save behavior: Updates existing task (not creates new one)
 
 State during editing:
 - If task was already completed (✓), it stays completed after edit
 - Editing does NOT uncheck the task
-- "Edited" indicator (✏️ pencil icon) appears after save
+- ✏️ indicator appears after any edit (always present on custom tasks,
+  added to AI tasks once edited)
+- Tapping outside the sheet or "Cancel" dismisses with no changes
 ```
 
-#### Expanded View Features
+#### Bottom Sheet Fields (Edit Mode)
 ```
-Fields in expanded card:
+The bottom sheet reuses the same AddTaskFAB component with an
+"edit mode" flag and the existing task data passed as props:
+
 1. Time Picker
-   - Defaults to current scheduled/actual time
+   - Pre-populated with the task's current time
    - Allows selection of any time today
    - Format: 12-hour with AM/PM
 
-2. Activity Type Dropdown
-   - Pre-defined options only (no custom activities in v1):
-     • Potty Break
-     • Meal
-     • Training
-     • Nap
-     • Calm Time
-     • Play Time
-     • Walk
-   - Defaults to current activity type
+2. Activity Type Grid (2-column emoji grid)
+   - Same 7 pre-defined options as "Add New Task":
+     🚽 Potty Break | 🍽️ Meal
+     🎓 Training    | 😴 Nap
+     🧘 Calm Time   | 🎾 Play Time
+     🚶 Walk
+   - Current activity type is pre-selected (highlighted)
+   - User can tap a different option to change it
 
-3. Buttons
-   - Cancel: Discards all changes, collapses card
-   - Save Changes: Commits edits, syncs to all users, collapses card
+3. Notes (multiline text input)
+   - Label: "Notes"
+   - Placeholder: "Add a note..." (shown when empty)
+   - For AI-generated tasks: pre-populated with the task's
+     description (e.g., "Take outside 15-30 minutes after eating")
+   - For custom tasks: empty unless user previously saved a note
+   - Multiline text area, auto-grows up to 3 lines, then scrolls
+   - Max length: 200 characters
+   - Optional — can be left empty or cleared entirely
+
+4. Buttons
+   - Cancel: Dismisses sheet, no changes saved
+   - Save Changes: Updates existing task (time, activity type,
+     and notes), syncs to all users, dismisses sheet
 ```
 
 #### Multi-User Sync Behavior
@@ -542,23 +646,42 @@ User taps "+" FAB
 -> Modal/bottom sheet slides up:
 
   ┌─────────────────────────────────────────────┐
-  │              Add New Task                   │
+  │           Add Custom Task                   │
   │                                             │
   │ Time                                        │
   │ [🕐 11:30 AM ▼]  (defaults to current time)│
   │                                             │
   │ Activity Type                               │
-  │ [Select activity ▼]  (no default selected) │
-  │   Options: Potty Break, Meal, Training,    │
-  │            Nap, Calm Time, Play Time, Walk │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🚽 Potty     │  │ 🍽️ Meal      │         │
+  │ │ Break        │  │              │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🎓 Training  │  │ 😴 Nap       │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🧘 Calm Time │  │ 🎾 Play Time │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐                           │
+  │ │ 🚶 Walk      │                           │
+  │ └──────────────┘                           │
+  │                                             │
+  │ Notes                                       │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ Add a note...  (placeholder)          │   │
+  │ └───────────────────────────────────────┘   │
+  │   ↑ Optional. Empty by default for new     │
+  │     custom tasks.                          │
   │                                             │
   │ [Cancel]              [Add Task]           │
   │                        ↑ Disabled until    │
   │                          activity selected │
   └─────────────────────────────────────────────┘
 
-User selects "Potty Break" from dropdown
--> [Add Task] button becomes enabled (changes from gray to blue)
+User selects "Potty Break" from emoji grid
+-> [Add Task] button becomes enabled (changes from gray to primary)
+
+User optionally types a note: "Emergency accident near the door"
 
 User taps "Add Task"
 
@@ -579,7 +702,8 @@ User taps "Add Task"
 When user adds a task:
 - scheduledTime: Set to user-selected time
 - actualTime: Same as scheduledTime
-- activityType: User-selected from dropdown
+- activityType: User-selected from emoji grid
+- description: User-entered notes (optional, can be empty string)
 - isCompleted: false (unchecked by default)
 - isEdited: true (always true for user-added tasks)
 - isUserAdded: true (distinguishes from AI-generated)
@@ -655,34 +779,25 @@ User-added task, completed by Mike:
   11:30 AM  [👤+🟢] Potty Break  ✏️
 ```
 
-#### Task Detail View (Expanded Card)
+#### Task Tap Behavior (Universal Edit)
 ```
-When user taps any task card, bottom sheet shows:
+Tapping ANY task card — whether AI-generated or custom — opens
+the "Edit Task" bottom sheet directly. There is no separate
+read-only "detail view." All tasks go straight to the editable
+bottom sheet. See Flow 6A for the full Edit Task experience.
 
-  ┌─────────────────────────────────────────────┐
-  │ Breakfast                                   │
-  │                                             │
-  │ Scheduled: 7:00 AM                          │
-  │ Actual: 7:15 AM  ✏️ Edited                 │
-  │                                             │
-  │ Status: Completed by Sarah at 7:20 AM      │
-  │                                             │
-  │ Last edited: Sarah at 7:20 AM              │
-  │                                             │
-  │ [Edit Task]                                 │
-  └─────────────────────────────────────────────┘
+  AI-generated tasks:
+  - Bottom sheet pre-populates with the task's time, activity
+    type (mapped to the closest emoji grid option), and the
+    AI description in the Notes field.
+  - User can adjust any field and save.
 
-For user-added tasks:
-  ┌─────────────────────────────────────────────┐
-  │ Potty Break                                 │
-  │                                             │
-  │ Added by: Sarah at 11:30 AM                │
-  │ Time: 11:30 AM                              │
-  │                                             │
-  │ Status: Not completed                       │
-  │                                             │
-  │ [Edit Task]  [Delete Task]                  │
-  └─────────────────────────────────────────────┘
+  Custom tasks:
+  - Bottom sheet pre-populates with the task's time and activity
+    type. Notes field is empty unless previously saved.
+
+  Deletion of any task is handled via swipe-to-delete
+  (Flow 6B) or long-press context menu.
 ```
 
 ---
@@ -760,6 +875,215 @@ Sync failed (rare):
 
 ---
 
+## Flow 7: Edit Profile Picture
+
+**Context:** Users want to personalize their account by setting or updating their profile picture. This photo appears on completed task cards throughout the daily routine view, giving visual attribution to who did what. Keeping it up to date improves the multi-user experience.
+
+### Flow 7A: Navigate to Profile Picture Settings
+
+```
+Screen: Any screen with bottom navigation
+
+User taps the Settings icon (gear icon) in the bottom nav
+
+-> Navigates to: Settings Screen
+
+Settings Screen layout:
+  ┌─────────────────────────────────────────────┐
+  │  Settings                                   │
+  │                                             │
+  │  ┌──────────────────────────────────────┐  │
+  │  │                                      │  │
+  │  │            [Profile Photo]           │  │
+  │  │           (circular avatar,          │  │
+  │  │            80px diameter)            │  │
+  │  │                                      │  │
+  │  │               [Edit]                 │  │  <- Button below photo
+  │  │                                      │  │
+  │  └──────────────────────────────────────┘  │
+  │                                             │
+  │  Display Name: Sarah                        │
+  │  Email: sarah@gmail.com                     │
+  │                                             │
+  │  Manage Caretakers                          │
+  │  Notifications                              │
+  │  ...                                        │
+  └─────────────────────────────────────────────┘
+
+Profile photo display:
+- If user has set a photo: shows their current profile picture
+- If no photo set: shows default avatar (initials or generic icon)
+- [Edit] button appears below the photo at all times
+```
+
+### Flow 7B: Tap "Edit" - Photo Source Selection
+
+```
+User taps [Edit] below their profile picture
+
+-> Action sheet slides up from the bottom of the screen:
+
+  ┌─────────────────────────────────────────────┐
+  │                                             │
+  │          Change Profile Photo               │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │          Take a Photo                 │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │       Choose from Photo Library       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │              Cancel                   │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+Options:
+- "Take a Photo" → Opens device camera (Flow 7C)
+- "Choose from Photo Library" → Opens photo picker (Flow 7D)
+- "Cancel" → Dismisses action sheet, returns to Settings
+```
+
+### Flow 7C: Take a Photo
+
+```
+User taps "Take a Photo"
+
+-> System camera permission prompt appears (if not already granted):
+   "PupPlan would like to access the camera"
+   [Don't Allow]  [Allow]
+
+If permission denied:
+-> Action sheet dismisses
+-> Alert shown: "Camera access is required to take a photo.
+   Enable it in Settings > PupPlan > Camera."
+   [Open Settings]  [Cancel]
+
+If permission granted (or already granted):
+-> Native camera UI opens
+-> User frames their photo and taps the shutter button
+-> Preview screen shows:
+   - Captured photo with circular crop overlay
+   - [Retake] (top left)
+   - [Use Photo] (top right)
+
+User taps "Use Photo"
+-> Proceeds to confirmation step (Flow 7E)
+
+User taps "Retake"
+-> Returns to live camera view
+```
+
+### Flow 7D: Choose from Photo Library
+
+```
+User taps "Choose from Photo Library"
+
+-> System photo permission prompt appears (if not already granted):
+   "PupPlan would like to access your photos"
+   [Don't Allow]  [Allow]  [Select Photos...]
+
+If permission denied:
+-> Action sheet dismisses
+-> Alert shown: "Photo library access is required to select a photo.
+   Enable it in Settings > PupPlan > Photos."
+   [Open Settings]  [Cancel]
+
+If permission granted (or already granted):
+-> Native photo picker opens
+-> User browses and selects a photo
+
+-> Preview screen shows:
+   - Selected photo with circular crop overlay
+   - Crop/zoom controls (pinch-to-zoom, drag to reposition)
+   - [Cancel] (top left)
+   - [Choose] (top right)
+
+User taps "Choose"
+-> Proceeds to confirmation step (Flow 7E)
+
+User taps "Cancel"
+-> Dismisses picker
+-> Returns to Settings screen
+```
+
+### Flow 7E: Photo Upload & Profile Update
+
+```
+After user confirms photo (from camera or library):
+
+-> Settings screen returns to focus
+-> Profile photo area shows upload state:
+
+  ┌──────────────────────────────────────────┐
+  │                                          │
+  │         [New Photo + Loading Spinner]    │
+  │            (circular, 80px)              │
+  │                                          │
+  │              Updating...                 │
+  │                                          │
+  └──────────────────────────────────────────┘
+
+-> Photo uploads to storage in background
+-> On success:
+
+  ┌──────────────────────────────────────────┐
+  │                                          │
+  │            [New Profile Photo]           │
+  │             (circular, 80px)             │
+  │                                          │
+  │               [Edit]                     │
+  │                                          │
+  └──────────────────────────────────────────┘
+
+-> Toast notification: "Profile photo updated"
+   (appears at bottom, auto-dismisses after 2 seconds)
+
+-> Profile photo immediately updates everywhere it is used:
+   • Settings screen avatar
+   • Completed task attribution indicators throughout the daily routine
+   • Any caretaker-visible views that show this user's completions
+
+On upload failure:
+-> Spinner disappears
+-> Previous photo is restored
+-> Toast notification: "Couldn't update photo. Please try again."
+   (red, auto-dismisses after 3 seconds)
+```
+
+### Flow 7F: State & Permission Summary
+
+```
+Who can edit their profile picture:
+✓ Primary Owner
+✓ Caretaker
+
+Both roles have full access to edit their own profile photo.
+Neither role can edit another user's profile photo.
+
+Photo specs (for engineering):
+- Accepted formats: JPEG, PNG, HEIC
+- Max upload size: 5MB (client-side validation before upload)
+- Stored resolution: 400x400px (cropped square, resized on upload)
+- Display sizes:
+  • Settings avatar: 80px diameter (circular)
+  • Task completion indicator: ~28px diameter (circular)
+- Storage: Firebase Storage under users/{userId}/profile_photo.jpg
+- Firestore field: users/{userId}.profilePhotoUrl (updated on upload success)
+
+Error states:
+- File too large: "Photo must be under 5MB. Please choose a smaller image."
+- Unsupported format: "Please choose a JPEG or PNG image."
+- Network failure: "Couldn't update photo. Please try again."
+- Permission denied (camera): Direct to app settings
+- Permission denied (photos): Direct to app settings
+```
+
+---
+
 ## Flow 6F: Data Persistence & Architecture Notes
 
 ### Backend Requirements (for engineering team)
@@ -791,6 +1115,8 @@ interface Task {
   scheduledTime: Date;        // Original AI time
   actualTime: Date;           // User-edited time (defaults to scheduledTime)
   activityType: ActivityType; // Enum: PottyBreak | Meal | Training | etc.
+  title: string;              // Display name (e.g., "Breakfast", "Potty Break")
+  description?: string;       // Notes field (AI description or user-entered notes)
   isCompleted: boolean;
   isEdited: boolean;          // True if actualTime ≠ scheduledTime or activity changed
   isUserAdded: boolean;       // True if created via + FAB
@@ -840,6 +1166,7 @@ Libraries:
 Primary Owner:
 ✓ Edit task time
 ✓ Edit activity type
+✓ Edit task notes (including AI-generated descriptions)
 ✓ Delete tasks
 ✓ Add new tasks
 ✓ Complete tasks
@@ -848,6 +1175,7 @@ Primary Owner:
 Caretaker:
 ✓ Edit task time
 ✓ Edit activity type
+✓ Edit task notes (including AI-generated descriptions)
 ✓ Delete tasks
 ✓ Add new tasks
 ✓ Complete tasks

@@ -37,6 +37,19 @@ service cloud.firestore {
       allow delete: if hasPuppyAccess(resource.data.puppyId);
     }
 
+    // Edited routine items collection (overlay pattern, mirrors deletedRoutineItems)
+    match /editedRoutineItems/{docId} {
+      // Read: User must have access to puppy
+      allow read: if hasPuppyAccess(resource.data.puppyId);
+
+      // Create/Update: User must have access to puppy
+      allow create, update: if hasPuppyAccess(request.resource.data.puppyId)
+        && request.resource.data.editedBy == request.auth.uid;
+
+      // Delete: User must have access
+      allow delete: if hasPuppyAccess(resource.data.puppyId);
+    }
+
     // Tasks collection
     match /tasks/{taskId} {
       // Read: User must have access to puppy

@@ -48,6 +48,7 @@ export default function App() {
   const [appState, setAppState] = useState<AppState>("loading");
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [currentPuppy, setCurrentPuppy] = useState<Puppy | null>(null);
   const [currentMembership, setCurrentMembership] = useState<PuppyMembership | null>(null);
   const [routine, setRoutine] = useState<RoutineWithItems | null>(null);
@@ -59,6 +60,7 @@ export default function App() {
     try {
       const userProfile = await getProfile(authUser.id);
       setProfile(userProfile);
+      setAvatarUrl(userProfile?.avatar_url ?? null);
 
       const memberships = await getUserPuppies(authUser.id);
       console.log("loadUserData: memberships found:", memberships.length);
@@ -128,6 +130,7 @@ export default function App() {
         } else if (event === "SIGNED_OUT") {
           setUser(null);
           setProfile(null);
+          setAvatarUrl(null);
           setCurrentPuppy(null);
           setCurrentMembership(null);
           setRoutine(null);
@@ -395,11 +398,13 @@ export default function App() {
       {appState === "settings" && currentPuppy && puppyProfile && (
         <Settings
           accountData={accountData}
+          avatarUrl={avatarUrl}
           puppyProfile={puppyProfile}
           puppyId={currentPuppy.id}
           userId={user?.id || ""}
           onBack={() => setAppState("dashboard")}
           onSignOut={handleSignOut}
+          onAvatarUpdate={(newUrl) => setAvatarUrl(newUrl)}
         />
       )}
 

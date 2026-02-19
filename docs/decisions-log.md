@@ -51,6 +51,14 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D32 | Firestore Data Model | **Flat collection: `tasks/{taskId}`** | Each task is a top-level document in Firestore `tasks` collection. Query pattern: `tasks` where `puppyId == current` AND `date == today`. Flat structure (not nested under `puppies/{puppyId}/tasks`) enables atomic cross-puppy queries and simpler security rules. Task document includes: `puppyId` (FK), `scheduledTime` (original AI time), `actualTime` (user-edited), `activityType` (enum), `isEdited`, `isUserAdded`, `isCompleted`, `completedBy`, `lastEditedBy`, `lastEditedAt` (server timestamp), `date` (YYYY-MM-DD). |
 | D33 | Offline Queue Strategy | **Firestore built-in persistence** | Firestore SDK automatically queues writes when offline (uses IndexedDB under the hood). No custom offline queue needed. On reconnect, Firestore flushes queue to server in order. If write fails (permission denied, validation error), SDK fires error callback — we show error banner. This is **significantly simpler** than building custom offline logic with Supabase. |
 | D34 | Firebase Auth Integration | **Custom Token from Supabase** | User authenticates with Google via Supabase (existing flow). Backend generates Firebase Custom Token using Supabase user UID, exchanges it for Firebase Auth session. Client uses Firebase Auth token for Firestore security rules. One Google sign-in, two backends. Supabase Edge Function handles token generation (`getFirebaseToken()`). Slightly complex setup but keeps single sign-in UX. Alternative (dual OAuth) confuses users. |
+| D45 | Custom Task Edit UX | **Reuse "Add Custom Task" bottom sheet in edit mode** (no inline card expansion) | When user taps a custom (user-added) task, the app opens the same bottom sheet modal used by the FAB "Add New Task" flow — pre-populated with the task's existing time and activity type. Title changes to "Edit Task", button reads "Save Changes", and save updates the existing task instead of creating a new one. **Removes inline expandable card for custom tasks entirely.** Rationale: (1) Consistent UX — create and edit use the same interface, reducing cognitive load. (2) The bottom sheet's emoji-labeled activity grid is more spacious and touch-friendly than the cramped inline card with its HTML time input and dropdown. (3) Simpler component architecture — `AddTaskFAB` accepts an optional `editTask` prop to switch between add/edit modes, eliminating the `TaskCard` inline expansion code. Trade-off: Extra modal overlay on edit vs. in-place editing, but the UX consistency outweighs the minor interaction cost. Documented in user-flows.md (Flow 6A) and product-spec.md (F10). |
+| **UNIVERSAL TAP-TO-EDIT + NOTES FIELD (F10 Extension)** ||||
+| D46 | Universal Tap-to-Edit | **ALL task types (AI-generated + custom) open the same Edit Task bottom sheet** | Previously only custom tasks supported tap-to-edit (D45). Now AI-generated routine items also open the bottom sheet when tapped on the card body. Tapping the status icon (circle/avatar) on the right side still toggles completion via `e.stopPropagation()`. Rationale: (1) Users expect all cards to behave identically — having some tappable and others not is confusing. (2) AI-generated tasks need editing even more than custom tasks (puppies deviate from AI schedules constantly). (3) Eliminates the mental model distinction between "AI cards" and "custom cards" — they all behave the same. Implementation: Dashboard.tsx routine card `<div>` gets `onClick` handler + `cursor-pointer active:scale-[0.98]` classes. Documented in user-flows.md (Flow 6A, Scenario 2) and product-spec.md (F10 Section 1). |
+| D47 | Notes Field in Bottom Sheet | **Multiline textarea below Activity Type grid, 200-char max, auto-grows to 3 lines** | Added a "Notes" field to the AddTaskFAB bottom sheet (both Add and Edit modes). For AI-generated tasks: pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). For custom tasks: empty unless user previously saved a note. For new tasks via FAB: empty with placeholder "Add a note...". Auto-grows up to 3 lines (72px), then scrolls. Max 200 characters with live character counter. Optional field — saving with empty notes is valid. Rationale: (1) AI descriptions are valuable guidance but users need to customize them. (2) Users want to log context ("accident near the back door") without a separate notes app. (3) 200-char limit keeps notes concise and prevents the field from dominating the bottom sheet. Implementation: `useRef` + `useEffect` for auto-resize, `maxLength={200}`, `overflow-y-auto` after max height. |
+| D48 | Routine Item Edit Persistence | **Firebase `editedRoutineItems` collection (overlay pattern)** | AI-generated routine items live in Supabase (`routine_items` table) and are read-only from the client. When a user edits an AI routine item's time, activity, or notes, the override is stored in a new Firestore collection `editedRoutineItems/{docId}`. This mirrors the established pattern used by `deletedRoutineItems` (which persists routine item deletions in Firebase). Deterministic doc ID: `{puppyId}_{routineItemId}_{date}` enables upsert via `setDoc()`. Dashboard subscribes to both collections and applies edits as an overlay before rendering. Rationale: (1) Cannot write back to Supabase `routine_items` from the client (read-only). (2) Consistent with existing deletion overlay pattern — proven architecture. (3) Keeps all user-generated edits in Firebase (single real-time sync layer). (4) Deterministic doc ID means repeated edits to the same item overwrite cleanly (no duplicate documents). Trade-off: Another Firestore collection adds to the hybrid backend complexity, but follows established patterns and keeps the data layer predictable. |
+| D49 | Discriminated Union for Editing State | **`EditingItem = EditingRoutineItem \| EditingCustomTask`** | The bottom sheet needs to handle two fundamentally different data sources: custom tasks (Firebase `Task` objects with Firestore doc IDs) and AI routine items (Supabase data with routine item IDs). A TypeScript discriminated union (`type: 'routine' | 'custom'`) cleanly separates the two paths. Dashboard sets `editingItem` state; AddTaskFAB switches behavior based on `editingItem.type`. On save: custom tasks call `editTask()`, routine items call `saveRoutineItemEdit()`. Rationale: (1) Type-safe — TypeScript narrows the type in each branch, preventing accidental field access. (2) Single state variable in Dashboard (replaces old `editingTask: Task \| null`). (3) AddTaskFAB becomes a tri-mode component: Add Custom / Edit Custom / Edit Routine. |
+| D50 | Category-to-Activity Mapping | **Static `CATEGORY_TO_ACTIVITY` map in AddTaskFAB** | Supabase routine items use categories like `feeding`, `potty`, `exercise`, `play`, `training`, `rest`, `bonding`, `sleep`. Firebase tasks use activity types like `meal`, `potty_break`, `walk`, `play_time`, `training`, `nap`, `calm_time`. When editing a routine item, the category must be mapped to the closest activity type for the emoji grid pre-selection. Mapping: `feeding→meal`, `potty→potty_break`, `exercise→walk`, `play→play_time`, `training→training`, `rest→nap`, `bonding→calm_time`, `sleep→nap`. Default fallback: `nap`. Rationale: (1) Static map is simple, fast, and type-safe. (2) Mapping lives in AddTaskFAB where it's consumed — no unnecessary abstraction. (3) Covers all known Supabase categories. If new categories are added in the AI routine generator, the fallback ensures graceful degradation. |
+| D51 | Description Field Handling | **`!== undefined` check (not truthy)** for description updates | Both `editTask()` and `addTask()` in `tasks.ts` use `updates.description !== undefined` instead of a truthy check. This intentional pattern allows users to clear notes by setting description to an empty string `""`. A truthy check (`if (updates.description)`) would treat `""` as falsy and skip the update, making it impossible to remove notes from a task. Same pattern applied in the Firestore `addDoc()` call for new tasks. |
 
 ---
 
@@ -82,9 +90,10 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 │    - routines, routine_items│  │    actualTime,              │
 │    - puppy_memberships      │  │    activityType, isEdited,  │
 │    - invites, profiles      │  │    isUserAdded, isCompleted │
-│  Realtime (other features)  │  │  - Real-time listeners      │
-│  Edge Functions:            │  │  - Offline persistence      │
-│    - generate-routine       │  │  - Last-write-wins conflict │
+│  Realtime (other features)  │  │  Collection: editedRoutineItems/│
+│  Edge Functions:            │  │  - Routine edit overlays (D48)  │
+│    - generate-routine       │  │  - Real-time listeners      │
+│                             │  │  - Offline persistence      │
 │    - getFirebaseToken       │  │                             │
 │  Storage (photos)           │  │  Auth: Custom Tokens from   │
 │  RLS Policies               │  │        Supabase Edge Fn     │
@@ -150,7 +159,9 @@ puppy_daycare/
 │           ├── routines.ts          # saveRoutine, getActiveRoutine
 │           ├── activity-logs.ts     # completeActivity, getTodayLogs (with profiles join)
 │           ├── invites.ts           # generateInvite, acceptInvite
-│           └── tasks.ts             # NEW: editTask, deleteTask, addTask (Firestore)
+│           ├── tasks.ts             # editTask, deleteTask, addTask, completeTask (Firestore)
+│           ├── deleted-routine-items.ts  # Persist routine item deletions (Firestore overlay)
+│           └── edited-routine-items.ts   # Persist routine item edits (Firestore overlay, D48)
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql   # Tables, triggers, RLS policies
@@ -304,7 +315,13 @@ Response format is strictly JSON — no prose, no markdown. The Edge Function va
   - Firebase project setup + Firestore configuration
   - Firebase Custom Token generation (Supabase Edge Function)
   - TasksService: editTask, deleteTask, addTask (Firestore operations)
-  - Expandable task card UI (time picker + activity dropdown)
+  - AddTaskFAB bottom sheet (tri-mode: "Add New Task" + "Edit Custom" + "Edit Routine")
+    - Tapping ANY task (custom or AI-generated) opens same bottom sheet (D45, D46)
+    - No inline expandable card for any task type
+    - Notes field: multiline textarea, 200-char max, auto-grows 3 lines (D47)
+    - Discriminated union type EditingItem for dual data source handling (D49)
+    - Category-to-activity mapping for Supabase→Firebase translation (D50)
+  - editedRoutineItems Firestore collection for AI task edit persistence (D48)
   - Swipe-to-delete gesture (react-swipeable) + long-press accessibility
   - Floating Action Button (FAB) for adding tasks
   - Real-time sync via Firestore listeners (3-second target)
@@ -453,6 +470,28 @@ enum ActivityType {
 }
 ```
 
+### Firestore Collection: `editedRoutineItems` (D48)
+
+```typescript
+interface RoutineItemEdit {
+  routineItemId: string;       // FK to Supabase routine_items.id
+  puppyId: string;             // FK to Supabase puppies.id
+  date: string;                // YYYY-MM-DD (scoped to today)
+  time: string;                // HH:mm format (user-edited time)
+  activityType: string;        // Firebase activity type (mapped from Supabase category)
+  title: string;               // Display name (e.g., "Breakfast")
+  description: string;         // Notes field content (can be empty string)
+  editedBy: string;            // Supabase user.id who edited
+  editedAt: FieldValue;        // serverTimestamp()
+}
+
+// Document ID: deterministic `{puppyId}_{routineItemId}_{date}`
+// Uses setDoc() for upsert — repeated edits overwrite cleanly
+// Query: editedRoutineItems WHERE puppyId == X AND date == today
+```
+
+**Relationship to `deletedRoutineItems`:** Both collections follow the same Firebase overlay pattern. Supabase `routine_items` are read-only from the client. Deletions go to `deletedRoutineItems`, edits go to `editedRoutineItems`. Dashboard subscribes to both and applies overlays before rendering.
+
 ### Firestore Security Rules
 
 ```javascript
@@ -571,8 +610,10 @@ Firestore automatically creates this index when first query runs (shows warning 
 
 **Estimated operations (50 users):**
 - 50 users × 15 tasks/day × 2 reads (initial load + real-time updates) = **1,500 reads/day**
+- 50 users × 15 routine items/day × 2 reads (editedRoutineItems + deletedRoutineItems) = **1,500 reads/day**
 - 50 users × 5 task edits/day × 1 write = **250 writes/day**
-- Well under free tier limits (50K reads, 20K writes)
+- 50 users × 2 routine edits/day × 1 write = **100 writes/day**
+- Total: ~3,000 reads/day, ~350 writes/day — well under free tier limits (50K reads, 20K writes)
 
 ---
 
@@ -647,3 +688,52 @@ function NetworkStatusBanner({ state }: { state: 'connected' | 'offline' | 'sync
 ```
 
 **Critical UX principle:** Users must always know sync state. Showing "Syncing..." during writes builds trust, even if sync is fast.
+
+---
+
+## Flow 7 / F9 — Profile Picture Management
+
+### Summary
+
+Flow 7 adds the ability for users to set a custom profile photo from the Settings screen. Tapping "Edit" opens an action sheet with camera and photo library options. The selected image is uploaded to Supabase Storage and the URL is written back to the `profiles` table.
+
+---
+
+### Decisions
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| D35 | Avatar Storage Backend | **Supabase Storage (`user-avatars` bucket)** | The product spec draft referenced Firebase Storage, but the actual implementation uses Supabase Storage to keep all user data in one platform (consistent with D6). Firebase Storage would require a separate SDK, separate auth token, and additional bundle weight. Supabase Storage is already initialized and available. The `user-avatars` bucket is public-read, private-write (enforced by RLS on the bucket). |
+| D36 | Avatar Storage Path | **`{userId}/avatar.{ext}`** | Deterministic path per user — no timestamped filenames. Every upload overwrites the previous file. Pros: simple, no orphan files accumulating, no cleanup job needed. Con: requires cache-busting since the URL stays the same. Handled by D37. |
+| D37 | Avatar URL Cache-Busting | **Append `?v={Date.now()}` after upload** | Supabase Storage URLs are deterministic (same path = same URL). Without cache-busting, browsers serve the old image from cache even after a new one is uploaded. Appending `?v={Date.now()}` forces a fresh fetch. This is stored in the `profiles.avatar_url` column and in component state. Simple, zero infrastructure cost. Alternative (random UUID in path) would cause unbounded storage growth. |
+| D38 | Avatar DB Write | **`updateProfile(userId, { avatar_url })` after storage upload** | The `profiles` table holds the canonical avatar URL. Writing it to the DB means it survives page refreshes and is available on all devices. Upload-then-write order: storage upload succeeds first, then DB is updated. If DB write fails, the image exists in storage but the profile won't show it — acceptable failure mode (user can retry). |
+| D39 | Photo Source Selection UX | **Action sheet (bottom sheet overlay)** | iOS-native convention: tapping a photo triggers an action sheet with "Take a Photo", "Choose from Photo Library", "Cancel". Implemented as a custom overlay (`fixed inset-0` backdrop + `fixed bottom-0` panel) rather than a native `<dialog>` or third-party modal library. Keeps dependencies minimal. Matches the Figma design at node 13-2. |
+| D40 | Camera vs. Library on Web | **`capture="user"` attribute on `<input type="file">`** | Web has no separate camera API. Setting `capture="user"` on a hidden file input hints mobile browsers to open the front-facing camera directly. Removing the attribute opens the standard file picker (which includes photo library access on mobile). The action sheet swaps the attribute before programmatically triggering the input's `.click()`. Works on iOS Safari and Android Chrome. Desktop browsers fall back to file picker for both options — acceptable since desktop camera use is rare. |
+| D41 | File Validation | **5MB max, client-side before upload** | Checked in `handleFileSelected()` before any network call. JPEG, PNG, HEIC, HEIF accepted (matching mobile camera output formats). Oversized files get a toast error and the upload is aborted. No server-side size enforcement in v1 — Supabase Storage enforces limits at the bucket level as a backstop. |
+| D42 | Upload Spinner | **Overlay on avatar image during upload** | A semi-transparent spinner overlays the current avatar while the new image is uploading. This is optimistic UI without premature optimism — we show progress but don't swap the image until upload succeeds. Prevents double-taps and gives clear feedback on a potentially slow mobile upload. |
+| D43 | `avatarUrl` State Location | **App.tsx** (top-level, passed down via props) | The avatar URL needs to be accessible in both Settings (where it's edited) and Dashboard (where it may be displayed in future). Storing it in App.tsx alongside `user` and `profile` state keeps it consistent with the existing pattern (D13). Seeded from `profile.avatar_url` on initial load. Cleared to `null` on sign out. Updated via `onAvatarUpdate` callback prop passed to Settings. |
+| D44 | `onAvatarUpdate` Callback Pattern | **Prop callback from App.tsx → Settings.tsx** | After a successful upload, Settings calls `onAvatarUpdate(newUrl)` to update App.tsx state. This is the same prop-drilling pattern used throughout the app (D13 — no global state manager). Avoids re-fetching the full profile from Supabase after every upload. The new URL is immediately reflected in the UI without a round-trip. |
+
+---
+
+### Implementation Notes
+
+**Service function added** (`src/lib/services/auth.ts`):
+```typescript
+export async function uploadUserAvatar(userId: string, file: File): Promise<string> {
+  const fileExt = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+  const fileName = `${userId}/avatar.${fileExt}`;
+  const { error: uploadError } = await supabase.storage
+    .from('user-avatars')
+    .upload(fileName, file, { upsert: true });
+  if (uploadError) throw uploadError;
+  const { data: { publicUrl } } = supabase.storage
+    .from('user-avatars')
+    .getPublicUrl(fileName);
+  return `${publicUrl}?v=${Date.now()}`;
+}
+```
+
+**Supabase bucket setup required:** A public `user-avatars` bucket must exist in Supabase Storage. Created manually in the Supabase dashboard (Storage → New bucket → `user-avatars` → Public). Not scripted in v1 — document in the README and onboarding checklist.
+
+**iOS future note:** The action sheet UX maps directly to `UIImagePickerController` (camera) and `PHPickerViewController` (library) on iOS. The web `capture="user"` hint is the closest web equivalent. The service layer (`uploadUserAvatar`) will be re-implemented in Swift using the Supabase Swift SDK with the same storage bucket and path convention.

@@ -1,12 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, Users, Share2, Copy, Check, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
 import { createInvite, getPuppyInvites, revokeInvite, getInviteUrl } from "../../lib/services/invites";
+import { uploadUserAvatar, updateProfile } from "../../lib/services/auth";
 import type { Invite } from "../../lib/database.types";
 
 interface SettingsProps {
   accountData: { name: string; email: string };
+  avatarUrl: string | null;
   puppyProfile: {
     name: string;
     breed: string;
@@ -20,14 +22,18 @@ interface SettingsProps {
   userId: string;
   onBack: () => void;
   onSignOut: () => void;
+  onAvatarUpdate: (newUrl: string) => void;
 }
 
-export function Settings({ accountData, puppyProfile, puppyId, userId, onBack, onSignOut }: SettingsProps) {
+export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
   const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile">("main");
   const [invites, setInvites] = useState<Invite[]>([]);
   const [inviteLink, setInviteLink] = useState("");
   const [copied, setCopied] = useState(false);
   const [generatingInvite, setGeneratingInvite] = useState(false);
+  const [showPhotoSheet, setShowPhotoSheet] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load invites on mount
   useEffect(() => {
@@ -68,6 +74,34 @@ export function Settings({ accountData, puppyProfile, puppyId, userId, onBack, o
       toast.success("Invite revoked");
     } catch (err) {
       console.error("Error revoking invite:", err);
+    }
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset input so the same file can be re-selected if needed
+    e.target.value = "";
+
+    const maxBytes = 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      toast.error("Photo must be under 5MB. Please choose a smaller image.");
+      return;
+    }
+
+    setShowPhotoSheet(false);
+    setUploadingAvatar(true);
+    try {
+      const newUrl = await uploadUserAvatar(userId, file);
+      await updateProfile(userId, { avatar_url: newUrl });
+      onAvatarUpdate(newUrl);
+      toast.success("Profile photo updated");
+    } catch (err) {
+      console.error("Avatar upload failed:", err);
+      toast.error("Couldn't update photo. Please try again.");
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
@@ -264,6 +298,62 @@ export function Settings({ accountData, puppyProfile, puppyId, userId, onBack, o
   // Main settings screen
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">
+      {/* Hidden file input — triggered programmatically from action sheet */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/heic,image/heif"
+        className="hidden"
+        onChange={handleFileSelected}
+      />
+
+      {/* Photo source action sheet */}
+      {showPhotoSheet && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center"
+          style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}
+          onClick={() => setShowPhotoSheet(false)}
+        >
+          <div
+            className="w-full max-w-[390px] bg-card rounded-t-2xl pb-8 pt-2 px-4 space-y-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-10 h-1 rounded-full bg-muted-foreground/30 mx-auto mb-4" />
+            <p className="text-center font-semibold text-foreground mb-3">Change Profile Photo</p>
+            <button
+              className="w-full h-12 rounded-xl bg-accent text-foreground font-medium hover:opacity-80 transition-opacity"
+              onClick={() => {
+                // Web doesn't have a native camera picker separate from file input,
+                // so we use capture="user" to hint the camera on mobile.
+                if (fileInputRef.current) {
+                  fileInputRef.current.setAttribute("capture", "user");
+                  fileInputRef.current.click();
+                }
+              }}
+            >
+              Take a Photo
+            </button>
+            <button
+              className="w-full h-12 rounded-xl bg-accent text-foreground font-medium hover:opacity-80 transition-opacity"
+              onClick={() => {
+                if (fileInputRef.current) {
+                  fileInputRef.current.removeAttribute("capture");
+                  fileInputRef.current.click();
+                }
+              }}
+            >
+              Choose from Photo Library
+            </button>
+            <button
+              className="w-full h-12 rounded-xl text-destructive font-medium hover:opacity-80 transition-opacity"
+              onClick={() => setShowPhotoSheet(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="w-[390px] h-screen bg-background flex flex-col" style={{ paddingTop: '48px', paddingBottom: '34px' }}>
         {/* Header */}
         <div className="px-5 pb-4 flex items-center gap-3">
@@ -283,15 +373,47 @@ export function Settings({ accountData, puppyProfile, puppyId, userId, onBack, o
             <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">Account</h3>
             <div className="bg-card rounded-2xl overflow-hidden" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
               <div className="p-4 flex items-center justify-between gap-4">
-                <div className="flex-1">
+                {/* Left: user info */}
+                <div className="flex-1 min-w-0">
                   <p className="text-sm text-muted-foreground">Signed in as</p>
                   <p className="font-medium text-foreground">{accountData.name}</p>
-                  <p className="text-sm text-muted-foreground">{accountData.email}</p>
+                  <p className="text-sm text-muted-foreground truncate">{accountData.email}</p>
                 </div>
-                <div className="w-20 h-20 rounded-full bg-accent flex items-center justify-center text-3xl flex-shrink-0"
-                  style={{ border: '2px solid #E8E4E1' }}
-                >
-                  {accountData.name?.charAt(0)?.toUpperCase() || '👤'}
+                {/* Right: avatar + Edit button */}
+                <div className="flex flex-col items-center gap-2 flex-shrink-0">
+                  {/* Avatar */}
+                  <div
+                    className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center bg-accent flex-shrink-0 relative"
+                    style={{ border: '2px solid #E8E4E1' }}
+                  >
+                    {uploadingAvatar ? (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-full">
+                        <svg className="animate-spin size-6 text-white" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                      </div>
+                    ) : null}
+                    {avatarUrl ? (
+                      <img
+                        src={avatarUrl}
+                        alt={accountData.name}
+                        className="w-full h-full object-cover rounded-full"
+                      />
+                    ) : (
+                      <span className="text-3xl font-semibold text-foreground">
+                        {accountData.name?.charAt(0)?.toUpperCase() || '👤'}
+                      </span>
+                    )}
+                  </div>
+                  {/* Edit button */}
+                  <button
+                    onClick={() => setShowPhotoSheet(true)}
+                    disabled={uploadingAvatar}
+                    className="text-xs font-semibold text-primary hover:opacity-70 transition-opacity disabled:opacity-40"
+                  >
+                    {uploadingAvatar ? "Updating..." : "Edit"}
+                  </button>
                 </div>
               </div>
             </div>

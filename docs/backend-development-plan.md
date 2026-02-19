@@ -1529,135 +1529,96 @@ export async function completeTask(taskId: string): Promise<void> {
 
 ---
 
-#### Step 5: Expandable Task Card Component
-**Duration:** 4 hours
+#### Step 5: Display-Only Task Card Component
+**Duration:** 2 hours
+**Updated:** 2026-02-18 (D45 — removed inline expansion, now display-only with `onEdit` callback)
 
 Create `src/app/components/TaskCard.tsx`:
 
 ```tsx
-import { useState } from 'react';
-import { Task, editTask } from '../../lib/services/tasks';
-import { format } from 'date-fns';
+import { CheckCircle2, Circle } from 'lucide-react';
+import { Task } from '../../lib/services/tasks';
 
-const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty Break' },
-  { value: 'meal', label: 'Meal' },
-  { value: 'training', label: 'Training' },
-  { value: 'nap', label: 'Nap' },
-  { value: 'calm_time', label: 'Calm Time' },
-  { value: 'play_time', label: 'Play Time' },
-  { value: 'walk', label: 'Walk' },
-];
-
-export function TaskCard({ task }: { task: Task }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [editedTime, setEditedTime] = useState(
-    format(task.actualTime.toDate(), 'HH:mm')
-  );
-  const [editedActivity, setEditedActivity] = useState(task.activityType);
-  const [isSaving, setIsSaving] = useState(false);
-
-  const handleSave = async () => {
-    setIsSaving(true);
-    try {
-      const [hours, minutes] = editedTime.split(':').map(Number);
-      const newTime = new Date();
-      newTime.setHours(hours, minutes, 0, 0);
-
-      await editTask(task.id, {
-        actualTime: newTime,
-        activityType: editedActivity,
-      });
-
-      setIsExpanded(false);
-    } catch (error) {
-      console.error('Failed to save task:', error);
-      alert('Failed to save changes. Please try again.');
-    } finally {
-      setIsSaving(false);
-    }
+// Category dot colors matching the Dashboard's CATEGORY_COLORS
+function getCategoryColor(activityType: string): string {
+  const colors: Record<string, string> = {
+    potty_break: '#4A9B5E',
+    meal: '#E8722A',
+    training: '#8B6FC0',
+    nap: '#8B7355',
+    calm_time: '#8B7355',
+    play_time: '#5B8FD4',
+    walk: '#5B8FD4',
   };
+  return colors[activityType] || '#8B7355';
+}
 
-  const handleCancel = () => {
-    // Reset to current values
-    setEditedTime(format(task.actualTime.toDate(), 'HH:mm'));
-    setEditedActivity(task.activityType);
-    setIsExpanded(false);
-  };
+// Format time to 12-hour display
+function formatDisplayTime(date: Date): string {
+  const hour = date.getHours();
+  const minute = date.getMinutes();
+  const period = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  return `${displayHour}:${minute.toString().padStart(2, "0")} ${period}`;
+}
 
-  if (!isExpanded) {
-    return (
-      <div
-        onClick={() => setIsExpanded(true)}
-        className="flex items-center gap-4 p-4 bg-white border rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-      >
-        <input
-          type="checkbox"
-          checked={task.isCompleted}
-          onClick={(e) => e.stopPropagation()}
-          className="w-5 h-5"
-        />
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">
-              {format(task.actualTime.toDate(), 'h:mm a')}
-            </span>
-            <span>{task.title}</span>
-            {task.isEdited && <span className="text-gray-400">✏️</span>}
-          </div>
-        </div>
-      </div>
-    );
-  }
+interface TaskCardProps {
+  task: Task;
+  /** Called when the user taps the card (opens edit bottom sheet). */
+  onEdit?: (task: Task) => void;
+}
+
+export function TaskCard({ task, onEdit }: TaskCardProps) {
+  const categoryColor = getCategoryColor(task.activityType);
+  const taskDate = task.actualTime.toDate();
 
   return (
-    <div className="p-4 bg-white border-2 border-blue-500 rounded-lg">
-      <h3 className="font-semibold mb-4">{task.title}</h3>
-
-      <div className="space-y-4">
-        {/* Time Picker */}
-        <div>
-          <label className="block text-sm font-medium mb-1">Time</label>
-          <input
-            type="time"
-            value={editedTime}
-            onChange={(e) => setEditedTime(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg"
-          />
+    <div
+      onClick={() => onEdit?.(task)}
+      className={`
+        bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
+        ${task.isCompleted ? 'opacity-60' : ''}
+      `}
+      style={{
+        backgroundColor: '#FFFFFF',
+        boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)'
+      }}
+    >
+      {/* Time on LEFT */}
+      <div className="flex-shrink-0 pt-0.5">
+        <div className="text-sm font-bold text-foreground w-14 text-left">
+          {formatDisplayTime(taskDate)}
         </div>
+      </div>
 
-        {/* Activity Type Dropdown */}
-        <div>
-          <label className="block text-sm font-medium mb-1">Activity Type</label>
-          <select
-            value={editedActivity}
-            onChange={(e) => setEditedActivity(e.target.value as Task['activityType'])}
-            className="w-full px-3 py-2 border rounded-lg"
-          >
-            {ACTIVITY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
+      {/* Activity Content in MIDDLE */}
+      <div className="flex-1 text-left">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <div
+                className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
+                style={{ backgroundColor: categoryColor }}
+              />
+              <h3 className={`font-medium text-base text-foreground ${task.isCompleted ? 'line-through' : ''}`}>
+                {task.title}
+              </h3>
+            </div>
+            <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
+              {task.activityType.replace(/_/g, ' ')}
+              {task.isEdited && ' · edited'}
+              {task.isUserAdded && ' · custom'}
+            </p>
+          </div>
 
-        {/* Buttons */}
-        <div className="flex gap-2 justify-end">
-          <button
-            onClick={handleCancel}
-            disabled={isSaving}
-            className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-          >
-            {isSaving ? 'Saving...' : 'Save Changes'}
-          </button>
+          {/* Status Icon on RIGHT */}
+          <div className="flex-shrink-0 pt-0.5">
+            {task.isCompleted ? (
+              <CheckCircle2 className="size-6 text-secondary" />
+            ) : (
+              <Circle className="size-6 text-border" />
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1665,7 +1626,9 @@ export function TaskCard({ task }: { task: Task }) {
 }
 ```
 
-**Deliverable:** Expandable task card with inline editing
+**Key change (D45):** TaskCard is now a pure display component with zero local state. Tapping calls `onEdit(task)` which the parent (Dashboard) uses to open the AddTaskFAB bottom sheet in edit mode. All inline expansion, time picker, activity dropdown, save/cancel buttons have been removed.
+
+**Deliverable:** Display-only task card with `onEdit` callback
 
 **Unblocks:** Step 6 (swipe-to-delete)
 
@@ -1673,6 +1636,7 @@ export function TaskCard({ task }: { task: Task }) {
 
 #### Step 6: Swipe-to-Delete Gesture
 **Duration:** 2 hours
+**Updated:** 2026-02-18 (D45 — added `onEdit` prop passthrough to TaskCard)
 
 **Install dependency:**
 ```bash
@@ -1684,34 +1648,41 @@ Create `src/app/components/SwipeableTaskCard.tsx`:
 ```tsx
 import { useSwipeable } from 'react-swipeable';
 import { useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { Task, deleteTask } from '../../lib/services/tasks';
 import { TaskCard } from './TaskCard';
 
-export function SwipeableTaskCard({ task }: { task: Task }) {
+interface SwipeableTaskCardProps {
+  task: Task;
+  /** Called when the user taps the card (opens edit bottom sheet). */
+  onEdit?: (task: Task) => void;
+}
+
+/**
+ * Wraps a custom task card with swipe-to-delete.
+ * Swiping left reveals a circular trash icon button to the right of the card.
+ * Tapping the trash icon immediately deletes the task (no confirmation).
+ */
+export function SwipeableTaskCard({ task, onEdit }: SwipeableTaskCardProps) {
   const [swipeOffset, setSwipeOffset] = useState(0);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const handlers = useSwipeable({
     onSwiping: (eventData) => {
       if (eventData.dir === 'Left' && eventData.deltaX < 0) {
-        setSwipeOffset(Math.max(eventData.deltaX, -100));
+        setSwipeOffset(Math.max(eventData.deltaX, -80));
       }
     },
     onSwiped: (eventData) => {
       if (eventData.dir === 'Left' && Math.abs(eventData.deltaX) > 60) {
-        setSwipeOffset(-100); // Reveal delete button
+        setSwipeOffset(-80);
       } else {
-        setSwipeOffset(0); // Reset
+        setSwipeOffset(0);
       }
     },
-    trackMouse: true, // Enable mouse drag for desktop
+    trackMouse: true,
   });
 
-  const handleDelete = () => {
-    setShowDeleteConfirm(true);
-  };
-
-  const confirmDelete = async () => {
+  const handleDelete = async () => {
     try {
       await deleteTask(task.id);
     } catch (error) {
@@ -1721,182 +1692,230 @@ export function SwipeableTaskCard({ task }: { task: Task }) {
   };
 
   return (
-    <>
-      <div className="relative overflow-hidden">
-        {/* Delete button (revealed on swipe) */}
-        <div className="absolute right-0 top-0 h-full w-24 bg-red-500 flex items-center justify-center">
-          <button
-            onClick={handleDelete}
-            className="text-white font-medium"
-          >
-            Delete
-          </button>
-        </div>
-
-        {/* Task card (swipeable) */}
-        <div
-          {...handlers}
-          style={{
-            transform: `translateX(${swipeOffset}px)`,
-            transition: swipeOffset === 0 ? 'transform 0.3s ease-out' : 'none',
-          }}
-          className="relative z-10 bg-white"
+    <div className="relative flex items-center">
+      {/* Circular delete button — positioned to the right, vertically centered */}
+      <div
+        className="absolute right-0 flex items-center justify-center"
+        style={{
+          opacity: swipeOffset < 0 ? Math.min(1, Math.abs(swipeOffset) / 60) : 0,
+          transform: `scale(${swipeOffset < 0 ? Math.min(1, Math.abs(swipeOffset) / 60) : 0})`,
+          transition: swipeOffset === 0 ? 'all 0.3s ease-out' : 'none',
+        }}
+      >
+        <button
+          onClick={handleDelete}
+          className="w-14 h-14 rounded-full bg-destructive flex items-center justify-center shadow-lg active:scale-95 transition-transform"
+          style={{ boxShadow: '0 2px 8px rgba(212, 87, 78, 0.3)' }}
         >
-          <TaskCard task={task} />
-        </div>
+          <Trash2 className="size-5 text-destructive-foreground" />
+        </button>
       </div>
 
-      {/* Delete confirmation modal */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
-            <h3 className="text-lg font-semibold mb-2">Delete Task?</h3>
-            <p className="text-gray-600 mb-4">
-              Are you sure you want to delete this task? This action cannot be undone.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={confirmDelete}
-                className="px-4 py-2 text-white bg-red-600 rounded-lg"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+      {/* Task card (swipeable) */}
+      <div
+        {...handlers}
+        style={{
+          transform: `translateX(${swipeOffset}px)`,
+          transition: swipeOffset === 0 ? 'transform 0.3s ease-out' : 'none',
+        }}
+        className="relative z-10 w-full"
+      >
+        <TaskCard task={task} onEdit={onEdit} />
+      </div>
+    </div>
   );
 }
 ```
 
-**Deliverable:** Swipe-to-delete with confirmation modal
+**Key change (D45):** Added `onEdit` prop to interface, passed through to `<TaskCard onEdit={onEdit} />`. Also simplified delete to immediate (no confirmation modal) with circular trash icon instead of text button.
+
+**Deliverable:** Swipe-to-delete with `onEdit` passthrough
 
 **Unblocks:** Step 7 (FAB button)
 
 ---
 
-#### Step 7: Floating Action Button (Add Task)
-**Duration:** 2 hours
+#### Step 7: Floating Action Button — Dual-Mode Bottom Sheet (Add / Edit)
+**Duration:** 3 hours
+**Updated:** 2026-02-18 (D45 — dual-mode: add new task + edit existing task via same bottom sheet)
 
 Create `src/app/components/AddTaskFAB.tsx`:
 
 ```tsx
-import { useState } from 'react';
-import { addTask } from '../../lib/services/tasks';
+import { useState, useEffect } from 'react';
+import { Plus } from 'lucide-react';
+import { addTask, editTask, Task } from '../../lib/services/tasks';
+import { format } from 'date-fns';
 
 const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty Break' },
-  { value: 'meal', label: 'Meal' },
-  { value: 'training', label: 'Training' },
-  { value: 'nap', label: 'Nap' },
-  { value: 'calm_time', label: 'Calm Time' },
-  { value: 'play_time', label: 'Play Time' },
-  { value: 'walk', label: 'Walk' },
+  { value: 'potty_break', label: 'Potty Break', emoji: '🚽' },
+  { value: 'meal', label: 'Meal', emoji: '🍽️' },
+  { value: 'training', label: 'Training', emoji: '🎓' },
+  { value: 'nap', label: 'Nap', emoji: '😴' },
+  { value: 'calm_time', label: 'Calm Time', emoji: '🧘' },
+  { value: 'play_time', label: 'Play Time', emoji: '🎾' },
+  { value: 'walk', label: 'Walk', emoji: '🚶' },
 ];
 
-export function AddTaskFAB({ puppyId }: { puppyId: string }) {
+interface AddTaskFABProps {
+  puppyId: string;
+  /** When set, the bottom sheet opens in "Edit Task" mode pre-populated with this task's data. */
+  editingTask?: Task | null;
+  /** Called when the edit sheet closes (save or cancel) so the parent can clear editingTask. */
+  onEditDone?: () => void;
+}
+
+export function AddTaskFAB({ puppyId, editingTask, onEditDone }: AddTaskFABProps) {
   const [showModal, setShowModal] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState('');
   const [selectedTime, setSelectedTime] = useState(
-    new Date().toTimeString().slice(0, 5) // HH:MM
+    new Date().toTimeString().slice(0, 5)
   );
-  const [isAdding, setIsAdding] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const handleAdd = async () => {
+  const isEditMode = !!editingTask;
+
+  // Open the sheet and pre-populate when editingTask is set
+  useEffect(() => {
+    if (editingTask) {
+      setSelectedActivity(editingTask.activityType);
+      setSelectedTime(format(editingTask.actualTime.toDate(), 'HH:mm'));
+      setShowModal(true);
+    }
+  }, [editingTask]);
+
+  const resetAndClose = () => {
+    setSelectedActivity('');
+    setSelectedTime(new Date().toTimeString().slice(0, 5));
+    setShowModal(false);
+    onEditDone?.();
+  };
+
+  const handleSubmit = async () => {
     if (!selectedActivity) return;
 
-    setIsAdding(true);
+    setIsSaving(true);
     try {
       const [hours, minutes] = selectedTime.split(':').map(Number);
       const time = new Date();
       time.setHours(hours, minutes, 0, 0);
 
-      const activityLabel = ACTIVITY_OPTIONS.find(
-        (opt) => opt.value === selectedActivity
-      )?.label || selectedActivity;
+      if (isEditMode && editingTask) {
+        // Edit mode: update existing task (including title)
+        const activityLabel = ACTIVITY_OPTIONS.find(
+          (opt) => opt.value === selectedActivity
+        )?.label || selectedActivity;
 
-      await addTask(puppyId, selectedActivity as any, time, activityLabel);
+        await editTask(editingTask.id, {
+          actualTime: time,
+          activityType: selectedActivity as Task['activityType'],
+          title: activityLabel,
+        });
+      } else {
+        // Add mode: create new task
+        const activityLabel = ACTIVITY_OPTIONS.find(
+          (opt) => opt.value === selectedActivity
+        )?.label || selectedActivity;
 
-      // Reset form
-      setSelectedActivity('');
-      setSelectedTime(new Date().toTimeString().slice(0, 5));
-      setShowModal(false);
+        await addTask(puppyId, selectedActivity as any, time, activityLabel);
+      }
+
+      resetAndClose();
     } catch (error) {
-      console.error('Failed to add task:', error);
-      alert('Failed to add task. Please try again.');
+      console.error(isEditMode ? 'Failed to edit task:' : 'Failed to add task:', error);
+      alert(isEditMode ? 'Failed to save changes. Please try again.' : 'Failed to add task. Please try again.');
     } finally {
-      setIsAdding(false);
+      setIsSaving(false);
     }
+  };
+
+  // When opening via FAB (not edit mode), reset fields to defaults
+  const handleFABClick = () => {
+    setSelectedActivity('');
+    setSelectedTime(new Date().toTimeString().slice(0, 5));
+    setShowModal(true);
   };
 
   return (
     <>
       {/* FAB Button */}
       <button
-        onClick={() => setShowModal(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-blue-700 transition-colors z-40"
+        onClick={handleFABClick}
+        className="fixed bottom-10 right-6 w-14 h-14 bg-primary text-primary-foreground rounded-full flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all z-40"
+        style={{ boxShadow: '0 4px 16px rgba(232, 114, 42, 0.35)' }}
         aria-label="Add new task"
       >
-        +
+        <Plus className="size-6" strokeWidth={2.5} />
       </button>
 
-      {/* Add Task Modal */}
+      {/* Bottom Sheet (dual-mode: Add / Edit) */}
       {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-sm w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Add New Task</h3>
+        <div
+          className="fixed inset-0 bg-black/50 z-50 flex items-end"
+          onClick={resetAndClose}
+        >
+          <div
+            className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto"
+            style={{ boxShadow: '0 -4px 24px rgba(45, 27, 14, 0.15)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4" />
+
+            <h3 className="text-xl font-bold text-foreground mb-5">
+              {isEditMode ? 'Edit Task' : 'Add Custom Task'}
+            </h3>
 
             <div className="space-y-4">
               {/* Time Picker */}
               <div>
-                <label className="block text-sm font-medium mb-1">Time</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Time</label>
                 <input
                   type="time"
                   value={selectedTime}
                   onChange={(e) => setSelectedTime(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg"
+                  className="w-full px-3 py-2.5 bg-accent border border-border rounded-xl text-foreground text-sm"
                 />
               </div>
 
-              {/* Activity Type Dropdown */}
+              {/* Activity Type Grid (2-column emoji-labeled buttons) */}
               <div>
-                <label className="block text-sm font-medium mb-1">Activity Type</label>
-                <select
-                  value={selectedActivity}
-                  onChange={(e) => setSelectedActivity(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg"
-                >
-                  <option value="">Select activity</option>
+                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Activity Type</label>
+                <div className="grid grid-cols-2 gap-2">
                   {ACTIVITY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
+                    <button
+                      key={option.value}
+                      onClick={() => setSelectedActivity(option.value)}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
+                        selectedActivity === option.value
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-accent text-foreground hover:bg-accent/80'
+                      }`}
+                    >
+                      <span>{option.emoji}</span>
+                      <span>{option.label}</span>
+                    </button>
                   ))}
-                </select>
+                </div>
               </div>
 
               {/* Buttons */}
-              <div className="flex gap-2 justify-end">
+              <div className="flex gap-3 pt-2">
                 <button
-                  onClick={() => setShowModal(false)}
-                  disabled={isAdding}
-                  className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg"
+                  onClick={resetAndClose}
+                  disabled={isSaving}
+                  className="flex-1 py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleAdd}
-                  disabled={!selectedActivity || isAdding}
-                  className="px-4 py-2 text-white bg-blue-600 rounded-lg disabled:bg-gray-300"
+                  onClick={handleSubmit}
+                  disabled={!selectedActivity || isSaving}
+                  className="flex-1 py-3 px-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-40 transition-all"
                 >
-                  {isAdding ? 'Adding...' : 'Add Task'}
+                  {isSaving
+                    ? (isEditMode ? 'Saving...' : 'Adding...')
+                    : (isEditMode ? 'Save Changes' : 'Add Task')
+                  }
                 </button>
               </div>
             </div>
@@ -1908,7 +1927,27 @@ export function AddTaskFAB({ puppyId }: { puppyId: string }) {
 }
 ```
 
-**Deliverable:** FAB button with add task modal
+**Key change (D45):** AddTaskFAB is now dual-mode. When `editingTask` is provided, the bottom sheet opens pre-populated with the task's current time and activity type, title reads "Edit Task", button reads "Save Changes", and it calls `editTask()` instead of `addTask()`. The `onEditDone` callback lets Dashboard clear the editing state on save or cancel.
+
+**Dashboard wiring (in Dashboard.tsx):**
+```tsx
+const [editingTask, setEditingTask] = useState<Task | null>(null);
+
+// In task list rendering:
+<SwipeableTaskCard
+  task={entry.task}
+  onEdit={(task) => setEditingTask(task)}
+/>
+
+// At component root:
+<AddTaskFAB
+  puppyId={puppyId}
+  editingTask={editingTask}
+  onEditDone={() => setEditingTask(null)}
+/>
+```
+
+**Deliverable:** Dual-mode FAB + bottom sheet (add and edit)
 
 **Unblocks:** Step 8 (network status banner)
 
@@ -2511,6 +2550,111 @@ Step 6: End-to-end test
 **P2 Improvements:**
 - CDN cache invalidation strategy (current `?v=timestamp` approach works but bypasses CDN — use Supabase Storage transform API for proper cache control)
 - Profile picture propagation via Firestore Custom Claims update (so task completion indicators in the Firestore-backed task list also refresh without a page reload)
+
+---
+
+## 19. D45: Custom Task Edit UX — Backend Assessment
+
+**Added:** 2026-02-18
+**Decision Reference:** D45 (decisions-log.md)
+**Priority:** P0 (Launch Blocker — frontend already implemented)
+**Complexity:** Minimal (one service function update + frontend wiring fix)
+
+---
+
+### 19.1 Overview
+
+**Change:** Tapping a custom (user-added) task now opens the "Add Custom Task" bottom sheet in edit mode (pre-populated with the task's current time and activity type) instead of showing an inline expandable card. The frontend implementation is complete (D45). This section assesses backend changes needed.
+
+**Frontend Components Updated (already shipped):**
+- `AddTaskFAB.tsx` — Dual-mode bottom sheet (add/edit) via `editingTask` and `onEditDone` props
+- `TaskCard.tsx` — Simplified to display-only (removed all inline expansion state and edit logic)
+- `SwipeableTaskCard.tsx` — Added `onEdit` prop passthrough to TaskCard
+- `Dashboard.tsx` — Added `editingTask` state, wires TaskCard → AddTaskFAB
+
+---
+
+### 19.2 Backend Assessment
+
+#### Firestore Security Rules: No Changes Needed
+
+The existing `firestore.rules` already permit task updates by authenticated users with puppy access:
+
+```javascript
+// Update: User must have access
+allow update: if hasPuppyAccess(resource.data.puppyId)
+  && request.resource.data.lastEditedBy == request.auth.uid
+  && request.resource.data.lastEditedAt == request.time;
+```
+
+The update rule validates:
+1. User has puppy access via Custom Claims (`hasPuppyAccess`)
+2. `lastEditedBy` matches the authenticated user
+3. `lastEditedAt` matches `request.time` (server timestamp)
+
+These rules apply identically whether the edit originates from an inline card or a bottom sheet — the Firestore document update is the same `updateDoc()` call. **No rule changes needed.**
+
+#### Data Model: No Changes Needed
+
+The `tasks` collection schema remains unchanged. The D45 change affects only the UI surface through which edits are triggered — the underlying Firestore document fields (`actualTime`, `activityType`, `isEdited`, `lastEditedBy`, `lastEditedAt`) are identical.
+
+#### Service Function: One Fix Required
+
+**Gap identified:** The existing `editTask()` function in `src/lib/services/tasks.ts` updates `actualTime` and `activityType` but does **not** update the `title` field. When a user changes the activity type in the edit bottom sheet (e.g., from "Potty Break" to "Walk"), the document's `title` field retains the old value ("Potty Break") while `activityType` changes to `walk`.
+
+This causes a display mismatch: TaskCard renders `task.title` as the primary label, so the card would show "Potty Break" with a "walk" activity type subtitle.
+
+**Fix:** Add `title` to the `editTask()` updates parameter and pass the derived title from `AddTaskFAB.tsx`.
+
+---
+
+### 19.3 Implementation Steps
+
+```
+Step 1: Update editTask() service function
+  File: src/lib/services/tasks.ts
+  Change: Add optional `title` field to the updates parameter
+  Verify: TypeScript compiles, existing editTask callers unaffected (title is optional)
+  Duration: 5 minutes
+  → Unblocks: Step 2
+
+Step 2: Update AddTaskFAB to pass title on edit
+  File: src/app/components/AddTaskFAB.tsx
+  Change: In handleSubmit() edit branch, derive title from ACTIVITY_OPTIONS
+          and pass it to editTask()
+  Verify: Edit a task, change activity type → title updates in Firestore
+  Duration: 5 minutes
+  → Unblocks: End-to-end verification
+
+Step 3: Verify (no deployment needed)
+  Firestore rules: unchanged, no deploy
+  Edge Functions: unchanged, no deploy
+  Database: unchanged, no migration
+  Test: Edit a custom task via bottom sheet → confirm title, time, activityType
+        all update correctly in Firestore
+```
+
+---
+
+### 19.4 Section 17 Code Samples — Updated for D45
+
+The code samples in Section 17 Steps 5, 6, and 7 have been updated in-place to reflect the D45 changes (display-only TaskCard, SwipeableTaskCard with `onEdit` prop, dual-mode AddTaskFAB). See those steps for current implementation reference.
+
+---
+
+### 19.5 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Firestore Security Rules | None | Already supports task updates |
+| Data Model (tasks collection) | None | Schema unchanged |
+| Firebase Custom Token Edge Function | None | Claims unchanged |
+| `editTask()` service function | Add `title` to updates | **Needs fix** |
+| `AddTaskFAB.tsx` (frontend) | Pass title in edit mode | **Needs fix** |
+| Supabase Edge Functions | None | Not involved in task CRUD |
+| Deployment | None required | All changes are client-side |
+
+**Bottom line:** The D45 UX change is almost entirely a frontend concern. The only backend-adjacent fix is adding `title` to the `editTask()` service function so that changing the activity type also updates the displayed task name. No Firestore rules, no migrations, no Edge Function changes, no deployment needed.
 
 ---
 

@@ -114,7 +114,8 @@
 - Activities auto-advance based on time (upcoming → in-progress → missed if not marked)
 - Profile picture attribution provides instant visual accountability (scan timeline to see who did what)
 - Pull-to-refresh updates the view
-- Tapping a task opens bottom sheet with details, guidance, and "Mark as Complete" button
+- Tapping the **status icon** (circle/avatar) on the right side of a task toggles completion (mark complete / undo)
+- Tapping the **task card body** (anywhere except the status icon) opens the "Edit Task" bottom sheet (same for all task types — AI-generated and custom). See F10 for full details.
 
 **Acceptance Criteria:**
 - Routine loads within 2 seconds
@@ -261,38 +262,102 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 ---
 
 #### F9: Profile Picture Management (Settings)
-**Priority: P1 (Needed Soon After Launch)**
+**Priority: P0 (Launch Blocker)**
 
-**Description:** Settings page feature that allows users to view and update their profile picture. Default is Google OAuth picture; users can upload custom images to override.
+**Description:** In-settings feature that allows users to view and update their profile picture via a dedicated [Edit] button below their avatar. Users can take a new photo with the device camera or choose one from their photo library. The updated photo immediately replaces their avatar everywhere it appears in the app — settings screen, and all completed task attribution indicators. Both primary owners and caretakers have full access; neither can edit another user's photo.
 
 **Behavior:**
-- Settings page includes "Profile Picture" section showing current profile picture
-- Current picture displays at 80×80px with label indicating source ("From Google Account" or "Custom")
-- "Change Picture" button opens file picker (accepts .jpg, .png, .gif, max 5MB)
-- After upload, image is cropped to square and resized to 200×200px
-- Preview shows immediately after upload, with "Save" and "Cancel" options
-- "Reset to Google Picture" option available if custom picture exists - restores Google OAuth default
-- Profile picture changes propagate to all existing task completions immediately
+
+**Entry Point — Settings Screen:**
+- Settings screen displays the user's current profile picture as a circular avatar (80px diameter) near the top
+- An [Edit] button appears directly below the avatar at all times (regardless of whether a custom photo is set)
+- If no custom photo is set: shows the Google OAuth profile picture pulled in at sign-up
+- If Google OAuth photo is unavailable: shows an initials avatar (first letter of first + last name on a colored circle)
+
+**[Edit] Tap — Action Sheet:**
+- Tapping [Edit] opens a native action sheet from the bottom of the screen with three options:
+  1. **"Take a Photo"** — opens the device camera (Flow 7C)
+  2. **"Choose from Photo Library"** — opens the native photo picker (Flow 7D)
+  3. **"Cancel"** — dismisses the sheet, no change
+
+**Camera Path ("Take a Photo"):**
+- iOS/Android system camera permission prompt appears on first use
+  - If denied: action sheet dismisses; alert shown: "Camera access is required to take a photo. Enable it in Settings > PupPlan > Camera." with [Open Settings] and [Cancel]
+  - If granted: native camera UI opens
+- User frames and taps shutter
+- Preview screen shows captured photo with a circular crop overlay
+  - [Retake] (top-left) returns to live camera view
+  - [Use Photo] (top-right) proceeds to upload (Flow 7E)
+
+**Photo Library Path ("Choose from Photo Library"):**
+- iOS/Android system photo permission prompt appears on first use
+  - If denied: action sheet dismisses; alert shown: "Photo library access is required to select a photo. Enable it in Settings > PupPlan > Photos." with [Open Settings] and [Cancel]
+  - If granted: native photo picker opens
+- User browses and selects a photo
+- Preview screen shows selected photo with:
+  - Circular crop overlay
+  - Pinch-to-zoom and drag-to-reposition crop controls
+  - [Cancel] (top-left): dismisses picker, returns to Settings
+  - [Choose] (top-right): proceeds to upload (Flow 7E)
+
+**Upload & Confirmation (Flow 7E):**
+- Settings screen returns to focus
+- Avatar area shows the new photo immediately with a loading spinner overlay ("Updating...")
+- Photo uploads to Firebase Storage (`users/{userId}/profile_photo.jpg`) in background
+- On success:
+  - Spinner clears, new photo displays in the avatar slot
+  - [Edit] button reappears below the updated avatar
+  - Toast notification: "Profile photo updated" (bottom of screen, auto-dismisses after 2 seconds)
+  - Photo propagates everywhere it is used within 1 second:
+    - Settings screen avatar
+    - All task completion attribution indicators (profile picture + green dot) in the daily routine
+    - Any other user's view that shows this user's completions
+- On failure:
+  - Spinner clears, previous photo is restored
+  - Toast notification: "Couldn't update photo. Please try again." (red, auto-dismisses after 3 seconds)
+  - No change is persisted
 
 **Acceptance Criteria:**
-- File picker accepts .jpg, .png, .gif formats only
-- File size validation: max 5MB, rejected with clear error if exceeded
-- Image crop interface allows user to adjust square crop before upload
-- Uploaded images stored in Supabase Storage
-- Save updates `User.custom_profile_picture_url` field
-- Reset clears custom URL, reverts to `google_profile_picture_url`
-- All task completions by this user update to show new picture within 1 second
-- Works offline: upload queued and synced when connectivity returns
+- [Edit] button is present below the avatar at all times on the Settings screen
+- Action sheet offers exactly three options: "Take a Photo", "Choose from Photo Library", "Cancel"
+- Camera permission denied → alert with deep link to app-specific system settings
+- Photo library permission denied → alert with deep link to app-specific system settings
+- Camera preview shows circular crop overlay with [Retake] and [Use Photo] controls
+- Photo library picker shows circular crop overlay with pinch-to-zoom, [Cancel], and [Choose] controls
+- Accepted formats: JPEG, PNG, HEIC (client-side validation before upload)
+- Max file size: 5MB (client-side validation; clear error if exceeded: "Photo must be under 5MB. Please choose a smaller image.")
+- Uploaded image is resized and stored at 400×400px
+- Firebase Storage path: `users/{userId}/profile_photo.jpg`
+- Firestore field `users/{userId}.profilePhotoUrl` is updated on upload success
+- Avatar in Settings updates to new photo within 1 second of upload success
+- All task completion indicators showing this user update to new photo within 1 second
+- Toast "Profile photo updated" appears and auto-dismisses after 2 seconds
+- On upload failure: previous photo restored, error toast displayed
+- Works for both primary owner and caretaker roles
+- A user cannot access or edit any other user's profile photo
+
+**Display Sizes:**
+- Settings screen avatar: 80px diameter (circular)
+- Task completion indicator: ~28px diameter (circular)
+
+**Technical Implementation Notes:**
+- Storage: Firebase Storage (`users/{userId}/profile_photo.jpg`)
+- Database: Firestore `users/{userId}.profilePhotoUrl` (string, updated on success)
+- Client-side image resize to 400×400 before upload (use `react-image-crop` or equivalent)
+- Cache-bust profile photo URL after upload (append `?v={timestamp}` to URL) to ensure stale cached images are replaced
+- Green dot overlay on task indicators is CSS-only; does not require re-rendering avatars after photo update
+- Propagation to task completion indicators: triggered by Firestore real-time listener on `users/{userId}.profilePhotoUrl`
 
 **UI Flow:**
-1. User taps Settings icon → Settings page
-2. Sees "Profile Picture" section with current picture
-3. Taps "Change Picture"
-4. File picker opens → user selects image
-5. Crop interface appears → user adjusts crop → taps "Save"
-6. Upload progress indicator
-7. Success message: "Profile picture updated"
-8. Returns to Settings, sees new picture
+1. User taps Settings icon → Settings screen
+2. Sees circular avatar (80px) with [Edit] button below it
+3. Taps [Edit] → action sheet appears
+4. Selects "Take a Photo" or "Choose from Photo Library"
+5. (If needed) Grants system permission
+6. Camera or photo picker opens → user captures or selects photo
+7. Preview with circular crop overlay → taps [Use Photo] or [Choose]
+8. Settings screen returns; avatar shows new photo with loading spinner
+9. Spinner clears → toast "Profile photo updated" → done
 
 ---
 
@@ -305,15 +370,29 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 
 **Core Capabilities:**
 
-**1. Edit Existing Task (Expandable Card Interface)**
-- **Trigger:** Tap anywhere on a task card (excluding checkbox/profile picture)
-- **Behavior:** Card expands inline with 200ms smooth animation, revealing:
-  - Time picker (defaults to current scheduled/actual time, 12-hour AM/PM format)
-  - Activity type dropdown (pre-defined options: Potty Break, Meal, Training, Nap, Calm Time, Play Time, Walk)
-  - "Save Changes" and "Cancel" buttons
-- **State preservation:** Editing a completed task does NOT uncheck it - completion status and profile picture remain
-- **Visual indicator:** After save, task shows pencil icon (✏️) to indicate it's been edited
+**1. Edit Any Task — Universal Bottom Sheet (AI-generated and Custom)**
+- **Trigger:** Tap anywhere on ANY task card body (excluding the completion status icon). This applies to both AI-generated routine tasks and custom (user-added) tasks.
+- **Behavior:** Opens the same bottom sheet modal used by the "Add New Task" FAB (section 3 below), pre-populated with the task's existing data:
+  - Title changes to "Edit Task" (instead of "Add Custom Task")
+  - Time picker pre-populated with task's current time (instead of defaulting to current time)
+  - Activity type grid shows task's current activity type as pre-selected/highlighted (instead of no selection)
+  - **Notes field** pre-populated with the task's description (see Notes field spec below)
+  - Primary button reads "Save Changes" (instead of "Add Task")
+  - Save updates the existing task in place (instead of creating a new one)
+- **Notes field (new):**
+  - Multiline text area positioned below the Activity Type grid
+  - Label: "Notes"
+  - Placeholder text: "Add a note..." (shown when field is empty)
+  - **AI-generated tasks:** Pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). User can edit, replace, or clear this text.
+  - **Custom tasks:** Empty unless the user previously saved a note on this task.
+  - Auto-grows up to 3 lines, then scrolls internally
+  - Max length: 200 characters
+  - Optional — saving with an empty Notes field is valid
+- **No inline card expansion:** Tasks do NOT use an expandable card interface. The bottom sheet provides a consistent, spacious editing experience with the same emoji-labeled activity grid.
+- **State preservation:** Editing a completed task does NOT uncheck it — completion status and profile picture remain
+- **Visual indicator:** Custom tasks always show the pencil icon (✏️). AI-generated tasks show ✏️ after being edited for the first time.
 - **Reordering:** If time is changed, task list automatically reorders chronologically with smooth animation
+- **Dismiss behavior:** Tapping "Cancel", tapping outside the sheet, or swiping down dismisses with no changes saved
 
 **2. Delete Task (Swipe-to-Delete with Confirmation)**
 - **Scope:** Applies to ALL task types on the dashboard — both AI-generated routine items and user-added custom tasks. Every task card in the timeline supports swipe-to-delete.
@@ -326,16 +405,18 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 
 **3. Add New Task (Floating Action Button)**
 - **UI element:** Circular FAB with "+" icon, positioned bottom-right (16px from edges, above safe area)
-- **Specs:** 56px diameter, primary blue background, white icon
+- **Specs:** 56px diameter, primary color background, white icon
 - **Trigger:** Tap FAB opens modal/bottom sheet
 - **Modal fields:**
   - Time picker (defaults to current time)
-  - Activity type dropdown (no default - user must select)
-  - "Add Task" button (disabled until activity selected, gray → blue when enabled)
+  - Activity type grid (2-column emoji-labeled buttons, no default — user must select)
+  - **Notes field** (multiline text area, empty by default, placeholder: "Add a note...", optional, max 200 chars)
+  - "Add Task" button (disabled until activity selected, gray → primary when enabled)
   - "Cancel" button
-- **Result:** New task inserts in chronological position with smooth animation
+- **Result:** New task inserts in chronological position with smooth animation. If notes were entered, they appear as subtitle text below the task title on the card.
 - **Visual indicator:** New task shows pencil icon (✏️) to distinguish from AI-generated tasks
 - **Validation:** Warning if time is >2 hours in past: "This was a while ago. Confirm?"
+- **Component reuse:** This same bottom sheet component is reused in "edit mode" when a user taps any existing task (see section 1 above). The component accepts an optional existing task prop that switches it between "Add Custom Task" and "Edit Task" modes (changing title, button label, pre-population, and save behavior).
 
 **4. Real-Time Multi-User Sync (Firebase Firestore)**
 - **Sync speed:** Changes appear on all users' devices within 3 seconds
@@ -349,9 +430,24 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
   - Failed: "❌ Couldn't sync changes. Check your connection. [Retry]" (red banner, persistent)
 
 **Acceptance Criteria:**
-- Expandable card animation is smooth (200ms, no jank on mid-range mobile devices)
-- Time picker and activity dropdown are touch-friendly (min 44px touch targets)
+- Tapping ANY task card body (AI-generated or custom) opens the "Edit Task" bottom sheet (not an inline expansion)
+- Tapping the status icon (circle/avatar) on the right side toggles completion — does NOT open the bottom sheet
+- Bottom sheet title reads "Edit Task", primary button reads "Save Changes"
+- Time picker is pre-populated with the task's current time
+- Activity type grid shows the task's current activity type as pre-selected
+- **Notes field is visible below the Activity Type grid in both Add and Edit modes**
+- **For AI-generated tasks: Notes field is pre-populated with the AI description text**
+- **For custom tasks: Notes field is empty unless user previously saved a note**
+- **Notes field placeholder reads "Add a note..." when empty**
+- **Notes field auto-grows up to 3 lines, then scrolls; max 200 characters**
+- **Saving with empty Notes field is valid (notes are optional)**
+- **Edited notes appear as subtitle text on the task card in the timeline**
+- Saving updates the existing task (does not create a new one)
+- Tapping "Cancel", tapping outside the sheet, or swiping down dismisses with no changes
+- The FAB "Add Custom Task" flow continues working exactly as before (no regression), now includes Notes field (empty by default)
+- Time picker, activity grid, and notes field are touch-friendly (min 44px touch targets)
 - Edited tasks show pencil icon (✏️) immediately after save
+- AI-generated tasks show ✏️ after first edit (not shown on unmodified AI tasks)
 - Completed tasks remain checked when edited (checkbox/profile picture persists)
 - Task list reorders chronologically without jarring jumps
 - Swipe-to-delete works with minimum 60px swipe, doesn't conflict with scroll
@@ -369,8 +465,9 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 - Works with 20+ tasks without performance degradation
 
 **Permissions:**
-- **Both primary owner AND caretaker** can edit, delete, and add tasks (equal permissions in v1)
-- Task edits/additions show attribution: "Last edited by [Name] at [Time]" in task detail view
+- **Both primary owner AND caretaker** can edit (including notes), delete, and add tasks (equal permissions in v1)
+- Both roles can edit AI-generated descriptions (notes) — changes sync to all users
+- Task edits/additions show attribution: "Last edited by [Name] at [Time]"
 
 **Visual States:**
 ```
@@ -395,7 +492,7 @@ User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
 **Out of Scope (v1):**
 - Multi-day task editing (only today's tasks editable)
 - Undo/redo functionality
-- Task notes/comments field
+- Rich text formatting in notes (plain text only, max 200 chars)
 - Task duration tracking
 - Recurring task templates
 - Bulk operations (select multiple to delete)
@@ -419,12 +516,13 @@ User-added, completed:     11:30 AM  [👤+🟢] Potty Break  ✏️
 | Multi-puppy support for a single owner | P1. Focus on the single-puppy experience first. |
 | Social features (sharing progress with friends) | P2. Not core to the pain point. |
 | Puppy photo/video journal | P2. Nice-to-have, not core. |
-| Animated profile pictures | GIFs allowed in upload but displayed as static first frame. Animation is P2. |
-| Profile picture galleries or avatar libraries | Must upload own image or use Google default. Pre-made avatars are P2. |
+| Animated profile pictures | GIFs not supported in v1. Static JPEG/PNG/HEIC only. Animation is P2. |
+| Profile picture galleries or avatar libraries | Must take or upload own image, or use Google default. Pre-made avatars are P2. |
+| Reset to Google profile picture | Reverting a custom photo back to the Google OAuth picture is P1. In v1, once a custom photo is set it stays until replaced with a new upload. |
 | Task completion history/changelog | Who completed → uncompleted → re-completed tracking is P2. |
 | Multi-day task editing | Only today's tasks are editable in v1. Editing past/future days is P1. |
 | Custom activity types | Pre-defined activity list only (Potty Break, Meal, Training, etc.). Custom activities are P1. |
-| Task notes/comments on edited tasks | Users can add notes when completing tasks, but not when editing task time/type. Notes on edits are P1. |
+| Rich text notes / markdown in Notes field | Notes field supports plain text only (max 200 chars). Rich text, markdown, or link rendering is P2. |
 | Task duration tracking | Tracking how long an activity actually took (vs. scheduled duration) is P2. |
 | Undo/redo for task edits | Once saved, edits are permanent. Undo is P1. |
 | Bulk task operations | Select multiple tasks to delete/edit at once is P2. |
@@ -454,11 +552,9 @@ Open app
   -> See today's routine (timeline view)
   -> See "Today's Progress" card: unified counter "3/17" + 18% circle
   -> Current activity is highlighted (orange left border for in-progress feeding task)
-  -> Tap activity to open bottom sheet
-  -> Tap "Mark as Complete" button
-  -> Checkbox is replaced by user's profile picture with green dot at top-right corner
-  -> Add optional note (if desired)
-  -> Bottom sheet dismisses
+  -> Tap status icon (○) on right side of task to mark complete
+  -> Circle is replaced by user's profile picture with green dot at top-right corner
+  -> (Optional) Tap task card body to open "Edit Task" bottom sheet — adjust time, activity, or notes
   -> Timeline updates: completion visible as avatar with green dot
   -> Partner opens app → sees same unified progress + user's picture with green dot on completed tasks
   -> Partner can instantly scan timeline: "Sarah (her face) did morning tasks, I'll handle afternoon"
@@ -481,36 +577,76 @@ Receive invite link via message
 #### Flow 4: User Updates Profile Picture
 ```
 User in app
-  -> Taps Settings icon
-  -> Settings page opens, shows "Profile Picture" section
-  -> Current picture displayed (Google default) with "From Google Account" label
-  -> Taps "Change Picture"
-  -> File picker opens → selects photo
-  -> Crop interface appears → adjusts crop → taps "Save"
-  -> Upload progress
-  -> Success: "Profile picture updated"
-  -> Navigates to Dashboard
-  -> All previously completed tasks now show new profile picture
+  -> Taps Settings icon (gear) in bottom nav
+  -> Settings screen opens
+  -> Sees circular avatar (80px) with [Edit] button directly below it
+  -> Taps [Edit]
+  -> Action sheet slides up from bottom:
+       "Take a Photo"
+       "Choose from Photo Library"
+       "Cancel"
+  -> Selects "Take a Photo" or "Choose from Photo Library"
+  -> (First use) System permission prompt appears → grants access
+  -> Camera or native photo picker opens
+  -> Captures or selects photo
+  -> Preview screen shows circular crop overlay
+       Camera path: [Retake] / [Use Photo]
+       Library path: pinch-to-zoom + drag to reposition / [Cancel] / [Choose]
+  -> Confirms photo ([Use Photo] or [Choose])
+  -> Settings screen returns to focus
+  -> Avatar shows new photo with loading spinner ("Updating...")
+  -> Upload completes → spinner clears
+  -> Toast: "Profile photo updated" (auto-dismisses after 2 sec)
+  -> All previously completed tasks now show updated profile picture
+  -> Any other household member's view also updates within 1 second
 ```
 
-#### Flow 5: User Edits Task When Puppy Deviates From Routine
+#### Flow 5: User Edits Any Task When Puppy Deviates From Routine
 ```
-Scenario: Puppy's breakfast happened 15 minutes late
+Scenario A: AI-generated breakfast task needs time and note adjustment
 
 User opens app
   -> Sees Daily Routine with:
-     7:00 AM  [✓] Breakfast  ← Shows partner's profile picture with green dot
-  -> Realizes breakfast actually happened at 7:15 AM (puppy was sleepy)
-  -> Taps on "Breakfast" task card (NOT the checkbox)
-  -> Card expands inline with time picker (7:00 AM) and activity dropdown (Meal)
-  -> Changes time from 7:00 AM to 7:15 AM
+     7:00 AM  [ ] Breakfast
+                   1/2 cup kibble — wait 30 min before play
+  -> Biscuit didn't eat until 7:30 AM
+  -> Taps on "Breakfast" task card (NOT the status icon)
+  -> Bottom sheet slides up:
+     - Title: "Edit Task"
+     - Time picker pre-populated with 7:00 AM
+     - Activity grid shows "Meal" pre-selected
+     - Notes field pre-populated: "1/2 cup kibble — wait 30 min before play"
+     - Buttons: [Cancel] [Save Changes]
+  -> Changes time from 7:00 AM to 7:30 AM
+  -> Edits notes to: "1/2 cup kibble + a spoon of pumpkin"
   -> Taps "Save Changes"
-  -> Card collapses, task now shows:
-     7:15 AM  [✓] Breakfast  ✏️ ← Updated time + pencil icon + partner's picture still shows
+  -> Bottom sheet dismisses, task now shows:
+     7:30 AM  [ ] Breakfast  ✏️
+                   1/2 cup kibble + a spoon of pumpkin
+  -> ✏️ appears (first edit of AI task)
   -> Task list reorders chronologically
   -> Change syncs to partner's device within 3 seconds
-  -> Partner opens app → sees updated 7:15 AM time with ✏️ indicator
-  -> Partner taps task detail → sees "Last edited by Sarah at 7:20 AM"
+
+Scenario B: User-added custom task needs editing
+
+User opens app
+  -> Sees Daily Routine with:
+     11:30 AM  [ ] Potty Break  ✏️  ← Custom task
+  -> Potty break actually happened at 11:45 AM
+  -> Taps on "Potty Break" task card
+  -> Bottom sheet slides up:
+     - Title: "Edit Task"
+     - Time picker pre-populated with 11:30 AM
+     - Activity grid shows "Potty Break" pre-selected
+     - Notes field empty (no description on this custom task)
+     - Buttons: [Cancel] [Save Changes]
+  -> Changes time to 11:45 AM
+  -> Adds a note: "Accident near the back door"
+  -> Taps "Save Changes"
+  -> Bottom sheet dismisses, task now shows:
+     11:45 AM  [ ] Potty Break  ✏️
+                   Accident near the back door
+  -> Partner sees updated time + note on their device
 ```
 
 #### Flow 6: User Deletes Task That Didn't Happen
@@ -539,20 +675,24 @@ User is with puppy
   -> Puppy has potty accident
   -> Opens app, sees routine with scheduled tasks
   -> Taps "+" FAB button at bottom-right
-  -> Modal opens with:
+  -> Bottom sheet opens with:
+     - Title: "Add Custom Task"
      - Time picker (defaults to 11:30 AM, current time)
-     - Activity dropdown (no selection, shows "Select activity")
+     - Activity type grid (no selection, user must pick one)
+     - Notes field (empty, placeholder: "Add a note...")
      - "Add Task" button (grayed out, disabled)
-  -> Selects "Potty Break" from dropdown
-  -> "Add Task" button turns blue (enabled)
+  -> Selects "Potty Break" from emoji grid
+  -> "Add Task" button turns primary color (enabled)
+  -> Optionally types note: "Accident near the back door"
   -> Taps "Add Task"
-  -> Modal dismisses
+  -> Bottom sheet dismisses
   -> New task appears in timeline:
      11:00 AM  [✓] Mid-morning nap
      11:30 AM  [ ] Potty Break  ✏️ ← New task with pencil indicator
+                    Accident near the back door
      12:00 PM  [ ] Lunch
   -> New task syncs to partner's device within 3 seconds
-  -> Partner sees the unplanned potty break in timeline
+  -> Partner sees the unplanned potty break + note in timeline
   -> Partner understands puppy had accident, adjusts expectations
 ```
 
@@ -684,8 +824,8 @@ ORDER BY routine_items.scheduled_time ASC
 | AI Integration | **Client-side breed/age rules in v1** (mock AI). Future: Anthropic Claude API (claude-sonnet-4-5) server-side via Supabase Edge Function. |
 | Auth | **Google OAuth only** via Supabase Auth. Captures `email`, `name`, `picture` from OAuth response. Single auth method simplifies flow and works universally. Firebase uses same Google auth token for security rules. |
 | Deep Linking | URL-based invite flow with query parameters. Web-native, no app store deferred deep linking required. |
-| Image Storage | **Supabase Storage** for custom profile pictures. Google profile pictures stored as URLs only (Google hosts). |
-| Image Processing | Client-side crop/resize before upload (use library like `react-image-crop`). Max 5MB, allowed types: .jpg, .png, .gif. Server-side validation. |
+| Image Storage | **Firebase Storage** (`users/{userId}/profile_photo.jpg`) for custom profile pictures. Google profile pictures stored as URLs only (Google hosts). |
+| Image Processing | Client-side crop/resize before upload (use `react-image-crop` or equivalent). Output: 400×400px square JPEG. Max 5MB input, allowed types: JPEG, PNG, HEIC. Client-side validation before upload; server-side validation as secondary check. |
 | Offline Support | Core routine view and activity completion work offline with local-first data. **Firestore offline persistence** for task edits (built-in). IndexedDB or localStorage for other data. Background sync when reconnected. |
 | Real-time Sync | **Task edits, deletions, additions sync within 3 seconds** via Firestore real-time listeners. Activity completions and profile picture updates sync within 5 seconds via Supabase Realtime. |
 | Task Management Gestures | **Swipe-to-delete** using react-swipeable or similar. **Long-press (500ms)** context menu for accessibility. Touch targets min 44px. |

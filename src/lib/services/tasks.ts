@@ -72,7 +72,8 @@ export async function addTask(
   puppyId: string,
   activityType: Task['activityType'],
   time: Date,
-  title: string
+  title: string,
+  description?: string
 ): Promise<string> {
   const userId = firebaseAuth.currentUser?.uid;
   if (!userId) throw new Error('Not authenticated');
@@ -84,6 +85,7 @@ export async function addTask(
     actualTime: Timestamp.fromDate(time),
     activityType,
     title,
+    ...(description !== undefined && { description }),
     isCompleted: false,
     isEdited: true, // User-added tasks are always marked as edited
     isUserAdded: true,
@@ -101,6 +103,8 @@ export async function editTask(
   updates: {
     actualTime?: Date;
     activityType?: Task['activityType'];
+    title?: string;
+    description?: string;
   }
 ): Promise<void> {
   const userId = firebaseAuth.currentUser?.uid;
@@ -111,6 +115,9 @@ export async function editTask(
   await updateDoc(taskRef, {
     ...(updates.actualTime && { actualTime: Timestamp.fromDate(updates.actualTime) }),
     ...(updates.activityType && { activityType: updates.activityType }),
+    ...(updates.title && { title: updates.title }),
+    // description can be set to empty string (clearing notes), so check for undefined specifically
+    ...(updates.description !== undefined && { description: updates.description }),
     isEdited: true,
     lastEditedBy: userId,
     lastEditedAt: serverTimestamp(),

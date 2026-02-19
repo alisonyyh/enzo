@@ -2,12 +2,13 @@ import { useState, useEffect } from "react";
 import { CheckCircle2, Circle, Settings } from "lucide-react";
 import { RoutineReveal } from "./RoutineReveal";
 import { SwipeableTaskCard } from "./SwipeableTaskCard";
-import { AddTaskFAB } from "./AddTaskFAB";
+import { AddTaskFAB, type EditingItem } from "./AddTaskFAB";
 import { NetworkStatusBanner } from "./NetworkStatusBanner";
 import { CompletionAvatar } from "./CompletionAvatar";
 import { SwipeableRoutineCard } from "./SwipeableRoutineCard";
 import { subscribeToTasks, Task } from "../../lib/services/tasks";
 import { subscribeToDeletedRoutineItems } from "../../lib/services/deleted-routine-items";
+import { subscribeToEditedRoutineItems, type RoutineItemEdit } from "../../lib/services/edited-routine-items";
 import { signInToFirebase } from "../../lib/firebase";
 import {
   getTodayLogs,
@@ -63,6 +64,12 @@ export function Dashboard({
 
   // Deleted routine item IDs (Firebase — persists across refresh)
   const [deletedRoutineItemIds, setDeletedRoutineItemIds] = useState<Set<string>>(new Set());
+
+  // Task or routine item being edited via bottom sheet (null = not editing)
+  const [editingItem, setEditingItem] = useState<EditingItem | null>(null);
+
+  // Edited routine item overrides (Firebase — persists edits to AI-generated items)
+  const [editedRoutineItems, setEditedRoutineItems] = useState<Map<string, RoutineItemEdit>>(new Map());
 
   const [showReveal, setShowReveal] = useState(isFirstTime);
   const [showFirstTimeTooltip, setShowFirstTimeTooltip] = useState(false);
@@ -146,10 +153,11 @@ export function Dashboard({
     return unsubscribe;
   }, [activityLogs]);
 
-  // Initialize Firebase and subscribe to custom tasks + deleted routine items
+  // Initialize Firebase and subscribe to custom tasks + deleted/edited routine items
   useEffect(() => {
     let unsubscribeTasks: (() => void) | null = null;
     let unsubscribeDeleted: (() => void) | null = null;
+    let unsubscribeEdited: (() => void) | null = null;
 
     async function init() {
       try {
@@ -177,6 +185,17 @@ export function Dashboard({
             console.error('Failed to load deleted routine items:', err);
           }
         );
+
+        // Subscribe to edited routine item overrides
+        unsubscribeEdited = subscribeToEditedRoutineItems(
+          puppyId,
+          (edits) => {
+            setEditedRoutineItems(edits);
+          },
+          (err) => {
+            console.error('Failed to load edited routine items:', err);
+          }
+        );
       } catch (err) {
         console.error('Dashboard: Firebase init failed:', err);
         setCustomTasksError(err instanceof Error ? err.message : 'Failed to load custom tasks');
@@ -189,6 +208,7 @@ export function Dashboard({
     return () => {
       unsubscribeTasks?.();
       unsubscribeDeleted?.();
+      unsubscribeEdited?.();
     };
   }, [puppyId]);
 
@@ -286,12 +306,16 @@ export function Dashboard({
 
   const timelineItems: TimelineItem[] = [];
 
-  // Add routine items
+  // Add routine items (apply edits from editedRoutineItems overlay)
   routineItems.forEach((item: any) => {
-    const [hours, minutes] = (item.time || '00:00').split(':').map(Number);
+    const edit = editedRoutineItems.get(item.id);
+    const effectiveItem = edit
+      ? { ...item, time: edit.time, activity: edit.title, description: edit.description, category: edit.activityType, isEdited: true }
+      : item;
+    const [hours, minutes] = (effectiveItem.time || '00:00').split(':').map(Number);
     timelineItems.push({
       type: 'routine',
-      item,
+      item: effectiveItem,
       timeMinutes: hours * 60 + minutes,
     });
   });
@@ -408,9 +432,13 @@ export function Dashboard({
 
           {timelineItems.map((entry, index) => {
             if (entry.type === 'custom') {
-              // Custom task — swipeable, expandable (uses TaskCard inside)
+              // Custom task — swipeable, tapping opens edit bottom sheet
               return (
-                <SwipeableTaskCard key={`custom-${entry.task.id}`} task={entry.task} />
+                <SwipeableTaskCard
+                  key={`custom-${entry.task.id}`}
+                  task={entry.task}
+                  onEdit={(task) => setEditingItem({ type: 'custom', task })}
+                />
               );
             }
 
@@ -430,8 +458,20 @@ export function Dashboard({
                 routineItemId={item.id}
               >
                 <div
+                  onClick={() => {
+                    // Open edit bottom sheet for routine item
+                    setEditingItem({
+                      type: 'routine',
+                      routineItemId: item.id,
+                      puppyId,
+                      time: item.time,
+                      category: item.category,
+                      activity: item.activity,
+                      description: item.description || '',
+                    });
+                  }}
                   className={`
-                    bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all
+                    bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
                     ${isCurrent ? 'border-l-2 border-primary' : ''}
                     ${isCompleted ? 'opacity-60' : ''}
                   `}
@@ -500,8 +540,12 @@ export function Dashboard({
           })}
         </div>
 
-        {/* FAB Button for Adding Custom Tasks */}
-        <AddTaskFAB puppyId={puppyId} />
+        {/* FAB Button for Adding Custom Tasks + Edit Bottom Sheet */}
+        <AddTaskFAB
+          puppyId={puppyId}
+          editingItem={editingItem}
+          onEditDone={() => setEditingItem(null)}
+        />
 
         {/* First Time Tooltip */}
         {showFirstTimeTooltip && (
