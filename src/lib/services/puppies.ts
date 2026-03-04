@@ -1,5 +1,6 @@
 import { supabase } from '../supabase';
 import type { Puppy, PuppyMembership } from '../database.types';
+import { createInviteCode } from './invite-codes';
 
 export interface CreatePuppyData {
   name: string;
@@ -8,10 +9,8 @@ export interface CreatePuppyData {
   age_weeks: number;
   weight_value: number | null;
   weight_unit: string;
-  living_situation: string;
   photo_url?: string | null;
   questionnaire_data?: {
-    workArrangement: string;
     wakeUpTime: string;
     bedTime: string;
   };
@@ -33,7 +32,6 @@ export async function createPuppy(userId: string, data: CreatePuppyData): Promis
       age_weeks: data.age_weeks,
       weight_value: data.weight_value,
       weight_unit: data.weight_unit,
-      living_situation: data.living_situation,
       photo_url: data.photo_url,
       questionnaire_data: data.questionnaire_data,
     })
@@ -60,6 +58,14 @@ export async function createPuppy(userId: string, data: CreatePuppyData): Promis
     throw memberError;
   }
   console.log('createPuppy: owner membership created');
+
+  // Generate invite code for this household (non-blocking — code can be regenerated if this fails)
+  try {
+    const code = await createInviteCode(puppy.id, data.name, userId);
+    console.log('createPuppy: invite code created:', code);
+  } catch (err) {
+    console.error('createPuppy: invite code generation failed (non-critical):', err);
+  }
 
   return puppy;
 }

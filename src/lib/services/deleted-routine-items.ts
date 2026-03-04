@@ -3,6 +3,7 @@ import {
   query,
   where,
   onSnapshot,
+  getDocs,
   setDoc,
   doc,
   serverTimestamp
@@ -13,20 +14,22 @@ import { db, firebaseAuth } from '../firebase';
 // Collection: deletedRoutineItems/{autoId} with fields: puppyId, routineItemId, date, deletedBy, deletedAt
 
 /**
- * Subscribe to today's deleted routine item IDs (real-time).
+ * Subscribe to deleted routine item IDs for a given date (real-time).
+ * Despite the name, supports any date via optional param (D63).
  * Returns an unsubscribe function.
  */
 export function subscribeToDeletedRoutineItems(
   puppyId: string,
   callback: (deletedIds: Set<string>) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  date?: string
 ) {
-  const today = new Date().toISOString().split('T')[0];
+  const dateString = date || new Date().toISOString().split('T')[0];
   const colRef = collection(db, 'deletedRoutineItems');
   const q = query(
     colRef,
     where('puppyId', '==', puppyId),
-    where('date', '==', today)
+    where('date', '==', dateString)
   );
 
   return onSnapshot(
@@ -69,4 +72,26 @@ export async function deleteRoutineItem(
     deletedBy: userId,
     deletedAt: serverTimestamp(),
   });
+}
+
+/**
+ * One-time static fetch of deleted routine item IDs for a date (D64)
+ */
+export async function getDeletedRoutineItemsForDate(
+  puppyId: string,
+  date: string
+): Promise<Set<string>> {
+  const colRef = collection(db, 'deletedRoutineItems');
+  const q = query(
+    colRef,
+    where('puppyId', '==', puppyId),
+    where('date', '==', date)
+  );
+
+  const snapshot = await getDocs(q);
+  const ids = new Set<string>();
+  snapshot.forEach((doc) => {
+    ids.add(doc.data().routineItemId);
+  });
+  return ids;
 }

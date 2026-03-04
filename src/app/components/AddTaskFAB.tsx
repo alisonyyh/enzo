@@ -18,12 +18,18 @@ const ACTIVITY_OPTIONS = [
 const CATEGORY_TO_ACTIVITY: Record<string, string> = {
   feeding: 'meal',
   potty: 'potty_break',
+  potty_break: 'potty_break',
   exercise: 'walk',
+  walk: 'walk',
   play: 'play_time',
+  play_time: 'play_time',
   training: 'training',
   rest: 'nap',
+  nap: 'nap',
   bonding: 'calm_time',
+  calm_time: 'calm_time',
   sleep: 'nap',
+  meal: 'meal',
 };
 
 /** Represents an AI-generated routine item being edited */
@@ -52,9 +58,12 @@ interface AddTaskFABProps {
   editingItem?: EditingItem | null;
   /** Called when the edit sheet closes (save or cancel) so the parent can clear editingItem. */
   onEditDone?: () => void;
+  /** The date string (YYYY-MM-DD) for the currently viewed day. Used to ensure
+   *  saves use the same date as the Dashboard subscription query (timezone fix). */
+  date?: string;
 }
 
-export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps) {
+export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFABProps) {
   const [showModal, setShowModal] = useState(false);
   const [selectedActivity, setSelectedActivity] = useState('');
   const [selectedTime, setSelectedTime] = useState(
@@ -146,11 +155,11 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone }: AddTaskFABProps
             title: activityLabel,
             description: notes,
             pottyDetails: pottyDetailsPayload,
-          });
+          }, date);
         }
       } else {
         // Add mode: create new custom task
-        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined, pottyDetailsPayload);
+        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined, pottyDetailsPayload, date);
       }
 
       resetAndClose();

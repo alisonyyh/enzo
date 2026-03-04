@@ -19,18 +19,18 @@ Screen: Welcome Screen
 
 ### Step 2: Onboarding Questionnaire (New Primary Owners Only)
 ```
-Screen: Questionnaire (multi-step, 4 screens)
+Screen: Questionnaire (multi-step, 3 screens)
 - Progress bar at the top of each screen showing completion
-  (e.g., filled segments: ██░░ 1 of 4)
+  (e.g., filled segments: ██░ 1 of 3)
 - Progress bar persists across all steps so the user can
   estimate how long the onboarding will take
 
-Step 1/4 - "Tell us about your puppy"
+Step 1/3 - "Tell us about your puppy"
   - Puppy's name (text input, required)
   - Breed (searchable dropdown, required, includes "Mixed/Unknown")
   - Upload a photo (optional, camera or photo library)
 
-Step 2/4 - "How old is your puppy?"
+Step 2/3 - "How old is your puppy?"
   - Months (integer input field, required)
   - Weeks (integer input field, required)
     Note: Both fields displayed together. User enters e.g.
@@ -39,18 +39,7 @@ Step 2/4 - "How old is your puppy?"
     Validation: months >= 0, weeks >= 0, total age must be > 0.
   - Current weight (lbs or kg toggle)
 
-Step 3/4 - "Where does your puppy live?"
-  - Living situation (single select):
-    [ ] Apartment
-    [ ] House with yard
-    [ ] House without yard
-
-Step 4/4 - "Tell us about your schedule"
-  - Typical work arrangement (single select):
-    [ ] Work from home
-    [ ] Office/hybrid (specify days in office)
-    [ ] Shift work (specify typical hours)
-    [ ] Stay at home / retired
+Step 3/3 - "Tell us about your schedule"
   - What time do you usually wake up? (time picker)
   - What time do you usually go to bed? (time picker)
 

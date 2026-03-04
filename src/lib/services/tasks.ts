@@ -4,6 +4,7 @@ import {
   where,
   orderBy,
   onSnapshot,
+  getDocs,
   addDoc,
   updateDoc,
   deleteDoc,
@@ -37,21 +38,25 @@ export interface Task {
 }
 
 // Get today's date in YYYY-MM-DD format
-function getTodayString(): string {
-  return new Date().toISOString().split('T')[0];
+// Despite the name, supports any date via optional param (D63)
+export function getTodayString(date?: Date): string {
+  return (date || new Date()).toISOString().split('T')[0];
 }
 
-// Subscribe to today's tasks (real-time)
+// Subscribe to tasks for a given date (real-time)
+// When date param is omitted, defaults to today for backward compatibility (D63)
 export function subscribeToTasks(
   puppyId: string,
   callback: (tasks: Task[]) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  date?: string
 ) {
+  const dateString = date || getTodayString();
   const tasksRef = collection(db, 'tasks');
   const q = query(
     tasksRef,
     where('puppyId', '==', puppyId),
-    where('date', '==', getTodayString()),
+    where('date', '==', dateString),
     orderBy('actualTime', 'asc')
   );
 
@@ -78,14 +83,15 @@ export async function addTask(
   time: Date,
   title: string,
   description?: string,
-  pottyDetails?: { poop: boolean; pee: boolean }
+  pottyDetails?: { poop: boolean; pee: boolean },
+  date?: string
 ): Promise<string> {
   const userId = firebaseAuth.currentUser?.uid;
   if (!userId) throw new Error('Not authenticated');
 
   const docRef = await addDoc(collection(db, 'tasks'), {
     puppyId,
-    date: getTodayString(),
+    date: date || getTodayString(),
     scheduledTime: Timestamp.fromDate(time),
     actualTime: Timestamp.fromDate(time),
     activityType,
@@ -153,4 +159,22 @@ export async function completeTask(taskId: string): Promise<void> {
     lastEditedBy: userId,
     lastEditedAt: serverTimestamp(),
   });
+}
+
+// One-time static fetch of tasks for a date (D64 — no real-time sub for non-today views)
+export async function getTasksForDate(puppyId: string, date: string): Promise<Task[]> {
+  const tasksRef = collection(db, 'tasks');
+  const q = query(
+    tasksRef,
+    where('puppyId', '==', puppyId),
+    where('date', '==', date),
+    orderBy('actualTime', 'asc')
+  );
+
+  const snapshot = await getDocs(q);
+  const tasks: Task[] = [];
+  snapshot.forEach((doc) => {
+    tasks.push({ id: doc.id, ...doc.data() } as Task);
+  });
+  return tasks;
 }

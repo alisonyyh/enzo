@@ -3,6 +3,7 @@ import {
   query,
   where,
   onSnapshot,
+  getDocs,
   setDoc,
   doc,
   serverTimestamp
@@ -38,20 +39,22 @@ export interface RoutineItemEdit {
 }
 
 /**
- * Subscribe to today's edited routine items (real-time).
+ * Subscribe to edited routine items for a given date (real-time).
+ * Despite the name, supports any date via optional param (D63).
  * Returns a map of routineItemId -> RoutineItemEdit.
  */
 export function subscribeToEditedRoutineItems(
   puppyId: string,
   callback: (edits: Map<string, RoutineItemEdit>) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  date?: string
 ) {
-  const today = new Date().toISOString().split('T')[0];
+  const dateString = date || new Date().toISOString().split('T')[0];
   const colRef = collection(db, 'editedRoutineItems');
   const q = query(
     colRef,
     where('puppyId', '==', puppyId),
-    where('date', '==', today)
+    where('date', '==', dateString)
   );
 
   return onSnapshot(
@@ -84,19 +87,20 @@ export async function saveRoutineItemEdit(
     title: string;
     description: string;
     pottyDetails?: { poop: boolean; pee: boolean };
-  }
+  },
+  date?: string
 ): Promise<void> {
   const userId = firebaseAuth.currentUser?.uid;
   if (!userId) throw new Error('Not authenticated');
 
-  const today = new Date().toISOString().split('T')[0];
-  const docId = `${puppyId}_${routineItemId}_${today}`;
+  const dateString = date || new Date().toISOString().split('T')[0];
+  const docId = `${puppyId}_${routineItemId}_${dateString}`;
   const docRef = doc(db, 'editedRoutineItems', docId);
 
   await setDoc(docRef, {
     puppyId,
     routineItemId,
-    date: today,
+    date: dateString,
     time: updates.time,
     activityType: updates.activityType,
     title: updates.title,
@@ -105,4 +109,27 @@ export async function saveRoutineItemEdit(
     editedBy: userId,
     editedAt: serverTimestamp(),
   });
+}
+
+/**
+ * One-time static fetch of edited routine items for a date (D64)
+ */
+export async function getEditedRoutineItemsForDate(
+  puppyId: string,
+  date: string
+): Promise<Map<string, RoutineItemEdit>> {
+  const colRef = collection(db, 'editedRoutineItems');
+  const q = query(
+    colRef,
+    where('puppyId', '==', puppyId),
+    where('date', '==', date)
+  );
+
+  const snapshot = await getDocs(q);
+  const edits = new Map<string, RoutineItemEdit>();
+  snapshot.forEach((doc) => {
+    const data = doc.data() as RoutineItemEdit;
+    edits.set(data.routineItemId, data);
+  });
+  return edits;
 }

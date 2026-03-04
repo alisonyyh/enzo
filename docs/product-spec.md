@@ -13,7 +13,7 @@
 #### F1: Onboarding Questionnaire
 **Priority: P0 (Launch Blocker)**
 
-**Description:** A multi-step questionnaire (4 screens) the primary owner completes after authenticating for the first time. Captures essential information about the puppy and the owner's living situation to generate an AI-tailored routine. The app is opinionated about training goals - all goals (potty training, crate training, obedience, socialization, sleep schedule, leash training) are included by default.
+**Description:** A multi-step questionnaire (3 screens) the primary owner completes after authenticating for the first time. Captures essential information about the puppy and the owner's schedule to generate an AI-tailored routine. The app is opinionated about training goals - all goals (potty training, crate training, obedience, socialization, sleep schedule, leash training) are included by default.
 
 **Questionnaire Fields:**
 - Puppy's name
@@ -22,8 +22,6 @@
 - Age in months (integer input, required)
 - Age in weeks (integer input, required) — both fields displayed together (e.g., 3 months, 2 weeks)
 - Weight (current, lbs or kg toggle)
-- Living situation (apartment, house with yard, house without yard)
-- Owner's typical work arrangement (work from home, office/hybrid, shift work, stay at home/retired)
 - Typical wake-up time
 - Typical bedtime
 
@@ -38,7 +36,7 @@
 - Breed autocomplete returns results within 200ms
 - Age fields accept integers only (no decimals, no text). Months >= 0, weeks >= 0, total age must be > 0
 - Questionnaire state persists if user closes and reopens the app before completing
-- Progress bar accurately reflects current step (1-4)
+- Progress bar accurately reflects current step (1-3)
 
 ---
 
@@ -86,7 +84,6 @@
 **Acceptance Criteria:**
 - Routine generates within 10 seconds
 - Routine is medically/behaviorally sound for the puppy's age and breed
-- Routine respects the owner's stated schedule (e.g., doesn't schedule mid-day walks if owner is at office)
 - Routine items are displayed in chronological order
 - If generation fails, user sees a retry option with a clear error message
 
@@ -623,7 +620,7 @@ pottyDetails?: {
 Open app (first launch)
   -> Welcome screen with Sign in with Google
   -> Authenticate via Google Sign-In (new account created, profile picture captured)
-  -> Onboarding questionnaire (4 steps with progress bar)
+  -> Onboarding questionnaire (3 steps with progress bar)
   -> Complete questionnaire
   -> AI routine generation (loading screen, ~5-10 sec)
   -> View generated daily routine (main screen with unified progress tracker)

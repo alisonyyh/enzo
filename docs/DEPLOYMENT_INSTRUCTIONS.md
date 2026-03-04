@@ -123,8 +123,6 @@ curl -X POST 'https://[your-project].supabase.co/functions/v1/generate-routine' 
       "ageWeeks": 2,
       "weight": 15,
       "weightUnit": "lbs",
-      "livingSituation": "apartment",
-      "workArrangement": "work-from-home",
       "wakeUpTime": "07:00",
       "bedTime": "22:00"
     }

@@ -14,8 +14,6 @@ interface QuestionnaireData {
   ageWeeks: number;
   weight: number | null;
   weightUnit: 'lbs' | 'kg';
-  livingSituation: string;
-  workArrangement: string;
   wakeUpTime: string;
   bedTime: string;
 }
@@ -39,8 +37,6 @@ PUPPY DETAILS:
 - Breed: ${data.breed}
 - Age: ${data.ageMonths} months, ${data.ageWeeks} weeks (${totalWeeks} weeks total)
 - Weight: ${data.weight || 'unknown'} ${data.weightUnit}
-- Living Situation: ${data.livingSituation.replace(/-/g, ' ')}
-- Owner's Work Schedule: ${data.workArrangement.replace(/-/g, ' ')}
 - Wake-up Time: ${data.wakeUpTime}
 - Bedtime: ${data.bedTime}
 
@@ -62,7 +58,6 @@ REQUIRED ACTIVITIES (15-20 total):
 
 SCHEDULE CONSTRAINTS:
 - Align with owner's wake (${data.wakeUpTime}) and bed (${data.bedTime}) times
-- If work arrangement is "office/hybrid", avoid activities requiring owner presence during typical work hours (9am-5pm)
 - Space activities evenly throughout waking hours
 
 OUTPUT FORMAT (JSON array):
