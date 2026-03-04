@@ -26,6 +26,8 @@ interface QuestionnaireData {
 
 interface OnboardingQuestionnaireProps {
   onComplete: (data: QuestionnaireData) => void;
+  /** Called when user taps back on step 1 (exits onboarding) */
+  onBack?: () => void;
 }
 
 const DOG_BREEDS = [
@@ -61,7 +63,7 @@ const DOG_BREEDS = [
   "Chihuahua"
 ].sort();
 
-export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireProps) {
+export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuestionnaireProps) {
   const [step, setStep] = useState(1);
   const totalSteps = 3;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -123,6 +125,8 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
   const handleBack = () => {
     if (step > 1) {
       setStep(step - 1);
+    } else {
+      onBack?.();
     }
   };
 
@@ -131,6 +135,16 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">
       <div className="w-[390px] h-screen bg-background flex flex-col" style={{ paddingTop: '48px', paddingBottom: '34px' }}>
+        {/* Back Button — above progress bar on every step */}
+        <div className="px-5 mb-3">
+          <button
+            onClick={handleBack}
+            className="text-primary hover:opacity-80 transition-opacity"
+          >
+            <ArrowLeft className="size-6" />
+          </button>
+        </div>
+
         {/* Progress Bar */}
         <div className="px-5 mb-6">
           <div className="flex items-center gap-1.5">
@@ -145,16 +159,8 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
           </div>
         </div>
 
-        {/* Header with Back Button */}
+        {/* Header */}
         <div className="px-5 mb-8">
-          {step > 1 && (
-            <button
-              onClick={handleBack}
-              className="mb-4 text-primary hover:opacity-80 transition-opacity"
-            >
-              <ArrowLeft className="size-6" />
-            </button>
-          )}
           <h1 className="text-2xl font-bold text-foreground">
             {step === 1 && "Tell us about your puppy"}
             {step === 2 && "How old is your puppy?"}
@@ -211,11 +217,11 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
                     className="hidden"
                   />
                   {formData.photoUrl ? (
-                    <div className="space-y-3">
+                    <div className="space-y-3 flex flex-col items-center">
                       <img
                         src={formData.photoUrl}
                         alt="Puppy"
-                        className="w-full h-48 object-cover rounded-2xl"
+                        className="w-40 h-40 object-cover rounded-full"
                       />
                       <Button
                         type="button"
