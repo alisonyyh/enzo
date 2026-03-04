@@ -468,7 +468,10 @@ export default function App() {
       )}
 
       {appState === "questionnaire" && (
-        <OnboardingQuestionnaire onComplete={handleQuestionnaireComplete} />
+        <OnboardingQuestionnaire
+          onComplete={handleQuestionnaireComplete}
+          onBack={() => setAppState("choice")}
+        />
       )}
 
       {appState === "generating-routine" && questionnaireData && (

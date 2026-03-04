@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ArrowLeft, Users, Copy, Check, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
-import { getInviteCode } from "../../lib/services/invite-codes";
+import { getInviteCode, createInviteCode } from "../../lib/services/invite-codes";
 import { uploadUserAvatar, updateProfile } from "../../lib/services/auth";
 import { supabase } from "../../lib/supabase";
 
@@ -27,6 +27,7 @@ interface SettingsProps {
 export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, userRole, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
   const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile">("main");
   const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [inviteCodeLoading, setInviteCodeLoading] = useState(true);
   const [caretakerCount, setCaretakerCount] = useState(0);
   const [copied, setCopied] = useState(false);
   const [showPhotoSheet, setShowPhotoSheet] = useState(false);
@@ -34,10 +35,27 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load invite code and caretaker count on mount (owners only)
+  // Auto-generates an invite code for puppies created before the feature existed.
   useEffect(() => {
     if (userRole !== 'owner') return;
 
-    getInviteCode(puppyId).then(setInviteCode).catch(console.error);
+    getInviteCode(puppyId)
+      .then(async (code) => {
+        if (code) {
+          setInviteCode(code);
+        } else {
+          // No code exists (puppy created before invite feature) — generate one
+          try {
+            const newCode = await createInviteCode(puppyId, puppyProfile.name, userId);
+            setInviteCode(newCode);
+          } catch (err) {
+            console.error('Failed to auto-generate invite code:', err);
+            setInviteCode(null);
+          }
+        }
+      })
+      .catch(console.error)
+      .finally(() => setInviteCodeLoading(false));
 
     supabase
       .from("puppy_memberships")
@@ -104,7 +122,11 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
             {/* Invite Code Section */}
             <div className="bg-card rounded-2xl p-4" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
               <p className="text-sm font-medium text-muted-foreground mb-2">Invite Code</p>
-              {inviteCode ? (
+              {inviteCodeLoading ? (
+                <div className="bg-background rounded-xl p-3 mb-3">
+                  <p className="text-sm text-muted-foreground">Loading...</p>
+                </div>
+              ) : inviteCode ? (
                 <div className="bg-background rounded-xl p-3 flex items-center justify-between mb-3">
                   <span className="text-lg font-bold text-foreground tracking-wide">{inviteCode}</span>
                   <button
@@ -126,7 +148,7 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
                 </div>
               ) : (
                 <div className="bg-background rounded-xl p-3 mb-3">
-                  <p className="text-sm text-muted-foreground">Loading...</p>
+                  <p className="text-sm text-destructive">Failed to load invite code</p>
                 </div>
               )}
               <p className="text-xs text-muted-foreground leading-relaxed">
