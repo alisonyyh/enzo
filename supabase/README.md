@@ -48,8 +48,6 @@ supabase/
     ageWeeks: number;
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
-    livingSituation: string;
-    workArrangement: string;
     wakeUpTime: string;  // HH:MM
     bedTime: string;     // HH:MM
   }

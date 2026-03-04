@@ -2,7 +2,6 @@ import { useState, useRef } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
-import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
 import { ArrowLeft, Upload } from "lucide-react";
 import {
   Select,
@@ -21,8 +20,6 @@ interface QuestionnaireData {
   ageWeeks: string;
   weight: string;
   weightUnit: "lbs" | "kg";
-  livingSituation: string;
-  workArrangement: string;
   wakeUpTime: string;
   bedTime: string;
 }
@@ -66,7 +63,7 @@ const DOG_BREEDS = [
 
 export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireProps) {
   const [step, setStep] = useState(1);
-  const totalSteps = 4;
+  const totalSteps = 3;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formData, setFormData] = useState<QuestionnaireData>({
@@ -78,8 +75,6 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
     ageWeeks: "",
     weight: "",
     weightUnit: "lbs",
-    livingSituation: "",
-    workArrangement: "",
     wakeUpTime: "07:00",
     bedTime: "22:00",
   });
@@ -111,9 +106,7 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
         return formData.ageMonths && formData.ageWeeks && parseInt(formData.ageMonths) >= 0 &&
                parseInt(formData.ageWeeks) >= 0 && totalAge > 0 && formData.weight;
       case 3:
-        return formData.livingSituation;
-      case 4:
-        return formData.workArrangement && formData.wakeUpTime && formData.bedTime;
+        return formData.wakeUpTime && formData.bedTime;
       default:
         return false;
     }
@@ -165,8 +158,7 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
           <h1 className="text-2xl font-bold text-foreground">
             {step === 1 && "Tell us about your puppy"}
             {step === 2 && "How old is your puppy?"}
-            {step === 3 && "Where does your puppy live?"}
-            {step === 4 && "Tell us about your schedule"}
+            {step === 3 && "Tell us about your schedule"}
           </h1>
         </div>
 
@@ -316,150 +308,32 @@ export function OnboardingQuestionnaire({ onComplete }: OnboardingQuestionnaireP
             )}
 
             {step === 3 && (
-              <div>
-                <Label className="text-sm text-muted-foreground mb-3 block font-normal">
-                  Living situation *
-                </Label>
-                <RadioGroup
-                  value={formData.livingSituation}
-                  onValueChange={(value) => updateField("livingSituation", value)}
-                  className="space-y-3"
-                >
-                  <div
-                    onClick={() => updateField("livingSituation", "apartment")}
-                    className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                      formData.livingSituation === "apartment"
-                        ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                        : "bg-input-background border border-border"
-                    }`}
-                  >
-                    <RadioGroupItem value="apartment" id="apartment" />
-                    <Label htmlFor="apartment" className="cursor-pointer font-normal flex-1">
-                      Apartment
-                    </Label>
-                  </div>
-                  <div
-                    onClick={() => updateField("livingSituation", "house-with-yard")}
-                    className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                      formData.livingSituation === "house-with-yard"
-                        ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                        : "bg-input-background border border-border"
-                    }`}
-                  >
-                    <RadioGroupItem value="house-with-yard" id="house-with-yard" />
-                    <Label htmlFor="house-with-yard" className="cursor-pointer font-normal flex-1">
-                      House with yard
-                    </Label>
-                  </div>
-                  <div
-                    onClick={() => updateField("livingSituation", "house-without-yard")}
-                    className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                      formData.livingSituation === "house-without-yard"
-                        ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                        : "bg-input-background border border-border"
-                    }`}
-                  >
-                    <RadioGroupItem value="house-without-yard" id="house-without-yard" />
-                    <Label htmlFor="house-without-yard" className="cursor-pointer font-normal flex-1">
-                      House without yard
-                    </Label>
-                  </div>
-                </RadioGroup>
-              </div>
-            )}
-
-            {step === 4 && (
-              <>
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-sm text-muted-foreground mb-3 block font-normal">
-                    Typical work arrangement *
+                  <Label htmlFor="wakeUpTime" className="text-sm text-muted-foreground mb-2 block font-normal">
+                    Wake up time *
                   </Label>
-                  <RadioGroup
-                    value={formData.workArrangement}
-                    onValueChange={(value) => updateField("workArrangement", value)}
-                    className="space-y-3"
-                  >
-                    <div
-                      onClick={() => updateField("workArrangement", "work-from-home")}
-                      className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                        formData.workArrangement === "work-from-home"
-                          ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                          : "bg-input-background border border-border"
-                      }`}
-                    >
-                      <RadioGroupItem value="work-from-home" id="work-from-home" />
-                      <Label htmlFor="work-from-home" className="cursor-pointer font-normal flex-1">
-                        Work from home
-                      </Label>
-                    </div>
-                    <div
-                      onClick={() => updateField("workArrangement", "office-hybrid")}
-                      className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                        formData.workArrangement === "office-hybrid"
-                          ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                          : "bg-input-background border border-border"
-                      }`}
-                    >
-                      <RadioGroupItem value="office-hybrid" id="office-hybrid" />
-                      <Label htmlFor="office-hybrid" className="cursor-pointer font-normal flex-1">
-                        Office/hybrid
-                      </Label>
-                    </div>
-                    <div
-                      onClick={() => updateField("workArrangement", "shift-work")}
-                      className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                        formData.workArrangement === "shift-work"
-                          ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                          : "bg-input-background border border-border"
-                      }`}
-                    >
-                      <RadioGroupItem value="shift-work" id="shift-work" />
-                      <Label htmlFor="shift-work" className="cursor-pointer font-normal flex-1">
-                        Shift work
-                      </Label>
-                    </div>
-                    <div
-                      onClick={() => updateField("workArrangement", "stay-at-home")}
-                      className={`flex items-center space-x-3 rounded-2xl p-4 h-12 transition-all cursor-pointer hover:bg-[rgba(232,114,42,0.04)] ${
-                        formData.workArrangement === "stay-at-home"
-                          ? "bg-[rgba(232,114,42,0.08)] border-[1.5px] border-primary"
-                          : "bg-input-background border border-border"
-                      }`}
-                    >
-                      <RadioGroupItem value="stay-at-home" id="stay-at-home" />
-                      <Label htmlFor="stay-at-home" className="cursor-pointer font-normal flex-1">
-                        Stay at home / retired
-                      </Label>
-                    </div>
-                  </RadioGroup>
+                  <Input
+                    id="wakeUpTime"
+                    type="time"
+                    value={formData.wakeUpTime}
+                    onChange={(e) => updateField("wakeUpTime", e.target.value)}
+                    className="h-12 rounded-2xl border-border bg-input-background"
+                  />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="wakeUpTime" className="text-sm text-muted-foreground mb-2 block font-normal">
-                      Wake up time *
-                    </Label>
-                    <Input
-                      id="wakeUpTime"
-                      type="time"
-                      value={formData.wakeUpTime}
-                      onChange={(e) => updateField("wakeUpTime", e.target.value)}
-                      className="h-12 rounded-2xl border-border bg-input-background"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="bedTime" className="text-sm text-muted-foreground mb-2 block font-normal">
-                      Bed time *
-                    </Label>
-                    <Input
-                      id="bedTime"
-                      type="time"
-                      value={formData.bedTime}
-                      onChange={(e) => updateField("bedTime", e.target.value)}
-                      className="h-12 rounded-2xl border-border bg-input-background"
-                    />
-                  </div>
+                <div>
+                  <Label htmlFor="bedTime" className="text-sm text-muted-foreground mb-2 block font-normal">
+                    Bed time *
+                  </Label>
+                  <Input
+                    id="bedTime"
+                    type="time"
+                    value={formData.bedTime}
+                    onChange={(e) => updateField("bedTime", e.target.value)}
+                    className="h-12 rounded-2xl border-border bg-input-background"
+                  />
                 </div>
-              </>
+              </div>
             )}
           </div>
         </div>

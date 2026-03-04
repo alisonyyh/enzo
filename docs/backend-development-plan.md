@@ -84,7 +84,6 @@ puppies
   - age_weeks (integer)
   - weight_value (numeric, nullable)
   - weight_unit (text)
-  - living_situation (text)
   - photo_url (text, nullable)
   - questionnaire_data (jsonb, nullable)
   - created_at (timestamp)
@@ -241,8 +240,6 @@ CREATE INDEX idx_invites_token
     ageWeeks: number;
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
-    livingSituation: string;
-    workArrangement: string;
     wakeUpTime: string;      // HH:MM
     bedTime: string;         // HH:MM
   }
@@ -291,8 +288,6 @@ Puppy Details:
 - Breed: ${data.breed}
 - Age: ${data.ageMonths} months, ${data.ageWeeks} weeks
 - Weight: ${data.weight} ${data.weightUnit}
-- Living Situation: ${data.livingSituation}
-- Owner's Schedule: ${data.workArrangement}
 - Wake-up Time: ${data.wakeUpTime}
 - Bedtime: ${data.bedTime}
 
@@ -316,7 +311,6 @@ Ensure:
 - Feeding matches breed size and age (3-4 meals for young puppies, 2-3 for older)
 - Exercise is gentle and age-appropriate (5 min per month of age, max)
 - Training sessions are short (5-10 minutes max)
-- Schedule respects owner's work arrangement (no mid-day walks if they work in office)
 - Evening wind-down before bedtime
 
 Return ONLY valid JSON, no other text.`;
@@ -1053,8 +1047,6 @@ PUPPY DETAILS:
 - Breed: ${data.breed}
 - Age: ${data.ageMonths} months, ${data.ageWeeks} weeks (${totalWeeks} weeks total)
 - Weight: ${data.weight || 'unknown'} ${data.weightUnit}
-- Living Situation: ${data.livingSituation}
-- Owner's Work Schedule: ${data.workArrangement}
 - Wake-up Time: ${data.wakeUpTime}
 - Bedtime: ${data.bedTime}
 
@@ -1076,7 +1068,6 @@ REQUIRED ACTIVITIES (15-20 total):
 
 SCHEDULE CONSTRAINTS:
 - Align with owner's wake (${data.wakeUpTime}) and bed (${data.bedTime}) times
-- If work arrangement is "office/hybrid", avoid activities requiring owner presence during typical work hours (9am-5pm)
 - Space activities evenly throughout waking hours
 
 OUTPUT FORMAT (JSON array):

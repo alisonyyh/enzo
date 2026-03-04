@@ -31,7 +31,6 @@ export type Database = {
           age_weeks: number;
           weight_value: number | null;
           weight_unit: string;
-          living_situation: string;
           photo_url: string | null;
           questionnaire_data: QuestionnaireJson | null;
           created_at: string;
@@ -44,7 +43,6 @@ export type Database = {
           age_weeks: number;
           weight_value?: number | null;
           weight_unit?: string;
-          living_situation: string;
           photo_url?: string | null;
           questionnaire_data?: QuestionnaireJson | null;
           created_at?: string;
@@ -56,7 +54,6 @@ export type Database = {
           age_weeks?: number;
           weight_value?: number | null;
           weight_unit?: string;
-          living_situation?: string;
           photo_url?: string | null;
           questionnaire_data?: QuestionnaireJson | null;
         };
@@ -166,30 +163,23 @@ export type Database = {
           note?: string | null;
         };
       };
-      invites: {
+      invite_codes: {
         Row: {
           id: string;
           puppy_id: string;
-          invited_by: string;
-          invite_token: string;
-          status: 'pending' | 'accepted' | 'expired' | 'revoked';
-          accepted_by: string | null;
-          expires_at: string;
+          code: string;
+          created_by: string;
           created_at: string;
         };
         Insert: {
           id?: string;
           puppy_id: string;
-          invited_by: string;
-          invite_token: string;
-          status?: 'pending' | 'accepted' | 'expired' | 'revoked';
-          accepted_by?: string | null;
-          expires_at: string;
+          code: string;
+          created_by: string;
           created_at?: string;
         };
         Update: {
-          status?: 'pending' | 'accepted' | 'expired' | 'revoked';
-          accepted_by?: string | null;
+          code?: string;
         };
       };
     };
@@ -203,11 +193,10 @@ export type PuppyMembership = Database['public']['Tables']['puppy_memberships'][
 export type Routine = Database['public']['Tables']['routines']['Row'];
 export type RoutineItem = Database['public']['Tables']['routine_items']['Row'];
 export type ActivityLog = Database['public']['Tables']['activity_logs']['Row'];
-export type Invite = Database['public']['Tables']['invites']['Row'];
+export type InviteCode = Database['public']['Tables']['invite_codes']['Row'];
 
 // Questionnaire data stored as JSONB
 export interface QuestionnaireJson {
-  workArrangement: string;
   wakeUpTime: string;
   bedTime: string;
 }

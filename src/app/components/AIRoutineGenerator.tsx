@@ -9,8 +9,6 @@ interface QuestionnaireData {
   ageWeeks: string;
   weight: string;
   weightUnit: "lbs" | "kg";
-  livingSituation: string;
-  workArrangement: string;
   wakeUpTime: string;
   bedTime: string;
 }
@@ -146,8 +144,6 @@ function generateRoutine(data: QuestionnaireData) {
   // Calculate potty break interval
   const pottyBreakInterval = isYoungPuppy ? "Every 2 hours" : "Every 3-4 hours";
 
-  // Exercise recommendations based on living situation
-  const hasYard = data.livingSituation === "house-with-yard";
   const exerciseDuration = isYoungPuppy ? "15-20 minutes" : "30-40 minutes";
 
   return {
@@ -178,7 +174,7 @@ function generateRoutine(data: QuestionnaireData) {
       },
       {
         time: formatTime(wakeHour + 2, 0),
-        activity: hasYard ? "Yard Playtime" : "Indoor Play",
+        activity: "Play Session",
         description: `${exerciseDuration} of active play`,
         category: "play"
       },
@@ -259,10 +255,7 @@ function generateRoutine(data: QuestionnaireData) {
       `${data.puppyName} is ${data.ageMonths} months and ${data.ageWeeks} weeks old - consistency is key!`,
       `Take ${data.puppyName} outside ${pottyBreakInterval.toLowerCase()} for house training`,
       `${isYoungPuppy ? 'Young' : 'Growing'} puppies need ${exerciseDuration} of exercise daily`,
-      hasYard ? "Take advantage of your yard for quick potty breaks and play sessions" : "Regular walks are important for socialization and exercise",
-      data.workArrangement === "work-from-home"
-        ? "Working from home? Use breaks to interact with your puppy"
-        : "Consider a midday dog walker if you're away during the day",
+      "Regular walks are important for socialization and exercise",
     ],
     puppyProfile: {
       name: data.puppyName,
@@ -270,8 +263,6 @@ function generateRoutine(data: QuestionnaireData) {
       photoUrl: data.photoUrl,
       age: `${data.ageMonths} months, ${data.ageWeeks} weeks`,
       weight: `${data.weight} ${data.weightUnit}`,
-      livingSituation: data.livingSituation.replace(/-/g, " "),
-      workArrangement: data.workArrangement.replace(/-/g, " ")
     }
   };
 }

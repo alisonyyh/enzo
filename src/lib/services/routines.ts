@@ -117,8 +117,6 @@ export async function generateRoutineWithAI(
     ageWeeks: number;
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
-    livingSituation: string;
-    workArrangement: string;
     wakeUpTime: string;
     bedTime: string;
   }
