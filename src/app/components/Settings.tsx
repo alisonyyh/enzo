@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { ArrowLeft, Users, Share2, Copy, Check, ChevronRight } from "lucide-react";
+import { ArrowLeft, Users, Copy, Check, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
-import { createInvite, getPuppyInvites, revokeInvite, getInviteUrl } from "../../lib/services/invites";
+import { getInviteCode } from "../../lib/services/invite-codes";
 import { uploadUserAvatar, updateProfile } from "../../lib/services/auth";
-import type { Invite } from "../../lib/database.types";
+import { supabase } from "../../lib/supabase";
 
 interface SettingsProps {
   accountData: { name: string; email: string };
@@ -20,61 +20,42 @@ interface SettingsProps {
   };
   puppyId: string;
   userId: string;
+  userRole: 'owner' | 'caretaker';
   onBack: () => void;
   onSignOut: () => void;
   onAvatarUpdate: (newUrl: string) => void;
 }
 
-export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
+export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, userRole, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
   const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile">("main");
-  const [invites, setInvites] = useState<Invite[]>([]);
-  const [inviteLink, setInviteLink] = useState("");
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [caretakerCount, setCaretakerCount] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [generatingInvite, setGeneratingInvite] = useState(false);
   const [showPhotoSheet, setShowPhotoSheet] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load invites on mount
+  // Load invite code and caretaker count on mount (owners only)
   useEffect(() => {
-    getPuppyInvites(puppyId).then(setInvites).catch(console.error);
-  }, [puppyId]);
+    if (userRole !== 'owner') return;
 
-  const handleGenerateInvite = async () => {
-    setGeneratingInvite(true);
-    try {
-      const invite = await createInvite(puppyId, userId);
-      setInviteLink(getInviteUrl(invite.invite_token));
-      setInvites((prev) => [invite, ...prev]);
-    } catch (err) {
-      console.error("Error creating invite:", err);
-      toast.error("Failed to generate invite link");
-    } finally {
-      setGeneratingInvite(false);
-    }
-  };
+    getInviteCode(puppyId).then(setInviteCode).catch(console.error);
 
-  const handleCopyInviteLink = () => {
-    if (!inviteLink) {
-      handleGenerateInvite().then(() => {
-        // Copy will happen on next render with the link
-      });
-      return;
-    }
-    navigator.clipboard.writeText(inviteLink);
+    supabase
+      .from("puppy_memberships")
+      .select("id", { count: "exact", head: true })
+      .eq("puppy_id", puppyId)
+      .eq("role", "caretaker")
+      .eq("status", "active")
+      .then(({ count }) => setCaretakerCount(count || 0));
+  }, [puppyId, userRole]);
+
+  const handleCopyCode = () => {
+    if (!inviteCode) return;
+    navigator.clipboard.writeText(inviteCode);
     setCopied(true);
-    toast.success("Invite link copied!");
+    toast.success("Invite code copied!");
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleRevokeInvite = async (inviteId: string) => {
-    try {
-      await revokeInvite(inviteId);
-      setInvites((prev) => prev.map((i) => i.id === inviteId ? { ...i, status: "revoked" as const } : i));
-      toast.success("Invite revoked");
-    } catch (err) {
-      console.error("Error revoking invite:", err);
-    }
   };
 
   const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,103 +103,62 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
 
           {/* Content */}
           <div className="flex-1 overflow-y-auto px-5 space-y-4">
-            {/* Invite Section */}
+            {/* Invite Code Section */}
             <div className="bg-card rounded-2xl p-4" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
-                  <Share2 className="size-5 text-primary" />
+              <p className="text-sm font-medium text-muted-foreground mb-2">Invite Code</p>
+              {inviteCode ? (
+                <div className="bg-background rounded-xl p-3 flex items-center justify-between mb-3">
+                  <span className="text-lg font-bold text-foreground tracking-wide">{inviteCode}</span>
+                  <button
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1.5 text-primary hover:opacity-80 transition-opacity px-2 py-1"
+                  >
+                    {copied ? (
+                      <>
+                        <Check className="size-4" />
+                        <span className="text-sm font-medium">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="size-4" />
+                        <span className="text-sm font-medium">Copy</span>
+                      </>
+                    )}
+                  </button>
                 </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-foreground">Invite a Caretaker</h3>
-                  <p className="text-sm text-muted-foreground">Share routine tracking with family</p>
-                </div>
-              </div>
-              {inviteLink && (
+              ) : (
                 <div className="bg-background rounded-xl p-3 mb-3">
-                  <p className="text-xs text-muted-foreground mb-1">Invite Link</p>
-                  <p className="text-sm text-foreground break-all">{inviteLink}</p>
+                  <p className="text-sm text-muted-foreground">Loading...</p>
                 </div>
               )}
-              {!inviteLink && (
-                <Button
-                  onClick={handleGenerateInvite}
-                  disabled={generatingInvite}
-                  className="w-full h-12 bg-primary hover:bg-[#D4661F] text-primary-foreground rounded-xl text-base font-semibold"
-                >
-                  {generatingInvite ? "Generating..." : "Generate Invite Link"}
-                </Button>
-              )}
-              {inviteLink && (
-                <Button
-                  onClick={handleCopyInviteLink}
-                  className="w-full h-12 bg-primary hover:bg-[#D4661F] text-primary-foreground rounded-xl text-base font-semibold"
-                >
-                  {copied ? (
-                    <>
-                      <Check className="size-4 mr-2" />
-                      Copied!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="size-4 mr-2" />
-                      Copy Invite Link
-                    </>
-                  )}
-                </Button>
-              )}
-              <p className="text-xs text-muted-foreground mt-3 text-center">
-                You can have up to 1 caretaker. They can view and track activities but can't change settings.
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Share this code with someone you'd like to help care for {puppyProfile.name}. They can enter it when they sign up for PupPlan.
               </p>
             </div>
 
-            {/* Pending/Active Invites */}
-            {invites.filter(i => i.status === "pending" || i.status === "accepted").length > 0 && (
-              <div>
-                <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">
-                  Invites
-                </h3>
-                {invites.filter(i => i.status === "pending" || i.status === "accepted").map((invite) => (
-                  <div
-                    key={invite.id}
-                    className="bg-card rounded-2xl p-4 mb-3"
-                    style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div>
-                        <h4 className="font-medium text-foreground capitalize">
-                          {invite.status === "accepted" ? "Caretaker joined" : "Pending invite"}
-                        </h4>
-                        <p className="text-sm text-muted-foreground">
-                          {invite.status === "pending"
-                            ? `Expires ${new Date(invite.expires_at).toLocaleDateString()}`
-                            : `Accepted`}
-                        </p>
-                      </div>
-                      {invite.status === "pending" && (
-                        <button
-                          onClick={() => handleRevokeInvite(invite.id)}
-                          className="text-destructive text-sm font-medium hover:opacity-80 transition-opacity"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </div>
+            {/* Current Caretakers */}
+            <div>
+              <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">
+                Current Caretakers
+              </h3>
+              {caretakerCount === 0 ? (
+                <div className="text-center py-8">
+                  <div className="w-16 h-16 rounded-full bg-accent mx-auto mb-4 flex items-center justify-center">
+                    <Users className="size-8 text-muted-foreground" />
                   </div>
-                ))}
-              </div>
-            )}
-
-            {invites.filter(i => i.status === "pending" || i.status === "accepted").length === 0 && (
-              <div className="text-center py-8">
-                <div className="w-16 h-16 rounded-full bg-accent mx-auto mb-4 flex items-center justify-center">
-                  <Users className="size-8 text-muted-foreground" />
+                  <p className="text-muted-foreground">None yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Share the invite code to add a caretaker
+                  </p>
                 </div>
-                <p className="text-muted-foreground">No caretakers yet</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Share the invite link to add one
-                </p>
-              </div>
-            )}
+              ) : (
+                <div className="bg-card rounded-2xl p-4" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
+                  <p className="text-sm text-foreground">
+                    {caretakerCount} caretaker{caretakerCount > 1 ? "s" : ""} active
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -448,28 +388,30 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
             </button>
           </div>
 
-          {/* Sharing Section */}
-          <div>
-            <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">Sharing</h3>
-            <button
-              onClick={() => setActiveSection("caretakers")}
-              className="w-full bg-card rounded-2xl p-4 flex items-center justify-between hover:bg-accent transition-colors"
-              style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
-                  <Users className="size-5 text-primary" />
+          {/* Sharing Section — owners only */}
+          {userRole === 'owner' && (
+            <div>
+              <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">Sharing</h3>
+              <button
+                onClick={() => setActiveSection("caretakers")}
+                className="w-full bg-card rounded-2xl p-4 flex items-center justify-between hover:bg-accent transition-colors"
+                style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
+                    <Users className="size-5 text-primary" />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-medium text-foreground">Caretakers</p>
+                    <p className="text-sm text-muted-foreground">
+                      {caretakerCount === 0 ? "None added" : `${caretakerCount} active`}
+                    </p>
+                  </div>
                 </div>
-                <div className="text-left">
-                  <p className="font-medium text-foreground">Caretakers</p>
-                  <p className="text-sm text-muted-foreground">
-                    {invites.filter(i => i.status === "accepted").length === 0 ? "None added" : `${invites.filter(i => i.status === "accepted").length} active`}
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="size-5 text-muted-foreground" />
-            </button>
-          </div>
+                <ChevronRight className="size-5 text-muted-foreground" />
+              </button>
+            </div>
+          )}
 
           {/* App Info */}
           <div>

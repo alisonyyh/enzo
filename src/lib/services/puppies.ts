@@ -1,5 +1,6 @@
 import { supabase } from '../supabase';
 import type { Puppy, PuppyMembership } from '../database.types';
+import { createInviteCode } from './invite-codes';
 
 export interface CreatePuppyData {
   name: string;
@@ -60,6 +61,14 @@ export async function createPuppy(userId: string, data: CreatePuppyData): Promis
     throw memberError;
   }
   console.log('createPuppy: owner membership created');
+
+  // Generate invite code for this household (non-blocking — code can be regenerated if this fails)
+  try {
+    const code = await createInviteCode(puppy.id, data.name, userId);
+    console.log('createPuppy: invite code created:', code);
+  } catch (err) {
+    console.error('createPuppy: invite code generation failed (non-critical):', err);
+  }
 
   return puppy;
 }
