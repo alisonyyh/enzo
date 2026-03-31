@@ -381,6 +381,7 @@ export default function App() {
           userRole={currentMembership?.role || "owner"}
           isFirstTime={isFirstTime}
           onOpenSettings={() => setAppState("settings")}
+          puppyCreatedAt={currentPuppy.created_at}
         />
       )}
 
@@ -402,6 +403,7 @@ export default function App() {
           puppyProfile={puppyProfile}
           puppyId={currentPuppy.id}
           userId={user?.id || ""}
+          userRole={currentMembership?.role || "owner"}
           onBack={() => setAppState("dashboard")}
           onSignOut={handleSignOut}
           onAvatarUpdate={(newUrl) => setAvatarUrl(newUrl)}

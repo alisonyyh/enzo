@@ -13,16 +13,17 @@ export interface ActivityLogWithProfile extends ActivityLog {
 }
 
 /**
- * Get today's activity logs for a puppy (with completer profile data)
+ * Get activity logs for a puppy for a specific date (with completer profile data)
+ * Despite the name, supports any date via optional param (D63)
  */
-export async function getTodayLogs(puppyId: string): Promise<ActivityLogWithProfile[]> {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+export async function getTodayLogs(puppyId: string, date?: string): Promise<ActivityLogWithProfile[]> {
+  const dateString = date || new Date().toISOString().split('T')[0]; // YYYY-MM-DD
 
   const { data, error } = await supabase
     .from('activity_logs')
     .select('*')
     .eq('puppy_id', puppyId)
-    .eq('date', today);
+    .eq('date', dateString);
 
   if (error) throw error;
 

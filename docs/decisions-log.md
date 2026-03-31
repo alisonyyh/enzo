@@ -21,7 +21,7 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D5 | Multi-Role Support | **Yes — one user can be owner for Puppy A and caretaker for Puppy B** | Data model supports this via PuppyMembership table. Common real-world scenario. App shows a puppy switcher when user has access to multiple puppies. |
 | D6 | Image Storage | **Supabase Storage** | Puppy photos and profile pictures uploaded to Supabase Storage buckets. Keeps all data in one platform. **Web:** Uses `supabase.storage.upload()` via JavaScript SDK. **iOS (future):** Will use Swift SDK for same storage buckets. |
 | D7 | Monetization | **Free in v1. No paywall, no IAP.** | Get users hooked on the value first. Validate product-market fit. Monetize in v1.1+ with a freemium model (premium unlocks: multiple puppies, more caretakers, advanced analytics, push reminders). |
-| D8 | Invite Delivery | **Link-based (no in-app messaging integration)** | Per product requirements. Owner generates link, shares via platform share mechanism. **Web:** Native `navigator.share()` or copy-to-clipboard. **iOS (future):** UIActivityViewController. No in-app messaging needed — users already use iMessage/WhatsApp. |
+| D8 | Invite Delivery | **Static invite code per household (no links, no deep linking)** | Replaced link-based system (see D70). Each household gets a unique, persistent invite code (e.g., "BISCUIT-7X2K") generated at household creation. Owner views and copies the code from Settings > Caretakers. Caretaker enters the code during first-time sign-up via a dedicated Invite Code Entry Screen. No deep links, no universal links, no share sheet, no expiration, no pending/revoked states. Codes are case-insensitive, server-validated. **Web:** `navigator.clipboard.writeText()` for copy button. **iOS (future):** `UIPasteboard.general` for copy. |
 | D9 | Max Caretakers (v1) | **1 per puppy** | Per product requirements. Simplifies permissions model. PuppyMembership table supports expansion to N caretakers later. |
 | **WEB APP (Current Platform)** ||||
 | D10 | Web Stack | **Vite + React + TypeScript** | Vite: Zero-config, fast dev server, fast builds. React: Widely adopted, mature ecosystem, easy to hire for. TypeScript: Type safety prevents bugs, better DX with autocomplete. No frameworks like Next.js in 0→1 — keep it simple. |
@@ -37,7 +37,7 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D19 | iOS Platform | **iOS only (iPhone), minimum iOS 17** | Once we validate product-market fit with web app, iOS will be the primary mobile experience. iOS 17 (not 16) for native SwiftData, improved SwiftUI navigation, better async/await patterns. iOS 17 adoption is >85% of active devices as of early 2025. |
 | D20 | iOS Stack | **Swift + SwiftUI** | Native iOS development. SwiftUI for all UI (no UIKit bridging unless absolutely necessary). Swift concurrency (async/await) for all network calls. Supabase Swift SDK for backend communication. |
 | D21 | iOS Local Persistence | **SwiftData** | Apple's native persistence framework (successor to Core Data). Simpler API, works seamlessly with SwiftUI, supports offline-first pattern. Stores routine and activity data locally so the app works without network. |
-| D22 | iOS Deep Linking | **Apple Universal Links + Supabase token management** | Invite links use Universal Links format (`https://pupplan.app/invite/{token}`). For deferred deep linking (user doesn't have app installed → App Store → install → invite auto-applied), we store the invite token in the clipboard or use `NSUserActivity` continuation. No third-party deep linking SDK in v1 — keep it simple. |
+| D22 | iOS Deep Linking | **Not required for invites (invite code model)** | The switch from invite links to invite codes (D70) eliminates the need for Universal Links and deferred deep linking for the invitation flow. Caretakers enter a code manually during sign-up — no URL routing needed. If deep linking is needed for other features in the future (e.g., shared routine links), Apple Universal Links can be added then. No third-party deep linking SDK. |
 | **FLOW 6: TASK MANAGEMENT (Edit, Delete, Add Tasks)** ||||
 | D23 | Real-Time Sync Backend | **Firebase Firestore** (hybrid with Supabase) | Task editing requires <3-second cross-device sync with offline-first architecture. Firestore provides built-in real-time listeners, automatic offline persistence (IndexedDB), and optimistic updates out-of-the-box. Supabase Realtime requires manual offline queuing and doesn't handle optimistic UI as cleanly. **Hybrid approach:** Supabase for structured data (users, puppies, routines), Firestore exclusively for `tasks` collection (daily task instances). Firebase Auth uses same Google OAuth token via Custom Token generation. Trade-off: Two backends increases complexity, but Firestore's real-time capabilities are significantly better for collaborative editing. |
 | D24 | Conflict Resolution Strategy | **Last-write-wins** (server timestamp) | When Sarah and Mike both edit same task while offline, whoever's edit reaches Firestore server last wins (based on `last_edited_at` server timestamp). No UI for conflict resolution in v1 — conflicts are rare (requires simultaneous offline edits of same task). Firestore's server timestamp ensures deterministic resolution. Alternative (operational transforms) is over-engineering for 0→1. P1: Add toast notification "Mike edited this task after you" for visibility. |
@@ -66,6 +66,24 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D55 | Activity Type Label Rename Scope | **"Potty" in grid buttons only; "Potty Break" persists in timeline titles** | The Activity Type grid in the bottom sheet shows "🚽 Potty" instead of "🚽 Potty Break". However, task titles in the timeline still render as "Potty Break". Rationale: (1) The grid button label "Potty Break" is unnecessarily long — "Potty" is clearer at the grid cell's constrained width and matches the brevity of other labels (Meal, Walk, Nap). (2) The underlying `activityType` enum value remains `"potty_break"` — no data migration, no backend changes, no breaking existing Firestore documents. (3) Timeline titles derive from `ACTIVITY_CONFIG[activityType].label` which keeps "Potty Break" for readability in the card context. (4) The grid and timeline use separate label lookups, so this is a display-only change scoped to the `ACTIVITIES` array in AddTaskFAB. |
 | D56 | Potty Emoji Display on Task Cards | **Inline after title text, before edit indicator** | Selected potty detail emojis (💩, 💦, or both) display inline on the TaskCard component, appended to the task title. Rationale: (1) Inline display is the most compact — no extra row, no badge, no tooltip. Users scanning the timeline can instantly see what happened at each potty event. (2) Order is always 💩 then 💦 (alphabetical by label: Pee < Poop reversed to match common logging convention — solids first). (3) Position after title but before ✏️ edit indicator maintains the existing card information hierarchy: time → status → title → details → edit marker. (4) Only rendered when `task.pottyDetails?.poop` or `task.pottyDetails?.pee` is true AND `activityType === 'potty_break'`. Non-potty tasks are completely unaffected. (5) No potty details saved = no emojis shown (clean default). |
 | D57 | Potty Details Persistence Path | **Same Firestore collections as other task fields (no new collection)** | `pottyDetails` is stored as a field within existing Firestore documents — `tasks/{taskId}` for custom tasks and `editedRoutineItems/{docId}` for AI-generated routine item edits (D48). Rationale: (1) Potty details are a property of a task, not a separate entity — storing them in a separate collection would violate the flat document model (D32) and add unnecessary query complexity. (2) Real-time sync, offline persistence, and conflict resolution all come for free — `pottyDetails` travels with the task document through Firestore's existing sync infrastructure (D30, D33). (3) `saveRoutineItemEdit()` already handles arbitrary field additions via the spread operator — adding `pottyDetails` to the edit payload requires no structural changes to the overlay pattern. (4) Firestore charges per document read/write, not per field — adding a field has zero cost impact. |
+| **DAY NAVIGATION — CALENDAR PICKER (F12 / Flow 8)** ||||
+| D58 | Day Navigation UX Pattern | **Calendar picker bottom sheet** (not left/right arrows) | Users tap the date header to open a monthly calendar grid as a bottom sheet. Rationale: (1) A calendar picker lets users jump directly to any valid date in a single tap — no stepping through one day at a time. A user who was on vacation for a week can jump straight to last Monday instead of tapping a left arrow 7 times. (2) The calendar grid provides spatial context (day-of-week alignment, weekend awareness) that sequential arrows lack. (3) Reuses the existing bottom sheet pattern from AddTaskFAB and EditTask — no new interaction paradigm to learn. (4) The chevron (▾) on the date header is a universally understood picker affordance. Trade-off: More UI surface area than arrows, but the information density justifies it for users who need to browse across multiple days/weeks. |
+| D59 | Date Range Boundaries | **Puppy creation date → tomorrow (today + 1)** | The calendar only shows dates within this range as selectable; all other dates are grayed out and non-tappable. Rationale: (1) No meaningful data exists before the puppy was added to the app — showing earlier dates would lead to empty/confusing views. (2) Limiting future view to tomorrow is the minimum viable "plan ahead" capability. Showing 2+ days ahead adds no value because the routine is the same every day (base template) and no date-specific data (custom tasks, edits, completions) would exist. (3) Boundary is derived from `routines.generated_at` or `puppies.created_at` (whichever is earlier) — no new DB query needed, this data is already loaded in the Dashboard. P2: Extend future view to 7 days for users who want to plan a full week. |
+| D60 | Non-Today View Mode | **Strictly read-only** (no mutations on past/future dates) | When viewing any date that is not today: FAB is hidden, swipe-to-delete is disabled, completion tap is disabled, task card tap opens a read-only "Task Details" sheet (past days) or is disabled entirely (tomorrow). Rationale: (1) Editing past data retroactively is a fundamentally different feature (audit trail, conflict with existing logs, "who changed history?" questions) — not worth the complexity in 0→1. (2) Pre-completing or pre-editing tomorrow's tasks would create confusing state if the user also modifies them on the actual day. (3) Read-only mode is trivially implemented — a single `isViewingToday` boolean gates all mutation paths. No new permission logic, no new Firestore rules, no new edge cases. P1: Allow retroactive completion of past tasks (with clear "backdated" indicator). |
+| D61 | Return-to-Today Affordance | **"← Today" pill button below date header** + calendar "Today" button | When viewing a non-today date, a small pill-shaped button labeled "← Today" appears directly below the date header. One tap returns to today's live view. The calendar sheet also has a "Today" button at bottom-left. Rationale: (1) The pill button is a one-tap escape hatch that doesn't require opening the calendar — critical for quick "look at yesterday, go back" workflows. (2) The pill is only visible when `selectedDate !== today`, so it doesn't clutter the default view. (3) Tapping today's date in the calendar also returns to today — multiple affordances for the same action reduce user confusion. |
+| D62 | Date Header Interaction | **Tappable date text with chevron (▾) indicator** | The entire date text area becomes a tap target (min 44pt). A small downward chevron appears right of the date to signal interactivity. Rationale: (1) The chevron is a standard mobile picker affordance — users expect a dropdown/picker when they see ▾. (2) Making the date text itself tappable (not a separate button) keeps the header clean. (3) The date header already exists in the Dashboard — this is an enhancement, not a new element. No layout changes needed beyond adding the chevron and the `onClick` handler. |
+| D63 | Service Function Parameterization | **Add optional `date` parameter to all date-filtered services** (default = today) | `subscribeToTasks()`, `getTodayLogs()`, `subscribeToEditedRoutineItems()`, `subscribeToDeletedRoutineItems()` all currently hardcode `new Date().toISOString().split('T')[0]`. Each function gains an optional `date?: string` parameter that defaults to today's date string when omitted. Rationale: (1) Backward-compatible — all existing call sites continue working without changes. (2) Single code path for both today and non-today views — no duplicated query logic. (3) The function names (e.g., `getTodayLogs`) become slightly misleading but renaming them would break existing call sites for zero functional benefit. Add a comment: `// Despite the name, supports any date via optional param`. |
+| D64 | Real-Time Subscriptions on Non-Today Views | **Disabled** (static data fetch only) | When viewing a non-today date, the app performs a one-time data fetch instead of establishing real-time Firestore listeners or Supabase Realtime subscriptions. Rationale: (1) Historical data doesn't change in real-time — nobody is editing yesterday's tasks. (2) Tomorrow's tasks don't exist yet (no custom tasks, edits, or completions). (3) Disabling subscriptions reduces Firestore reads and WebSocket connections. (4) Implementation: Dashboard's `useEffect` for subscriptions includes `isViewingToday` in its dependency array — when false, cleanup functions run and no new subscriptions are established. The one-time fetch uses the same service functions (D63) but calls them directly instead of via `onSnapshot`. |
+| D65 | Non-Today Data Caching | **No caching in v1** (fresh fetch per date selection) | Each time the user selects a date from the calendar, the app fetches all data for that date from scratch. Rationale: (1) Caching historical data adds complexity (cache invalidation, staleness, memory management) with minimal UX payoff in 0→1. (2) The data payload per day is small (~15-20 routine items + 0-5 custom tasks + completion logs) — fetch latency is <500ms on decent networks. (3) Users are unlikely to rapidly switch between the same dates in a session. (4) A loading spinner on the task list area provides adequate feedback during the brief fetch. P1: Add LRU cache (last 7 viewed dates) if analytics show users frequently revisit the same dates. |
+| D66 | Calendar UI Implementation | **Custom React component** (not a third-party date picker library) | The calendar grid is built as a custom component rather than importing `react-datepicker`, `react-calendar`, or similar. Rationale: (1) The calendar's requirements are highly specific — bounded date range, today indicator, disabled dates, bottom sheet integration, month navigation with disabled boundaries — and customizing a third-party picker to match is often harder than building from scratch. (2) Zero new dependencies. The component is a straightforward 7-column CSS grid with date math. (3) The bottom sheet container already exists (same pattern as AddTaskFAB). The calendar content is just the grid content inside it. (4) Total implementation: ~150-200 lines of React + Tailwind. Not worth a library for this. |
+| D67 | Past Day Task Detail Sheet | **Read-only variant of bottom sheet** (new "Task Details" mode) | When tapping a task card on a past day, a bottom sheet opens with the title "Task Details" instead of "Edit Task". All fields are display-only (no pickers, no text input). Shows completion status with who completed and when. Single "Close" button. Rationale: (1) Reuses the bottom sheet component (AddTaskFAB) in a third display mode — read-only. This is a natural extension of the existing tri-mode pattern (D49): Add Custom / Edit Custom / Edit Routine → now also View Read-Only. (2) Users expect tapping a task to show details — doing nothing on tap would feel broken. (3) The completion attribution info (who completed, when) is valuable data that isn't visible on the card itself. (4) Potty details shown as text ("Poop 💩, Pee 💦") rather than toggles — consistent with read-only mode. |
+| D68 | Progress Stats Card Visibility | **Hidden on non-today views** | The "Today's Progress" card (completion count + circular percentage) is hidden when viewing past or future dates. Rationale: (1) Past days' progress data is available in the Progress tab (weekly view) — duplicating it on the day navigation view adds clutter. (2) Tomorrow has no progress data (all unchecked). (3) Hiding the card creates more vertical space for the task list, which is the primary content users want when reviewing a past day. (4) Implementation: conditional render based on `isViewingToday` — same boolean that gates all other today-only UI elements (D60). |
+| D69 | Current Time Indicator Line | **Hidden on non-today views** | The horizontal "current time" line that scrolls down the timeline is hidden when not viewing today. Rationale: (1) The current time is irrelevant to historical or future task lists. (2) Showing it on a past day would be confusing ("why is 2:30 PM highlighted on last Tuesday's view?"). (3) One-line conditional: `{isViewingToday && <CurrentTimeLine />}`. |
+| **INVITE CODE SYSTEM (Replacing Invite Links)** ||||
+| D70 | Invite Link → Invite Code | **Replaced invite links with static invite codes** | The original invite system (D8) used deep links: owner generates a link → shares via Share Sheet → caretaker taps link → app detects deep link → accept invite screen. This required Universal Links (iOS), deferred deep linking (for users without the app installed), App Store redirect handling, URL routing, and invite token lifecycle management (pending/accepted/expired/revoked states, 72-hour expiry). **The invite code system eliminates all of this.** Each household gets a unique, persistent code generated at creation time. The owner sees it in Settings > Caretakers and copies it to clipboard. New users see a choice screen after first sign-in ("I have an invite code" / "I do not have an invite code"). Caretakers enter the code on a simple text input screen; server validates it; done. **What was removed:** (1) Deep link infrastructure (Universal Links, `apple-app-site-association`, deferred deep linking). (2) Share Sheet / `navigator.share()` integration. (3) Invite lifecycle states (pending/accepted/expired/revoked). (4) Invite expiration (72-hour TTL). (5) Invite token generation and single-use validation. **What was added:** (1) New User Choice Screen after first-time OAuth. (2) Invite Code Entry Screen with text input and server-side validation. (3) `invite_codes` table (replaces `invites` table) — simpler schema: `id`, `puppy_id`, `code`, `created_by`, `created_at`. No status, no expiry. (4) Clipboard copy with visual feedback ("Copied!" for 2 seconds). **Engineering impact:** ~60% reduction in invite system complexity. No URL routing, no async deep link resolution, no invite state machine, no expiration cron. Trade-off: slightly more manual effort for caretaker (type/paste a code vs. tap a link), acceptable since invitation is a one-time action. |
+| D71 | Invite Code Format | **`{WORD}-{ALPHANUMERIC}` (e.g., "BISCUIT-7X2K")** | Human-readable, easy to share verbally. The first segment is derived from the puppy's name (uppercased, truncated to 8 chars) for memorability. The second segment is a random 4-character alphanumeric string for uniqueness. Total code length: 6-13 characters. Stored uppercase in DB, normalized to uppercase on lookup (case-insensitive). Collision risk: 36^4 = 1.6M possible suffixes per puppy name — sufficient for 0→1. If collision occurs during generation, regenerate with a new random suffix. Whitespace is trimmed on both ends before validation. |
+| D72 | New User Choice Screen Routing | **State-based screen in App.tsx (`"choice"` enum value)** | After first-time Google OAuth, new users route to a `"choice"` screen instead of directly to `"questionnaire"`. This screen shows two options: "I have an invite code" → `"invite-code-entry"` screen, "I do not have an invite code" → `"questionnaire"` screen. Returning users bypass this entirely and route to `"dashboard"`. Implementation: add two new screen enum values to App.tsx routing. No react-router needed — consistent with D12 (state-based routing). The choice screen is a simple component with two large tappable cards — no complex state, no API calls. |
+| D73 | Invite Code Validation | **Supabase Edge Function (server-side)** | Code validation happens server-side via a Supabase Edge Function (`validate-invite-code`). The function: (1) Normalizes input (uppercase, trim whitespace). (2) Queries `invite_codes` table for matching `code`. (3) If found: creates a `puppy_memberships` row with `role: 'caretaker'`, returns puppy details (name, breed, age, photo). (4) If not found: returns 404 error. (5) If caretaker limit exceeded (max 1 per puppy in v1): returns 409 conflict. **Why not client-side query?** RLS would need to allow unauthenticated reads of all invite codes for validation, which leaks household existence. Edge Function keeps the lookup server-side and only returns data on successful match. |
 
 ---
 
@@ -96,11 +114,11 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 │    - users, puppies         │  │    scheduledTime,           │
 │    - routines, routine_items│  │    actualTime,              │
 │    - puppy_memberships      │  │    activityType, isEdited,  │
-│    - invites, profiles      │  │    isUserAdded, isCompleted │
+│    - invite_codes, profiles  │  │    isUserAdded, isCompleted │
 │  Realtime (other features)  │  │  Collection: editedRoutineItems/│
 │  Edge Functions:            │  │  - Routine edit overlays (D48)  │
 │    - generate-routine       │  │  - Real-time listeners      │
-│                             │  │  - Offline persistence      │
+│    - validate-invite-code   │  │  - Offline persistence      │
 │    - getFirebaseToken       │  │                             │
 │  Storage (photos)           │  │  Auth: Custom Tokens from   │
 │  RLS Policies               │  │        Supabase Edge Fn     │
@@ -165,7 +183,7 @@ puppy_daycare/
 │           ├── puppies.ts           # createPuppy, getUserPuppies
 │           ├── routines.ts          # saveRoutine, getActiveRoutine
 │           ├── activity-logs.ts     # completeActivity, getTodayLogs (with profiles join)
-│           ├── invites.ts           # generateInvite, acceptInvite
+│           ├── invite-codes.ts      # validateInviteCode, getInviteCode (Supabase Edge Function calls)
 │           ├── tasks.ts             # editTask, deleteTask, addTask, completeTask (Firestore)
 │           ├── deleted-routine-items.ts  # Persist routine item deletions (Firestore overlay)
 │           └── edited-routine-items.ts   # Persist routine item edits (Firestore overlay, D48)
@@ -197,7 +215,7 @@ puppy_daycare/
 ```
 PupPlan-iOS/
 ├── PupPlanApp.swift                 # App entry point, routing logic
-├── Info.plist                       # Universal Links config
+├── Info.plist                       # App configuration
 ├── Models/
 │   ├── User.swift                   # SwiftData model
 │   ├── Puppy.swift                  # SwiftData model
@@ -232,7 +250,7 @@ PupPlan-iOS/
 | `routines` | Full CRUD | Read only |
 | `routine_items` | Full CRUD | Read only |
 | `activity_logs` | Full CRUD | Insert (mark complete) + Read |
-| `invites` | Full CRUD (own invites) | Read (own invite) |
+| `invite_codes` | Read (own household code) | No direct access (validated via Edge Function) |
 | `puppy_memberships` | Full CRUD | Read (own membership) |
 
 RLS policies use `auth.uid()` joined through `puppy_memberships` to determine access. This means permission enforcement happens at the database level — the iOS app doesn't need to implement permission checks beyond hiding UI elements.
@@ -241,7 +259,7 @@ RLS policies use `auth.uid()` joined through `puppy_memberships` to determine ac
 
 The app subscribes to two Supabase Realtime channels:
 1. **`activity_logs` table** — filtered by `puppy_id`. When the caretaker marks an activity complete, the owner's app updates within seconds (and vice versa).
-2. **`invites` table** — filtered by `puppy_id`. Owner gets real-time update when caretaker accepts invite.
+2. **`puppy_memberships` table** — filtered by `puppy_id`. Owner gets real-time update when a caretaker joins via invite code (new membership row inserted by the `validate-invite-code` Edge Function).
 
 ---
 
@@ -348,16 +366,39 @@ Response format is strictly JSON — no prose, no markdown. The Edge Function va
   - Clear pottyDetails when activity type switches away from Potty
   → Unblocks: Structured housebreaking progress tracking
 
+🔲 Step 7c: Day Navigation — Calendar Picker (P0 - Flow 8 / F12)
+  - Parameterize service functions: add optional `date` param to subscribeToTasks(),
+    getTodayLogs(), subscribeToEditedRoutineItems(), subscribeToDeletedRoutineItems() (D63)
+  - Build CalendarPicker component: 7-column month grid, month navigation arrows,
+    bounded date range (puppy creation → tomorrow), today indicator, disabled dates (D66)
+  - Make date header tappable: add chevron (▾), onClick opens calendar bottom sheet (D62)
+  - Add selectedDate state to Dashboard, derive isViewingToday boolean (D60)
+  - Implement read-only mode: conditionally hide FAB, disable swipe-to-delete,
+    disable completion tap, hide progress card, hide time indicator (D60, D68, D69)
+  - Add "← Today" pill button below date header (visible when selectedDate ≠ today) (D61)
+  - Implement past day data fetching: one-time fetch (not real-time) for selected date (D64, D65)
+  - Add read-only "Task Details" bottom sheet for past day task taps (D67)
+  - Disable all task interaction on tomorrow view (task cards non-tappable)
+  - Handle edge cases: midnight rollover, first day of usage, offline date selection
+  → Unblocks: Historical review ("did Mike do yesterday's potty breaks?") and
+    tomorrow preview ("what's the schedule look like for planning?")
+
 🔲 Step 8: Progress tracking (P1)
   - Weekly summary view
   - Completion rate calculation, streaks, activity breakdown
   - Team activity split (owner vs. caretaker)
 
-🔲 Step 9: Invite system (P1)
-  - InviteService: generate token, create Supabase record
-  - Settings page: generate link, share via navigator.share()
-  - AcceptInviteView: caretaker acceptance flow
-  - RLS policies enforcement for caretaker role
+🔲 Step 9: Invite code system (P0)
+  - Supabase migration: `invite_codes` table (id, puppy_id, code, created_by, created_at)
+  - Auto-generate invite code on household creation (DB trigger or post-onboarding call)
+  - Settings > Caretakers screen: display invite code + [Copy] button (clipboard API)
+  - Supabase Edge Function: `validate-invite-code` (normalize, lookup, create membership, return puppy details)
+  - New User Choice Screen component: "I have an invite code" / "I do not have an invite code"
+  - Invite Code Entry Screen component: text input, submit, inline error, back navigation
+  - Success Screen component: puppy photo/details, "View Routine" button
+  - App.tsx routing: add `"choice"`, `"invite-code-entry"`, `"invite-success"` screen states (D72)
+  - RLS policies for `invite_codes` table (owner read-only, no caretaker direct access)
+  - Realtime subscription on `puppy_memberships` for owner notification when caretaker joins
 
 🔲 Step 10: Deploy to Vercel (P0)
   - Connect GitHub repo to Vercel
@@ -377,7 +418,6 @@ Response format is strictly JSON — no prose, no markdown. The Edge Function va
 Step 1: iOS project setup
   - Create Xcode project (Swift + SwiftUI, iOS 17+)
   - Install Supabase Swift SDK
-  - Configure Universal Links (apple-app-site-association)
   - Bundle breeds.json
 
 Step 2: Port core screens to SwiftUI
@@ -835,3 +875,168 @@ export interface Task {
 ### Firestore Security Rules
 
 No changes needed. Existing rules allow authenticated users to read/write documents in `tasks` and `editedRoutineItems` collections where they are the puppy's owner or caretaker. `pottyDetails` is just another field on those documents — Firestore rules operate at the document level, not the field level.
+
+---
+
+## Flow 8 / F12 — Day Navigation (Calendar Picker)
+
+### Summary
+
+Flow 8 adds a calendar picker that lets users browse past and future task lists. Tapping the date header opens a monthly calendar bottom sheet. Users can select any date from the puppy's creation date through tomorrow. Past days show read-only task lists with completion attribution. Tomorrow shows the base routine template with all tasks unchecked. A "← Today" pill button provides instant return to the live view.
+
+### Decisions
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| D58 | Navigation pattern | Calendar picker bottom sheet (not arrows) | Direct date jumping, spatial context, reuses existing bottom sheet pattern. |
+| D59 | Date range | Puppy creation date → tomorrow | No data before creation. Tomorrow is minimum viable future view. |
+| D60 | Non-today mode | Strictly read-only | No mutations on past/future. Single `isViewingToday` boolean gates all changes. |
+| D61 | Return-to-today | "← Today" pill + calendar "Today" button | One-tap escape hatch without opening calendar. Multiple affordances. |
+| D62 | Date header | Tappable text + chevron (▾) | Standard picker affordance. Enhancement of existing element, no layout changes. |
+| D63 | Service parameterization | Optional `date` param on all date-filtered services | Backward-compatible. Single code path for today and non-today views. |
+| D64 | Real-time subs | Disabled on non-today views | Historical data doesn't change. Reduces Firestore reads and connections. |
+| D65 | Data caching | No caching in v1 | Small payload, fast fetch. Caching adds complexity with minimal UX gain in 0→1. |
+| D66 | Calendar component | Custom React (no library) | Highly specific requirements. ~150-200 lines. Zero new dependencies. |
+| D67 | Past day task detail | Read-only bottom sheet variant | Fourth mode of AddTaskFAB. Shows completion attribution. "Close" only. |
+| D68 | Progress card | Hidden on non-today views | Available in Progress tab. Creates space for task list content. |
+| D69 | Time indicator line | Hidden on non-today views | Current time is irrelevant to historical/future lists. |
+
+### State Management Changes
+
+```typescript
+// New state in Dashboard component
+const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+
+// Derived state
+const isViewingToday = useMemo(() => {
+  const today = new Date();
+  return selectedDate.toDateString() === today.toDateString();
+}, [selectedDate]);
+
+const calendarMinDate = useMemo(() => {
+  // Puppy creation date — derived from routine.generated_at or puppy.created_at
+  // This data is already available in Dashboard state
+  return new Date(routine?.generated_at || puppy?.created_at || Date.now());
+}, [routine, puppy]);
+
+const calendarMaxDate = useMemo(() => {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return tomorrow;
+}, []);
+```
+
+### Service Function Changes
+
+```typescript
+// BEFORE (hardcoded today):
+export function subscribeToTasks(puppyId: string, callback: (tasks: Task[]) => void) {
+  const q = query(tasksRef, where('date', '==', getTodayString()), ...);
+  return onSnapshot(q, ...);
+}
+
+// AFTER (parameterized date):
+export function subscribeToTasks(
+  puppyId: string,
+  callback: (tasks: Task[]) => void,
+  onError?: (error: Error) => void,
+  date?: string  // NEW: optional, defaults to today
+) {
+  const dateString = date || getTodayString();
+  const q = query(tasksRef, where('date', '==', dateString), ...);
+  return onSnapshot(q, ...);
+}
+
+// Same pattern applied to:
+// - getTodayLogs(puppyId, date?)         in activity-logs.ts
+// - subscribeToEditedRoutineItems(...)    in edited-routine-items.ts
+// - subscribeToDeletedRoutineItems(...)   in deleted-routine-items.ts
+```
+
+### Conditional Rendering (Dashboard.tsx)
+
+```typescript
+// All today-only elements gated by single boolean
+{isViewingToday && <ProgressStatsCard ... />}
+{isViewingToday && <CurrentTimeLine ... />}
+{isViewingToday && <AddTaskFAB ... />}
+
+// Today pill button — inverse condition
+{!isViewingToday && (
+  <button onClick={() => setSelectedDate(new Date())} className="...">
+    ← Today
+  </button>
+)}
+
+// Task card interactions gated
+<SwipeableTaskCard
+  disabled={!isViewingToday}  // Disables swipe-to-delete
+  ...
+/>
+
+// Completion tap gated in onClick handler
+const handleComplete = (taskId: string) => {
+  if (!isViewingToday) return; // No-op on non-today views
+  // ... existing completion logic
+};
+
+// Task card tap behavior switches based on date
+const handleTaskTap = (item: TimelineItem) => {
+  if (!isViewingToday) {
+    // Past day: open read-only detail sheet (D67)
+    // Tomorrow: no-op (disabled)
+    if (selectedDate < new Date(new Date().toDateString())) {
+      setReadOnlyDetailItem(item);
+    }
+    return;
+  }
+  // Today: existing edit behavior
+  setEditingItem(item);
+};
+```
+
+### CalendarPicker Component Structure
+
+```
+CalendarPicker (bottom sheet wrapper)
+├── Month/Year Header
+│   ├── ◀ (prev month arrow, disabled at minDate boundary)
+│   ├── "February 2025" (month/year text)
+│   └── ▶ (next month arrow, disabled at maxDate boundary)
+├── Day-of-Week Row (Su Mo Tu We Th Fr Sa)
+├── Date Grid (7-column CSS grid)
+│   ├── Each cell: date number
+│   ├── States: disabled | available | today | selected
+│   └── Today always has filled circle (primary/orange color)
+└── Footer
+    ├── [Today] button (left)
+    └── [Close] button (right)
+```
+
+### Schema & Index Changes
+
+**None.** The calendar picker feature requires zero database schema changes:
+- Supabase `activity_logs` already indexed on `(puppy_id, date)` — historical queries are performant
+- Firebase `tasks` collection already filters by `date` string field — no new index needed
+- Firebase `editedRoutineItems` and `deletedRoutineItems` already filter by `date` — no changes
+- All queries are already structured for date-based filtering — only the hardcoded "today" value needs to become parameterized (D63)
+
+### Firestore Operations Impact
+
+**Read impact (50 users, assuming 30% use day navigation daily):**
+- 15 users × 2 date navigations/day × ~20 reads per date (tasks + edits + deletions + logs) = **600 additional reads/day**
+- Current daily reads: ~3,000 (see existing estimate)
+- New total: ~3,600 reads/day — still well under free tier (50K reads/day)
+
+**Write impact:** Zero. Non-today views are read-only (D60). No additional writes from this feature.
+
+### v1 Trade-off: Historical Routine Accuracy
+
+Past days display the **current active routine** as the base template, not the routine that was active on that specific date. If the owner regenerated the routine (e.g., after the puppy aged up), past days before regeneration may show mismatched routine items.
+
+**What's accurate:** Activity logs, custom tasks, edits, and deletions for past dates are all stored with date stamps and will display correctly regardless of routine changes.
+
+**What may be inaccurate:** The base routine items (times, activity names, descriptions) for dates before a regeneration. These will show the current routine's structure, not what was originally scheduled.
+
+**Accepted trade-off:** Storing daily routine snapshots would require a new `routine_snapshots` table, a nightly cron job, and 15-20 rows per day per puppy. This is over-engineering for 0→1 — most users won't regenerate routines frequently, and the completion/edit data (which IS accurate) is what users primarily want to review. P2: Add routine snapshots if user feedback indicates confusion about historical routine structure.

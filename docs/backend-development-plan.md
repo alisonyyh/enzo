@@ -2952,6 +2952,1331 @@ The `addTask()` and `editTask()` functions in the code sample have also been upd
 
 ---
 
+## 21. F12 / Flow 8: Day Navigation — Calendar Picker — Backend Plan
+
+**Added:** 2026-02-20
+**Decision References:** D58–D69 (decisions-log.md)
+**Priority:** P0 (Launch Blocker — frontend already implemented)
+**Complexity:** Minimal (zero backend changes required)
+
+---
+
+### 21.1 Overview
+
+Flow 8 / F12 adds a calendar picker that lets users browse past and future task lists. Tapping the date header opens a monthly calendar bottom sheet. Users can select any date from the puppy's creation date through tomorrow. Non-today views are strictly read-only — no FAB, no swipe-to-delete, no completion toggling, no task editing. A "← Today" pill button provides instant return to the live view.
+
+**Frontend Components Updated (already shipped):**
+- `CalendarPicker.tsx` — New component. Custom monthly calendar bottom sheet with 7-column CSS grid, month navigation with boundary enforcement, today highlight (orange ring), selected date (filled orange), disabled dates (grayed out), "Go to Today" + "Close" footer buttons. ~237 lines, zero external dependencies (D66).
+- `Dashboard.tsx` — Major update. Added `selectedDate`, `isCalendarOpen`, `viewingItem` state. Added `isViewingToday` derived boolean. Made date header tappable with ChevronDown icon. Added "← Today" pill button. Conditional progress stats card (hidden on non-today, replaced with read-only banner). Updated timeline rendering: read-only cards for non-today (no swipe, no completion). Conditional FAB (hidden on non-today). Added view-only Task Details bottom sheet for past day inspection.
+- `App.tsx` — Added `puppyCreatedAt={currentPuppy.created_at}` prop to Dashboard.
+
+**Service Layer Updates (already shipped):**
+- `tasks.ts` — `getTodayString()` exported with optional `Date` param, `subscribeToTasks()` accepts optional `date` param, `addTask()` accepts optional `date` param, new `getTasksForDate()` static fetch function (D63, D64).
+- `activity-logs.ts` — `getTodayLogs()` accepts optional `date` param (D63).
+- `edited-routine-items.ts` — `subscribeToEditedRoutineItems()` accepts optional `date` param, new `getEditedRoutineItemsForDate()` static fetch function (D63, D64).
+- `deleted-routine-items.ts` — `subscribeToDeletedRoutineItems()` accepts optional `date` param, new `getDeletedRoutineItemsForDate()` static fetch function (D63, D64).
+
+---
+
+### 21.2 Backend Assessment
+
+#### Firestore Security Rules: No Changes Needed
+
+The existing Firestore security rules already support date-parameterized queries. The rules validate puppy access via Custom Claims (`hasPuppyAccess(puppyId)`) and user identity — they do **not** enforce any date-based restrictions. This is correct because:
+
+1. **Read rules for `tasks`:** `allow read: if hasPuppyAccess(resource.data.puppyId)` — user can read any task for their puppy, regardless of the `date` field value. This already supports reading historical tasks.
+2. **Read rules for `editedRoutineItems`:** Same pattern — access is gated by `puppyId`, not by date.
+3. **Read rules for `deletedRoutineItems`:** Same pattern — access is gated by `puppyId`, not by date.
+4. **Write rules remain unchanged:** Non-today views are strictly read-only on the client (D60). The `isViewingToday` boolean in `Dashboard.tsx` prevents all mutation paths. If a malicious client bypasses this and attempts to write to a past date, the existing rules still enforce valid data constraints (e.g., `lastEditedBy == request.auth.uid`, `lastEditedAt == request.time`). There is no backend rule preventing writes to past dates — this is acceptable for 0→1 because the client enforces it and the worst case is a user writing a valid task with a past date, which causes no harm.
+
+**No rule changes needed.**
+
+#### Firestore Indexes: No Changes Needed
+
+All Firestore queries used by day navigation are identical in structure to existing today-only queries:
+
+```
+// Existing query pattern (works for any date value):
+tasks collection: where('puppyId', '==', X) AND where('date', '==', Y) orderBy('actualTime', 'asc')
+editedRoutineItems: where('puppyId', '==', X) AND where('date', '==', Y)
+deletedRoutineItems: where('puppyId', '==', X) AND where('date', '==', Y)
+```
+
+The `date` field is already used as a filter in all these queries. Changing the date value from today's string to a past or future date string uses the exact same index. Firestore composite indexes (auto-created on first query) handle `puppyId + date` combinations regardless of the specific date value.
+
+**No new indexes needed.**
+
+#### Supabase Database: No Changes Needed
+
+The `activity_logs` table already has an index on `(puppy_id, date)` (see Section 2.3: `idx_activity_logs_puppy_date`). Historical activity log queries for past dates use this existing index:
+
+```sql
+-- Existing query (already works for any date):
+SELECT al.*, p.display_name, p.avatar_url
+FROM activity_logs al
+LEFT JOIN profiles p ON p.id = al.completed_by
+WHERE al.puppy_id = $1 AND al.date = $2;
+```
+
+The `routine_items` table is fetched once per puppy (not per date) and is already loaded in the Dashboard — no additional query needed for non-today views. The base routine template is the same for all dates.
+
+**No schema changes, no new indexes, no migrations needed.**
+
+#### Supabase RLS Policies: No Changes Needed
+
+The existing `activity_logs` RLS policy allows members to read logs for their puppies:
+
+```sql
+-- Existing policy (already supports reading any date):
+CREATE POLICY "Members can view activity logs for their puppies"
+  ON activity_logs FOR SELECT
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid() AND status = 'active'
+    )
+  );
+```
+
+This policy does not restrict by date — a member can read activity logs for any past date. This is the correct behavior for day navigation.
+
+**No RLS policy changes needed.**
+
+#### Supabase Edge Functions: No Changes Needed
+
+| Edge Function | Affected? | Reason |
+|---|---|---|
+| `generate-routine` | No | Generates routine items — not involved in day navigation |
+| `accept-invite` | No | Creates memberships — not involved in day navigation |
+| `get-firebase-token` | No | Generates Custom Token with `puppyIds` — no date awareness needed |
+
+#### Firebase Custom Token Claims: No Changes Needed
+
+The `get-firebase-token` Edge Function embeds `puppyIds` in Custom Claims for Firestore security rules. Day navigation queries are authorized by `puppyId` membership, not by date. No claim changes needed.
+
+---
+
+### 21.3 Data Flow: Today vs. Non-Today
+
+Understanding the two data fetching strategies is key to this feature's backend implications:
+
+**Today (live view — real-time subscriptions):**
+```
+Dashboard
+  ├─ subscribeToTasks(puppyId, callback, onError)           → Firestore onSnapshot listener
+  ├─ subscribeToEditedRoutineItems(puppyId, callback)        → Firestore onSnapshot listener
+  ├─ subscribeToDeletedRoutineItems(puppyId, callback)       → Firestore onSnapshot listener
+  └─ getTodayLogs(puppyId)                                   → Supabase SELECT + Realtime channel
+```
+
+**Non-Today (static view — one-time fetch, D64):**
+```
+Dashboard
+  ├─ getTasksForDate(puppyId, dateString)                    → Firestore getDocs (one-time)
+  ├─ getEditedRoutineItemsForDate(puppyId, dateString)       → Firestore getDocs (one-time)
+  ├─ getDeletedRoutineItemsForDate(puppyId, dateString)      → Firestore getDocs (one-time)
+  └─ getTodayLogs(puppyId, dateString)                       → Supabase SELECT (one-time, no Realtime)
+```
+
+The key difference: non-today views use `getDocs()` (one-time read) instead of `onSnapshot()` (persistent listener). This reduces Firestore read operations and WebSocket connections. The backend does not need to distinguish between these two patterns — both use the same Firestore queries, and both are authorized by the same security rules.
+
+---
+
+### 21.4 Historical Routine Accuracy Trade-off
+
+**Accepted limitation for v1:** Past days display the **current active routine** as the base template, not the routine that was active on that historical date. If the user regenerated the routine after the puppy aged up, past days before regeneration may show mismatched routine items.
+
+**What IS accurate for past dates:**
+- Custom tasks (stored in Firestore `tasks` collection with date-stamped `date` field)
+- Activity logs / completions (stored in Supabase `activity_logs` with `date` column)
+- Routine item edits (stored in Firestore `editedRoutineItems` with `date` field)
+- Routine item deletions (stored in Firestore `deletedRoutineItems` with `date` field)
+
+**What MAY be inaccurate:**
+- Base routine items (times, titles, descriptions) for dates before a routine regeneration — these reflect the current routine structure, not what was originally scheduled.
+
+**Why this is acceptable:** Most users won't regenerate routines frequently (it's a one-time onboarding action), and the completion/edit data (which IS accurate) is what users primarily want to review when browsing past days.
+
+**P2 improvement:** Add a `routine_snapshots` table that stores a copy of the routine items each day (nightly cron job or on-regeneration trigger). This would enable fully accurate historical views. Estimated schema:
+
+```sql
+-- Future (P2): Store daily routine snapshots for historical accuracy
+routine_snapshots
+  - id (UUID, PK)
+  - routine_id (UUID, FK → routines)
+  - puppy_id (UUID, FK → puppies)
+  - snapshot_date (date)
+  - items (jsonb)  -- Serialized array of routine items
+  - created_at (timestamp)
+
+CREATE INDEX idx_routine_snapshots_puppy_date
+  ON routine_snapshots(puppy_id, snapshot_date);
+```
+
+Not implementing in v1 — adds ~15-20 rows/day/puppy with nightly cron complexity.
+
+---
+
+### 21.5 Service Function Parameterization Details
+
+All four date-filtered service functions were updated with the same backward-compatible pattern (D63). Below is the before/after for reference:
+
+**tasks.ts:**
+```typescript
+// BEFORE:
+function getTodayString(): string {
+  return new Date().toISOString().split('T')[0];
+}
+export function subscribeToTasks(puppyId, callback, onError?) { ... }
+
+// AFTER:
+export function getTodayString(date?: Date): string {
+  return (date || new Date()).toISOString().split('T')[0];
+}
+export function subscribeToTasks(puppyId, callback, onError?, date?: string) {
+  const dateString = date || getTodayString();
+  // ... rest unchanged, uses dateString in query
+}
+// NEW: One-time static fetch for non-today views
+export async function getTasksForDate(puppyId: string, date: string): Promise<Task[]> {
+  // Uses getDocs() instead of onSnapshot()
+}
+```
+
+**activity-logs.ts:**
+```typescript
+// BEFORE:
+export async function getTodayLogs(puppyId: string): Promise<ActivityLogWithProfile[]> {
+  const today = new Date().toISOString().split('T')[0];
+  // ...
+}
+
+// AFTER:
+export async function getTodayLogs(puppyId: string, date?: string): Promise<ActivityLogWithProfile[]> {
+  const dateString = date || new Date().toISOString().split('T')[0];
+  // ... uses dateString in WHERE clause
+}
+```
+
+**edited-routine-items.ts:**
+```typescript
+// Same pattern: optional date param added to subscribeToEditedRoutineItems()
+// NEW: getEditedRoutineItemsForDate() for one-time static fetch
+```
+
+**deleted-routine-items.ts:**
+```typescript
+// Same pattern: optional date param added to subscribeToDeletedRoutineItems()
+// NEW: getDeletedRoutineItemsForDate() for one-time static fetch
+```
+
+All existing callers remain unaffected (date param defaults to today when omitted).
+
+---
+
+### 21.6 Firestore Read Impact Analysis
+
+**Read impact (50 users, assuming 30% use day navigation daily):**
+
+| Metric | Value |
+|---|---|
+| Users navigating per day | 15 (30% of 50) |
+| Avg date navigations per session | 2 |
+| Reads per date navigation | ~20 (tasks + edits + deletions) |
+| **Additional reads/day** | **600** |
+| Current daily reads (without day nav) | ~3,000 |
+| **New total daily reads** | **~3,600** |
+| Firestore free tier limit | 50,000 reads/day |
+| **Headroom** | **~93% remaining** |
+
+**Write impact:** Zero. Non-today views are read-only (D60). No additional Firestore writes from this feature.
+
+**Supabase query impact:**
+- 15 users × 2 navigations × 1 `getTodayLogs()` call each = 30 additional Supabase queries/day
+- Each query hits the `idx_activity_logs_puppy_date` index — fast, <50ms
+- Negligible impact on Supabase usage
+
+---
+
+### 21.7 Implementation Steps
+
+Since the frontend implementation is already complete and no backend changes are required, the only steps are verification:
+
+```
+Step 1: Verify Firestore security rules support historical reads
+  Action: Open app → Navigate to a past date → Confirm task list loads
+  Expected: Tasks, edits, and deletions for the selected date display correctly
+  If fails: Check Firestore rules allow read access for all dates (they should)
+  Duration: 5 minutes
+  → Unblocks: Step 2
+
+Step 2: Verify Supabase activity logs query works for past dates
+  Action: Navigate to a past date with completed activities
+  Expected: Completion indicators (profile pictures, timestamps) display correctly
+  If fails: Check activity_logs index on (puppy_id, date) exists
+  Duration: 5 minutes
+  → Unblocks: Step 3
+
+Step 3: Verify non-today views don't establish real-time listeners
+  Action: Open browser DevTools → Network tab → Navigate to past date
+  Expected: No WebSocket frames for Firestore listeners on non-today dates
+           Only one-time HTTP reads (getDocs) visible in network log
+  Duration: 10 minutes
+  → Unblocks: Step 4
+
+Step 4: Verify mutation prevention on non-today views
+  Action: Navigate to past date → Confirm: FAB hidden, swipe disabled,
+          completion tap disabled, task tap opens read-only sheet
+  Expected: All mutation paths blocked by isViewingToday boolean
+  Duration: 5 minutes
+  → Unblocks: Step 5
+
+Step 5: Verify date boundary enforcement
+  Action: Open calendar → Try to navigate before puppy creation date
+  Expected: Previous month arrow disabled, dates before creation are grayed out
+  Action: Try to navigate past tomorrow
+  Expected: Next month arrow disabled, dates after tomorrow are grayed out
+  Duration: 5 minutes
+  → Unblocks: Step 6
+
+Step 6: Verify "← Today" pill button and calendar "Today" button
+  Action: Navigate to past date → Tap "← Today" pill
+  Expected: Returns to today's live view with real-time subscriptions
+  Action: Open calendar → Tap "Go to Today" button
+  Expected: Same behavior, calendar closes, today's view restores
+  Duration: 5 minutes
+  → Unblocks: Step 7
+
+Step 7: Verify tomorrow view
+  Action: Navigate to tomorrow
+  Expected: Base routine template displayed (all tasks unchecked)
+           No custom tasks, no edits, no deletions (no data for future date)
+           Read-only banner visible, no FAB, no interactions
+  Duration: 5 minutes
+  → Unblocks: Production confidence
+
+Step 8: End-to-end multi-user verification
+  Action: Open app in two tabs (different accounts, same puppy)
+          Tab 1: Navigate to past date → observe task list
+          Tab 2: On today view, complete a task
+  Expected: Tab 1 (past date) is unaffected by Tab 2's today activity
+           Tab 2 (today) shows real-time updates normally
+  Duration: 10 minutes
+  → Unblocks: Full confidence
+```
+
+**Total backend effort: ~50 minutes** (all verification, zero implementation)
+
+---
+
+### 21.8 Deployment Checklist
+
+**Firestore:**
+- [ ] No rule changes needed — existing rules support historical reads
+- [ ] No new indexes needed — existing `puppyId + date` queries work for all dates
+- [ ] No deployment commands required
+
+**Supabase:**
+- [ ] No schema changes needed
+- [ ] No new migrations needed
+- [ ] No RLS policy changes needed
+- [ ] No Edge Function changes needed
+- [ ] Existing `idx_activity_logs_puppy_date` index covers historical queries
+
+**Frontend (already shipped):**
+- [ ] `CalendarPicker.tsx` — Custom calendar bottom sheet component
+- [ ] `Dashboard.tsx` — `selectedDate` state, `isViewingToday` derived boolean, conditional rendering
+- [ ] `App.tsx` — `puppyCreatedAt` prop passed to Dashboard
+- [ ] `tasks.ts` — `getTodayString()` exported, `subscribeToTasks()` parameterized, `getTasksForDate()` added
+- [ ] `activity-logs.ts` — `getTodayLogs()` parameterized with optional `date`
+- [ ] `edited-routine-items.ts` — `subscribeToEditedRoutineItems()` parameterized, `getEditedRoutineItemsForDate()` added
+- [ ] `deleted-routine-items.ts` — `subscribeToDeletedRoutineItems()` parameterized, `getDeletedRoutineItemsForDate()` added
+
+**Testing:**
+- [ ] Past date navigation loads correct task list
+- [ ] Past date shows completion attribution (who completed, when)
+- [ ] Tomorrow shows base routine template (all unchecked)
+- [ ] Non-today views are read-only (no FAB, no swipe, no completion, no edit)
+- [ ] Task card tap on past day opens read-only "Task Details" sheet
+- [ ] "← Today" pill returns to live today view
+- [ ] Calendar "Go to Today" button returns to live today view
+- [ ] Calendar date range enforced (puppy creation → tomorrow)
+- [ ] Calendar disabled dates are non-tappable
+- [ ] Real-time subscriptions only active on today (not past/future)
+- [ ] Multi-user: navigating dates in one tab doesn't affect another tab's today view
+- [ ] Build succeeds: `npx vite build` with no errors in modified files
+
+---
+
+### 21.9 Cost Impact
+
+**Zero additional infrastructure cost.** Day navigation uses existing Firestore queries and Supabase indexes. The only measurable impact is ~600 additional Firestore reads/day (for 50 users), which is well within the free tier limit of 50K reads/day. Non-today views generate zero writes (read-only mode, D60). No new Supabase Realtime channels are needed for non-today views (D64).
+
+| Resource | Current Usage | Additional Usage | Free Tier Limit |
+|---|---|---|---|
+| Firestore reads/day | ~3,000 | +600 (~20%) | 50,000 |
+| Firestore writes/day | ~250 | +0 | 20,000 |
+| Supabase queries/day | ~1,500 | +30 | Unlimited (Pro plan) |
+| Firestore WebSocket connections | ~50 concurrent | +0 (no real-time on non-today) | 1M concurrent |
+
+---
+
+### 21.10 Section 17 Code Samples — Updated for F12
+
+The service function code samples in Section 17.4 Step 4 should be noted as outdated with respect to the `subscribeToTasks()` and `getTodayString()` function signatures. The current production code in `src/lib/services/tasks.ts` includes:
+
+1. **`getTodayString(date?: Date)`** — Now exported and accepts an optional `Date` parameter
+2. **`subscribeToTasks(puppyId, callback, onError?, date?)`** — Now accepts an optional `date` string parameter
+3. **`addTask(..., date?)`** — Now accepts an optional `date` string parameter
+4. **`getTasksForDate(puppyId, date)`** — New function for one-time static fetch using `getDocs()`
+
+The original code samples in Section 17.4 remain valid for the today-only flow (all new parameters default to today when omitted). The parameterized versions are in the current source files.
+
+---
+
+### 21.11 Known Limitations & Future Improvements
+
+**v1 Limitations:**
+- Historical routine accuracy: past days show current routine structure, not the routine that was active on that date (see Section 21.4)
+- No data caching between date navigations (D65) — each navigation triggers a fresh fetch
+- No real-time updates on non-today views (D64) — if another user completes a task on a past date via a hypothetical future feature, it won't appear until the next navigation
+- Tomorrow shows the same base routine as today — no way to pre-plan or customize tomorrow's schedule
+- Calendar only supports puppy creation date → tomorrow range — no historical browsing before the puppy was added to the app
+
+**P1 Improvements:**
+- Retroactive task completion: allow marking past tasks as "completed (backdated)" with a clear visual indicator — requires removing the read-only restriction (D60) for completion only, adding a `backdated: boolean` flag to the completion payload
+- LRU date cache: cache last 7 viewed dates in memory to speed up re-navigation (D65)
+- View-only progress stats: show completion percentage on non-today views (currently hidden per D68)
+
+**P2 Improvements:**
+- Routine snapshots: nightly cron job or on-regeneration trigger to store daily routine copies for accurate historical display (see Section 21.4)
+- Extended future range: show next 7 days instead of just tomorrow (D59 — requires routine snapshot concept for custom day-level planning)
+- Multi-day task editing: allow editing past 7 days for corrections ("forgot to log yesterday's walk")
+- Historical data export: download task history for a date range as CSV/PDF
+
+---
+
+### 21.12 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Firestore Security Rules | None | Already supports reads for any date |
+| Firestore Security Rules (`editedRoutineItems`) | None | Already supports reads for any date |
+| Firestore Security Rules (`deletedRoutineItems`) | None | Already supports reads for any date |
+| Firestore Indexes | None | `puppyId + date` queries work for all dates |
+| Firebase Custom Token Edge Function | None | Claims unchanged |
+| `generate-routine` Edge Function | None | Not involved in day navigation |
+| `accept-invite` Edge Function | None | Not involved in day navigation |
+| Supabase Database Schema | None | No new tables, columns, or constraints |
+| Supabase RLS Policies | None | `activity_logs` already readable by members for any date |
+| Supabase Indexes | None | `idx_activity_logs_puppy_date` already covers historical queries |
+| Frontend Service Layer | Already shipped | All 4 service files parameterized with optional `date` param |
+| Frontend Components | Already shipped | CalendarPicker, Dashboard, App all updated |
+| Deployment | **None required** | Zero backend deployment for this feature |
+
+**Bottom line:** The Day Navigation / Calendar Picker feature (F12 / Flow 8) is entirely a frontend concern with **zero backend changes required**. The existing Firestore security rules, indexes, Supabase schema, RLS policies, and Edge Functions all support date-parameterized queries without modification. The only backend-related work is verification testing (~50 minutes) to confirm that historical reads work correctly through the existing infrastructure. This is the cleanest backend assessment of any feature in this document — a testament to the original data model design (D32, D48) which used date-string filtering from the start, making day navigation a natural extension of the existing architecture.
+
+---
+
+## 22. F6 / F7: Invite Code System — Backend Plan
+
+**Added:** 2026-03-02
+**Priority:** P0 (Launch Blocker)
+**Complexity:** Medium
+**Decisions:** D70 (Invite Link → Invite Code), D71 (Code Format), D72 (Choice Screen Routing), D73 (Server-Side Validation)
+**Supersedes:** Section 3.2 (old `accept-invite` endpoint), Phase 6 (old invite system backend), `invites` table in Section 2.1
+
+---
+
+### 22.1 Overview
+
+The invite system has been redesigned from invite links to invite codes (D70). This eliminates deep link infrastructure, share sheets, invite lifecycle states, and expiration logic. The new system uses a persistent, human-readable code per household that the owner copies and shares out-of-band.
+
+**What changed from the original plan:**
+- `invites` table → `invite_codes` table (simpler schema: no status, no expiry, no accepted_by)
+- `POST /functions/v1/accept-invite` → `POST /functions/v1/validate-invite-code` (different request/response shape)
+- Invite token generation (random UUID) → Code generation (`{WORD}-{ALPHANUMERIC}` format, D71)
+- `src/lib/services/invites.ts` → `src/lib/services/invite-codes.ts` (complete rewrite)
+- No invite lifecycle management (no pending/accepted/expired/revoked states)
+- Code is auto-generated at puppy creation time (no "generate invite" action)
+
+**Frontend already implemented:**
+- `NewUserChoiceScreen.tsx` — Choice screen after first-time OAuth
+- `InviteCodeEntryScreen.tsx` — Code entry with validation, error display, auto-capitalize
+- `InviteCodeSuccessScreen.tsx` — Success screen with puppy details
+- `App.tsx` routing — `"choice"` → `"invite-code-entry"` → `"invite-success"` → `"dashboard"`
+- `handleInviteCodeSubmit` placeholder in App.tsx (currently returns invalid for all codes)
+
+**Backend work required:**
+1. Create `invite_codes` table (replace `invites` table)
+2. Create `validate-invite-code` Edge Function
+3. Auto-generate invite code on puppy creation (DB trigger or application code)
+4. Create `src/lib/services/invite-codes.ts` (replace `invites.ts`)
+5. Wire frontend `handleInviteCodeSubmit` to the Edge Function
+6. Add owner-side UI for viewing/copying the code (Settings > Caretakers)
+7. RLS policies for `invite_codes` table
+
+---
+
+### 22.2 Database Changes
+
+#### 22.2.1 New Table: `invite_codes` (replaces `invites`)
+
+```sql
+-- Drop the old invites table (or leave it — it has no production data at 0→1 stage)
+-- CREATE TABLE IF NOT EXISTS invite_codes ...
+
+CREATE TABLE invite_codes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
+  code TEXT NOT NULL UNIQUE,
+  created_by UUID NOT NULL REFERENCES auth.users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Unique constraint: one invite code per puppy (enforced at DB level)
+CREATE UNIQUE INDEX idx_invite_codes_puppy_id ON invite_codes(puppy_id);
+
+-- Fast lookups by code (used by validate-invite-code Edge Function)
+CREATE INDEX idx_invite_codes_code ON invite_codes(code);
+
+COMMENT ON TABLE invite_codes IS 'Persistent, unique invite codes per household. Replaces the old invites table (D70).';
+COMMENT ON COLUMN invite_codes.code IS 'Format: {WORD}-{ALPHANUMERIC}, e.g., BISCUIT-7X2K. Case-insensitive (stored uppercase). See D71.';
+```
+
+**Schema comparison (old → new):**
+
+| Old `invites` table | New `invite_codes` table | Notes |
+|---|---|---|
+| `id` (UUID, PK) | `id` (UUID, PK) | Same |
+| `puppy_id` (FK → puppies) | `puppy_id` (FK → puppies, UNIQUE) | Added unique constraint — one code per puppy |
+| `invited_by` (FK → auth.users) | `created_by` (FK → auth.users) | Renamed for clarity |
+| `invite_token` (text, unique) | `code` (text, unique) | Renamed; new format (D71) |
+| `status` (enum) | _(removed)_ | No lifecycle states needed |
+| `accepted_by` (FK, nullable) | _(removed)_ | Tracked via `puppy_memberships` instead |
+| `expires_at` (timestamp) | _(removed)_ | Codes never expire (D70) |
+| `created_at` (timestamp) | `created_at` (timestamptz) | Same |
+
+#### 22.2.2 Code Generation (D71)
+
+Format: `{WORD}-{ALPHANUMERIC}` (e.g., `BISCUIT-7X2K`)
+
+```sql
+-- Database function to generate invite codes
+CREATE OR REPLACE FUNCTION generate_invite_code(puppy_name TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  word TEXT;
+  suffix TEXT;
+  full_code TEXT;
+  attempts INT := 0;
+BEGIN
+  -- First segment: puppy name, uppercased, truncated to 8 chars, non-alpha stripped
+  word := UPPER(SUBSTRING(REGEXP_REPLACE(puppy_name, '[^a-zA-Z]', '', 'g') FROM 1 FOR 8));
+
+  -- Fallback if puppy name has no alpha characters
+  IF LENGTH(word) = 0 THEN
+    word := 'PUPPY';
+  END IF;
+
+  LOOP
+    -- Second segment: random 4-char alphanumeric (A-Z, 0-9)
+    suffix := UPPER(SUBSTRING(MD5(RANDOM()::TEXT) FROM 1 FOR 4));
+
+    -- Replace any ambiguous characters (0/O, 1/I/L) for readability
+    suffix := REPLACE(suffix, '0', 'X');
+    suffix := REPLACE(suffix, '1', 'Y');
+
+    full_code := word || '-' || suffix;
+
+    -- Check for uniqueness
+    IF NOT EXISTS (SELECT 1 FROM invite_codes WHERE code = full_code) THEN
+      RETURN full_code;
+    END IF;
+
+    attempts := attempts + 1;
+    IF attempts > 10 THEN
+      -- Extremely unlikely (36^4 = 1.6M combinations per word), but safety valve
+      RAISE EXCEPTION 'Failed to generate unique invite code after 10 attempts';
+    END IF;
+  END LOOP;
+END;
+$$;
+```
+
+#### 22.2.3 Auto-Generation Trigger
+
+The invite code is generated automatically when a puppy is created (owner completes onboarding). This is implemented as a Postgres trigger:
+
+```sql
+-- Trigger: auto-generate invite code when a puppy is created
+CREATE OR REPLACE FUNCTION trigger_create_invite_code()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  owner_id UUID;
+BEGIN
+  -- Find the owner from puppy_memberships (created in the same transaction)
+  SELECT user_id INTO owner_id
+  FROM puppy_memberships
+  WHERE puppy_id = NEW.id AND role = 'owner'
+  LIMIT 1;
+
+  -- If no membership yet (trigger fires before membership insert), use a deferred approach
+  -- We'll handle this in the Edge Function / application code instead
+  IF owner_id IS NOT NULL THEN
+    INSERT INTO invite_codes (puppy_id, code, created_by)
+    VALUES (NEW.id, generate_invite_code(NEW.name), owner_id);
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+-- NOTE: The trigger approach has a timing issue — the puppy_memberships row
+-- may not exist yet when the puppy is created (they're inserted in sequence).
+-- Alternative: generate the invite code in the application code (createPuppy service)
+-- immediately after the puppy and membership are created. See Section 22.4 for the
+-- recommended approach.
+```
+
+**Recommended approach: Application-level code generation** (not trigger)
+
+The trigger has a timing dependency on `puppy_memberships`. Instead, generate the invite code in the `createPuppy` service function, immediately after the puppy and membership are created:
+
+```typescript
+// In src/lib/services/puppies.ts — after createPuppy inserts puppy + membership:
+const code = await generateInviteCode(puppy.id, puppy.name, user.id);
+```
+
+This is simpler, avoids trigger ordering issues, and keeps the logic visible in application code.
+
+#### 22.2.4 RLS Policies for `invite_codes`
+
+```sql
+ALTER TABLE invite_codes ENABLE ROW LEVEL SECURITY;
+
+-- Owners can read their own puppy's invite code (for Settings > Caretakers display)
+CREATE POLICY "Owners can view invite codes for their puppies"
+  ON invite_codes FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM puppy_memberships
+      WHERE puppy_id = invite_codes.puppy_id
+        AND user_id = auth.uid()
+        AND role = 'owner'
+        AND status = 'active'
+    )
+  );
+
+-- No direct INSERT/UPDATE/DELETE from client — all mutations go through Edge Function
+-- or application code with service_role key.
+-- Caretakers should NOT be able to read invite codes (they don't need them).
+-- The validate-invite-code Edge Function uses the service_role key to bypass RLS.
+```
+
+#### 22.2.5 Updated Index (replaces Section 2.3 invite index)
+
+The old index `idx_invites_token` on `invites(invite_token) WHERE status = 'pending'` is no longer needed. Replace with:
+
+```sql
+-- Already defined in 22.2.1:
+CREATE INDEX idx_invite_codes_code ON invite_codes(code);
+CREATE UNIQUE INDEX idx_invite_codes_puppy_id ON invite_codes(puppy_id);
+```
+
+---
+
+### 22.3 Edge Function: `validate-invite-code`
+
+**Replaces:** Section 3.2 (`accept-invite` endpoint)
+
+**Endpoint:** `POST /functions/v1/validate-invite-code`
+
+**Purpose:** Validate an invite code, create a caretaker membership, and return puppy details.
+
+**Request:**
+```typescript
+{
+  code: string;  // e.g., "BISCUIT-7X2K" (case-insensitive, whitespace-trimmed)
+}
+```
+
+**Response (success — 200):**
+```typescript
+{
+  success: true;
+  puppy: {
+    id: string;
+    name: string;
+    breed: string;
+    age_weeks: number;       // Total weeks (age_months * 4 + age_weeks)
+    photo_url: string | null;
+  };
+  membership: {
+    id: string;
+    role: "caretaker";
+    joined_at: string;
+  };
+}
+```
+
+**Response (errors):**
+```typescript
+// 400 Bad Request — missing or empty code
+{ error: "Invite code is required." }
+
+// 401 Unauthorized — no valid auth token
+{ error: "Not authenticated." }
+
+// 404 Not Found — code doesn't match any household
+{ error: "That code doesn't match any household. Please check with the puppy's owner and try again." }
+
+// 409 Conflict — user already a member, or caretaker limit reached
+{ error: "You're already a member of this household." }
+{ error: "This household already has the maximum number of caretakers." }
+
+// 500 Internal Server Error
+{ error: "Something went wrong. Please try again." }
+```
+
+**Implementation:**
+
+```typescript
+// supabase/functions/validate-invite-code/index.ts
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+serve(async (req) => {
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  try {
+    // 1. Parse request
+    const { code } = await req.json();
+    if (!code || typeof code !== "string" || code.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ error: "Invite code is required." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const normalizedCode = code.trim().toUpperCase();
+
+    // 2. Verify auth
+    const authHeader = req.headers.get("Authorization")!;
+    const supabaseClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Not authenticated." }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 3. Use service_role client for DB operations (bypasses RLS)
+    const adminClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    // 4. Look up invite code
+    const { data: inviteCode, error: lookupError } = await adminClient
+      .from("invite_codes")
+      .select("id, puppy_id")
+      .eq("code", normalizedCode)
+      .single();
+
+    if (lookupError || !inviteCode) {
+      return new Response(
+        JSON.stringify({
+          error: "That code doesn't match any household. Please check with the puppy's owner and try again.",
+        }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 5. Check if user is already a member
+    const { data: existingMembership } = await adminClient
+      .from("puppy_memberships")
+      .select("id")
+      .eq("puppy_id", inviteCode.puppy_id)
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .single();
+
+    if (existingMembership) {
+      return new Response(
+        JSON.stringify({ error: "You're already a member of this household." }),
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 6. Check caretaker limit (max 1 in v1)
+    const { count: caretakerCount } = await adminClient
+      .from("puppy_memberships")
+      .select("id", { count: "exact", head: true })
+      .eq("puppy_id", inviteCode.puppy_id)
+      .eq("role", "caretaker")
+      .eq("status", "active");
+
+    if (caretakerCount && caretakerCount >= 1) {
+      return new Response(
+        JSON.stringify({
+          error: "This household already has the maximum number of caretakers.",
+        }),
+        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 7. Create caretaker membership
+    const { data: membership, error: membershipError } = await adminClient
+      .from("puppy_memberships")
+      .insert({
+        puppy_id: inviteCode.puppy_id,
+        user_id: user.id,
+        role: "caretaker",
+        status: "active",
+      })
+      .select("id, role, joined_at")
+      .single();
+
+    if (membershipError) {
+      console.error("Failed to create membership:", membershipError);
+      return new Response(
+        JSON.stringify({ error: "Something went wrong. Please try again." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 8. Fetch puppy details for the success screen
+    const { data: puppy, error: puppyError } = await adminClient
+      .from("puppies")
+      .select("id, name, breed, age_months, age_weeks, photo_url")
+      .eq("id", inviteCode.puppy_id)
+      .single();
+
+    if (puppyError || !puppy) {
+      console.error("Failed to fetch puppy:", puppyError);
+      // Membership was already created — return success with minimal data
+      return new Response(
+        JSON.stringify({
+          success: true,
+          puppy: { id: inviteCode.puppy_id, name: "Your puppy", breed: "", age_weeks: 0, photo_url: null },
+          membership,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 9. Return success with puppy details
+    return new Response(
+      JSON.stringify({
+        success: true,
+        puppy: {
+          id: puppy.id,
+          name: puppy.name,
+          breed: puppy.breed,
+          age_weeks: puppy.age_months * 4 + puppy.age_weeks,
+          photo_url: puppy.photo_url,
+        },
+        membership: {
+          id: membership.id,
+          role: membership.role,
+          joined_at: membership.joined_at,
+        },
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+
+  } catch (err) {
+    console.error("validate-invite-code error:", err);
+    return new Response(
+      JSON.stringify({ error: "Something went wrong. Please try again." }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});
+```
+
+**Deploy:**
+```bash
+supabase functions deploy validate-invite-code
+```
+
+---
+
+### 22.4 Frontend Service: `invite-codes.ts`
+
+**Replaces:** `src/lib/services/invites.ts`
+
+```typescript
+// src/lib/services/invite-codes.ts
+
+import { supabase } from "../supabase";
+
+/**
+ * Validate an invite code via the Edge Function.
+ * Called by App.tsx handleInviteCodeSubmit.
+ */
+export async function validateInviteCode(code: string): Promise<{
+  success: boolean;
+  error?: string;
+  puppy?: {
+    id: string;
+    name: string;
+    breed: string;
+    age_weeks: number;
+    photo_url: string | null;
+  };
+  membership?: {
+    id: string;
+    role: string;
+    joined_at: string;
+  };
+}> {
+  const { data, error } = await supabase.functions.invoke("validate-invite-code", {
+    body: { code },
+  });
+
+  if (error) {
+    // Supabase functions.invoke wraps non-2xx responses as errors
+    return {
+      success: false,
+      error: data?.error || "Something went wrong. Please try again.",
+    };
+  }
+
+  return data;
+}
+
+/**
+ * Get the invite code for a puppy (owner view in Settings > Caretakers).
+ * Uses the client Supabase client (RLS enforces owner-only access).
+ */
+export async function getInviteCode(puppyId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("invite_codes")
+    .select("code")
+    .eq("puppy_id", puppyId)
+    .single();
+
+  if (error || !data) return null;
+  return data.code;
+}
+
+/**
+ * Generate an invite code for a puppy.
+ * Called after puppy creation during onboarding.
+ * Uses the service role via Edge Function to bypass RLS.
+ *
+ * NOTE: This could also be done via a Postgres trigger (see 22.2.3),
+ * but application-level generation avoids trigger timing issues.
+ */
+export async function createInviteCode(
+  puppyId: string,
+  puppyName: string,
+  userId: string
+): Promise<string> {
+  // Generate code format: {WORD}-{ALPHANUMERIC}
+  const word = puppyName
+    .replace(/[^a-zA-Z]/g, "")
+    .toUpperCase()
+    .slice(0, 8) || "PUPPY";
+
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // Exclude ambiguous: 0/O, 1/I/L
+  let suffix = "";
+  for (let i = 0; i < 4; i++) {
+    suffix += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  const code = `${word}-${suffix}`;
+
+  const { error } = await supabase
+    .from("invite_codes")
+    .insert({
+      puppy_id: puppyId,
+      code,
+      created_by: userId,
+    });
+
+  if (error) {
+    // If uniqueness collision, retry with new suffix
+    if (error.code === "23505") {
+      return createInviteCode(puppyId, puppyName, userId);
+    }
+    throw error;
+  }
+
+  return code;
+}
+```
+
+---
+
+### 22.5 Frontend Integration: App.tsx Changes
+
+**Update `handleInviteCodeSubmit` to call the Edge Function:**
+
+```typescript
+// In App.tsx — replace the placeholder handleInviteCodeSubmit:
+
+import { validateInviteCode } from "../lib/services/invite-codes";
+
+const handleInviteCodeSubmit = async (
+  code: string
+): Promise<{ success: boolean; error?: string }> => {
+  if (!user) return { success: false, error: "Not authenticated." };
+
+  try {
+    const result = await validateInviteCode(code);
+
+    if (result.success && result.puppy) {
+      // Call onSuccess with puppy data for the success screen
+      // This is handled via the onSuccess prop on InviteCodeEntryScreen
+      return { success: true };
+    }
+
+    return {
+      success: false,
+      error: result.error || "That code doesn't match any household.",
+    };
+  } catch (err) {
+    console.error("handleInviteCodeSubmit: error:", err);
+    return { success: false, error: "Something went wrong. Please try again." };
+  }
+};
+```
+
+**Note on data flow:** The `InviteCodeEntryScreen` currently expects `onSubmit` to return `{ success, error }` and separately calls `onSuccess(puppyData)`. The Edge Function returns both the success status and the puppy data in one response. The `handleInviteCodeSubmit` function needs to be updated to:
+1. Call the Edge Function
+2. If successful, store the puppy data and call the `onSuccess` callback
+3. Return the success/error status
+
+The exact wiring:
+```typescript
+// Updated flow in App.tsx:
+const handleInviteCodeSubmit = async (code: string) => {
+  if (!user) return { success: false, error: "Not authenticated." };
+
+  const result = await validateInviteCode(code);
+
+  if (result.success && result.puppy) {
+    // Store puppy data for the success screen, then InviteCodeEntryScreen
+    // will call onSuccess which transitions to invite-success state
+    setJoinedPuppyData({
+      puppyName: result.puppy.name,
+      breed: result.puppy.breed,
+      ageWeeks: result.puppy.age_weeks,
+      photoUrl: result.puppy.photo_url,
+    });
+  }
+
+  return { success: result.success, error: result.error };
+};
+```
+
+And the `InviteCodeEntryScreen` `onSubmit` handler needs a small update — currently `onSuccess` is never called because the submit handler only checks `result.success` from `onSubmit` but doesn't trigger `onSuccess`. The fix: after `onSubmit` returns success, the screen should call `onSuccess` with the stored puppy data. This means `handleInviteCodeSubmit` should set `joinedPuppyData` (state in App.tsx) before returning, and `onSuccess` should read from that state. The current wiring in App.tsx already does this:
+
+```tsx
+<InviteCodeEntryScreen
+  onBack={() => setAppState("choice")}
+  onSubmit={handleInviteCodeSubmit}
+  onSuccess={(puppyData) => {
+    setJoinedPuppyData(puppyData);
+    setAppState("invite-success");
+  }}
+/>
+```
+
+**Issue:** `onSuccess` is never called by `InviteCodeEntryScreen` — the component's `handleSubmit` only checks `result.success` but doesn't invoke `onSuccess`. Fix: update `InviteCodeEntryScreen.handleSubmit` to call `onSuccess` when the submit returns success. This requires the Edge Function response to flow through. Two options:
+
+**Option A (Recommended):** Change `onSubmit` return type to include puppy data:
+```typescript
+interface InviteCodeEntryScreenProps {
+  onBack: () => void;
+  onSubmit: (code: string) => Promise<{
+    success: boolean;
+    error?: string;
+    puppyData?: PuppyJoinData;  // Added
+  }>;
+  onSuccess: (puppyData: PuppyJoinData) => void;
+}
+```
+
+Then in `handleSubmit`:
+```typescript
+const result = await onSubmit(trimmedCode.toUpperCase());
+if (result.success && result.puppyData) {
+  onSuccess(result.puppyData);
+} else if (!result.success) {
+  setError(result.error || "...");
+}
+```
+
+**Option B:** Have `handleInviteCodeSubmit` in App.tsx set state and transition directly, bypassing `onSuccess`. Less clean but fewer component changes.
+
+**Recommendation:** Option A. It keeps the data flow explicit and the component self-contained.
+
+---
+
+### 22.6 Invite Code Generation During Onboarding
+
+The invite code must be created when the owner finishes onboarding (puppy is created). This happens in `App.tsx handleQuestionnaireComplete` → `createPuppy()`. Add the invite code generation call after the puppy is created:
+
+```typescript
+// In App.tsx handleQuestionnaireComplete, inside the async IIFE:
+const puppy = await createPuppy(user.id, { ... });
+
+// Generate invite code for this puppy
+try {
+  await createInviteCode(puppy.id, data.puppyName, user.id);
+  console.log("Invite code created for puppy:", puppy.id);
+} catch (err) {
+  // Non-blocking — the code can be generated later if this fails
+  console.error("Failed to create invite code:", err);
+}
+```
+
+Alternatively, this can be handled by the `createPuppy` service function itself, which already creates the puppy and membership in sequence. Adding the invite code as a third step keeps all creation logic in one place.
+
+---
+
+### 22.7 Owner-Side UI: Settings > Caretakers
+
+**Not yet implemented.** The owner needs to see their invite code in Settings > Caretakers. This is a frontend task but depends on the `getInviteCode()` service function (Section 22.4).
+
+**Implementation outline:**
+1. Add a "Caretakers" section to the Settings screen
+2. On mount, call `getInviteCode(puppyId)` to fetch the code
+3. Display the code in a card with a [Copy] button
+4. Copy button uses `navigator.clipboard.writeText(code)` with visual feedback ("Copied!" for 2s)
+5. Below the code, list current caretakers (query `puppy_memberships` where `role = 'caretaker'`)
+6. Owner can remove a caretaker (update `puppy_memberships.status = 'removed'`)
+
+This is frontend-only work — the backend support (RLS policy, service function) is defined in Sections 22.2.4 and 22.4.
+
+---
+
+### 22.8 Firebase Custom Token: Claims Update
+
+When a caretaker joins via invite code, they need Firestore access for task sync. The `get-firebase-token` Edge Function already includes `puppyIds` in the Firebase Custom Claims (Section 17.3, Step 3). However, the token is generated at sign-in time — **before** the caretaker has joined a household.
+
+**Solution:** After the caretaker successfully validates the invite code and the membership is created, the frontend should re-fetch the Firebase token to update the Custom Claims with the new `puppyId`:
+
+```typescript
+// In App.tsx handleInviteSuccess (after membership is confirmed):
+import { signInToFirebase } from "../lib/firebase";
+
+const handleInviteSuccess = async () => {
+  if (!user) return;
+
+  // Re-authenticate with Firebase to get updated Custom Claims (includes new puppyId)
+  try {
+    await signInToFirebase();
+  } catch (err) {
+    console.error("Failed to refresh Firebase token:", err);
+    // Non-blocking — will be refreshed on next app load
+  }
+
+  // Reload user data which will now find the new membership
+  await loadUserData(user);
+};
+```
+
+No changes needed to the `get-firebase-token` Edge Function itself — it already queries all active memberships.
+
+---
+
+### 22.9 Implementation Steps
+
+```
+Step 1: Database migration — create invite_codes table, indexes, RLS
+  → File: supabase/migrations/YYYYMMDD_invite_codes.sql
+  → Unblocks: Steps 2, 3, 4
+
+Step 2: Create validate-invite-code Edge Function
+  → File: supabase/functions/validate-invite-code/index.ts
+  → Deploy: supabase functions deploy validate-invite-code
+  → Unblocks: Step 4
+
+Step 3: Create invite-codes.ts service layer
+  → File: src/lib/services/invite-codes.ts
+  → Functions: validateInviteCode(), getInviteCode(), createInviteCode()
+  → Unblocks: Steps 4, 5, 6
+
+Step 4: Wire frontend handleInviteCodeSubmit to Edge Function
+  → File: src/app/App.tsx
+  → Update: handleInviteCodeSubmit, handleInviteSuccess
+  → Update: InviteCodeEntryScreen onSubmit return type (add puppyData)
+  → Unblocks: Step 7 (E2E testing)
+
+Step 5: Add invite code generation to onboarding flow
+  → File: src/app/App.tsx (handleQuestionnaireComplete) or
+          src/lib/services/puppies.ts (createPuppy)
+  → Unblocks: Step 6
+
+Step 6: Owner-side Settings > Caretakers UI
+  → File: src/app/components/Settings.tsx (add Caretakers section)
+  → Uses: getInviteCode(), navigator.clipboard
+  → Unblocks: Step 7
+
+Step 7: E2E testing — full invite code flow
+  → Owner creates puppy → code auto-generated
+  → Owner sees code in Settings > Caretakers → copies it
+  → Caretaker signs in → choice screen → enters code → success screen → dashboard
+  → Both users see the same routine
+  → Caretaker can complete tasks (Firestore sync works)
+  → Unblocks: Deployment
+```
+
+---
+
+### 22.10 Migration from `invites` to `invite_codes`
+
+The old `invites` table (Section 2.1) has no production data (0→1 stage). The migration strategy is:
+
+1. **Create `invite_codes` table** alongside `invites` (non-destructive)
+2. **Update all references** in application code (`invites.ts` → `invite-codes.ts`)
+3. **Update `database.types.ts`** to include `invite_codes` type (regenerate with `supabase gen types`)
+4. **Drop `invites` table** after confirming no code references remain
+5. **Remove `src/lib/services/invites.ts`** (replaced by `invite-codes.ts`)
+
+```sql
+-- Migration file: supabase/migrations/YYYYMMDD_invite_codes.sql
+
+-- 1. Create new table
+CREATE TABLE invite_codes ( ... );  -- Full DDL in Section 22.2.1
+
+-- 2. Create code generation function
+CREATE OR REPLACE FUNCTION generate_invite_code(...);  -- Section 22.2.2
+
+-- 3. RLS policies
+ALTER TABLE invite_codes ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Owners can view invite codes for their puppies" ...;  -- Section 22.2.4
+
+-- 4. Drop old table (safe — no production data)
+DROP TABLE IF EXISTS invites;
+```
+
+---
+
+### 22.11 Testing Plan
+
+**Unit Tests (Edge Function):**
+- Valid code → 200, membership created, puppy details returned
+- Invalid code → 404, correct error message
+- Empty code → 400
+- No auth token → 401
+- User already a member → 409
+- Caretaker limit exceeded → 409
+- Code with extra whitespace/lowercase → normalized correctly
+
+**Integration Tests:**
+1. Owner completes onboarding → invite code exists in `invite_codes` table
+2. Caretaker enters valid code → membership created → can view puppy data
+3. Caretaker enters invalid code → error displayed → can retry
+4. Second caretaker tries same code → 409 (limit exceeded in v1)
+5. Owner sees caretaker in Settings after they join
+6. Caretaker has Firestore access after joining (Custom Claims updated)
+
+**Manual Smoke Test:**
+1. Create account A (owner), complete onboarding for "Biscuit"
+2. Open Settings > Caretakers → verify code displayed (e.g., "BISCUIT-7X2K")
+3. Copy code
+4. Create account B (caretaker) in incognito window
+5. Choice screen → "I have an invite code" → enter copied code → Submit
+6. Verify success screen shows Biscuit's details
+7. Tap "View Routine" → verify dashboard loads with Biscuit's routine
+8. Complete a task as caretaker → verify owner sees it in real-time
+
+---
+
+### 22.12 Error Handling Summary
+
+| Scenario | Error Code | User-Facing Message | Recovery |
+|---|---|---|---|
+| Empty code submitted | 400 | "Invite code is required." | Re-enter code |
+| Code doesn't match | 404 | "That code doesn't match any household. Please check with the puppy's owner and try again." | Re-enter code |
+| Already a member | 409 | "You're already a member of this household." | Navigate to dashboard |
+| Caretaker limit hit | 409 | "This household already has the maximum number of caretakers." | Contact owner |
+| Network error | — | "Something went wrong. Please try again." | Retry |
+| Not authenticated | 401 | "Not authenticated." | Re-sign in |
+
+---
+
+### 22.13 Cost Impact
+
+| Component | Change | Cost Impact |
+|---|---|---|
+| Supabase Database | 1 new table (`invite_codes`), ~100 rows at scale | Negligible |
+| Supabase Edge Function | `validate-invite-code`: ~1 invocation per new caretaker | Negligible (within free tier) |
+| Firestore | No change (existing task sync) | None |
+| Anthropic Claude API | No change (not involved) | None |
+
+**Total additional cost: $0.** The invite code system adds one lightweight table and one Edge Function that is called rarely (once per caretaker join).
+
+---
+
+### 22.14 Deployment Checklist
+
+- [ ] Database migration applied: `invite_codes` table created
+- [ ] `generate_invite_code` function created in Postgres
+- [ ] RLS policies enabled on `invite_codes`
+- [ ] `validate-invite-code` Edge Function deployed
+- [ ] `src/lib/services/invite-codes.ts` created
+- [ ] `src/lib/services/invites.ts` removed (old file)
+- [ ] `database.types.ts` regenerated (includes `invite_codes`)
+- [ ] `handleInviteCodeSubmit` in App.tsx updated to call Edge Function
+- [ ] `InviteCodeEntryScreen` updated: `onSubmit` returns `puppyData` on success
+- [ ] Invite code auto-generated during onboarding (`createPuppy` flow)
+- [ ] Settings > Caretakers UI shows invite code with Copy button
+- [ ] Firebase token refreshed after caretaker joins (Custom Claims update)
+- [ ] Old `invites` table dropped
+- [ ] E2E smoke test passed (owner → code → caretaker → dashboard)
+
+---
+
+### 22.15 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Database: `invite_codes` table | **New table** (replaces `invites`) | Not started |
+| Database: `generate_invite_code` function | **New function** | Not started |
+| Database: RLS policies | **New policy** (owner-only read) | Not started |
+| Edge Function: `validate-invite-code` | **New function** (replaces `accept-invite`) | Not started |
+| Service: `invite-codes.ts` | **New file** (replaces `invites.ts`) | Not started |
+| Service: `invites.ts` | **Delete** | Not started |
+| App.tsx: `handleInviteCodeSubmit` | **Update** (call Edge Function) | Placeholder exists |
+| App.tsx: `handleQuestionnaireComplete` | **Update** (add code generation) | Not started |
+| App.tsx: `handleInviteSuccess` | **Update** (refresh Firebase token) | Partially exists |
+| InviteCodeEntryScreen.tsx | **Update** (`onSubmit` return type) | Component exists |
+| Settings.tsx | **Update** (add Caretakers section) | Not started |
+| Frontend: NewUserChoiceScreen.tsx | None | Already shipped |
+| Frontend: InviteCodeSuccessScreen.tsx | None | Already shipped |
+| Frontend: App.tsx routing | None | Already shipped |
+
+**Bottom line:** The invite code backend (F6/F7) requires 1 new database table, 1 new Edge Function, 1 new service file, and updates to 3 existing files. The frontend screens are already implemented. The system is dramatically simpler than the original invite link design — no deep links, no invite lifecycle states, no expiration, no share sheets. Total new server-side code: ~150 lines (Edge Function) + ~80 lines (service layer) + ~50 lines (SQL migration).
+
+---
+
 **End of Backend Development Plan**
 
 *This document will be updated as implementation progresses. All technical decisions are subject to revision based on real-world testing and user feedback.*

@@ -11,10 +11,47 @@ Screen: Welcome Screen
   -> If user has an existing PupPlan account: sign in and route to
      main app (daily routine view)
   -> If user is new (no existing account): create account and route
-     to onboarding questionnaire (Step 2)
-- All users are treated as primary owners by default unless they
-  have accepted an invite link from another primary owner
+     to the New User Choice Screen (Step 1B)
 - Terms of Service + Privacy Policy links at bottom
+```
+
+### Step 1B: New User Choice Screen
+```
+Screen: Welcome — Choose Your Path
+
+After a new user completes Google OAuth sign-in for the first time,
+they see a choice screen before any onboarding begins:
+
+  ┌─────────────────────────────────────────────┐
+  │                                             │
+  │            Welcome to PupPlan!              │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │                                       │  │
+  │  │       I have an invite code           │  │
+  │  │                                       │  │
+  │  │  Join someone else's puppy routine    │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │                                       │  │
+  │  │    I do not have an invite code       │  │
+  │  │                                       │  │
+  │  │  Set up a new puppy routine           │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+Option 1: "I have an invite code"
+  -> Routes to the Invite Code Entry Screen (see Flow 4, Step 2)
+  -> User enters an invite code to join an existing household
+     as a caretaker
+
+Option 2: "I do not have an invite code"
+  -> Routes to the Onboarding Questionnaire (Step 2)
+  -> User becomes a primary owner and sets up their puppy's routine
 ```
 
 ### Step 2: Onboarding Questionnaire (New Primary Owners Only)
@@ -167,95 +204,176 @@ Screen: Weekly Progress
 
 ## Flow 3: Inviting a Caretaker
 
-### Owner Sends Invite
+### Owner Views Invite Code
 ```
-Screen: Settings > Manage Caretakers
+Screen: Settings > Caretakers
 
-Current Caretakers: None yet
+The primary owner navigates to Settings > Caretakers to find
+their household's unique invite code.
 
-[+ Invite a Caretaker]
+  ┌─────────────────────────────────────────────┐
+  │  Caretakers                                 │
+  │                                             │
+  │  Invite Code                                │
+  │  ┌───────────────────────────────────────┐  │
+  │  │                                       │  │
+  │  │   BISCUIT-7X2K                        │  │
+  │  │                          [📋 Copy]   │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  Share this code with someone you'd like    │
+  │  to help care for [Puppy Name]. They can    │
+  │  enter it when they sign up for PupPlan.    │
+  │                                             │
+  │  ─────────────────────────────────────────  │
+  │                                             │
+  │  Current Caretakers: None yet               │
+  │                                             │
+  └─────────────────────────────────────────────┘
 
-User taps "Invite a Caretaker"
--> Bottom sheet:
-  "Invite someone to help care for [Puppy Name]"
-  "They'll be able to view the routine and mark
-   activities as done, but can't change settings."
-
-  [Generate Invite Link]
-
-User taps "Generate Invite Link"
--> iOS Share Sheet appears with the link
--> User can copy, iMessage, WhatsApp, etc.
-
-After sharing:
--> Manage Caretakers screen shows:
-  Pending Invites:
-  🔗 Invite sent (expires in 72 hours)  [Revoke]
+Invite code behavior:
+- The invite code is unique per household and always visible
+- The code is persistent — it does not expire or change
+- No "generate" action is needed; the code exists from the
+  moment the primary owner completes onboarding
+- The [📋 Copy] button copies the code to the device clipboard
+- On tap: button text briefly changes to "Copied!" with a
+  checkmark (✓) for 2 seconds, then reverts to "Copy"
+- The owner can share the code however they prefer (text it,
+  say it aloud, write it down, etc.)
 ```
 
-### Owner Sees Acceptance
+### Owner Sees Caretaker Join
 ```
-Screen: Settings > Manage Caretakers
+Screen: Settings > Caretakers
 
-Caretakers:
-  👤 Mike (mike@email.com)
-  Role: Caretaker
-  Joined: Feb 7, 2025
-  [Remove]
+After a caretaker successfully enters the invite code and joins:
 
--> Push notification (P1): "Mike accepted your invite
-   to help care for [Puppy Name]!"
+  ┌─────────────────────────────────────────────┐
+  │  Caretakers                                 │
+  │                                             │
+  │  Invite Code                                │
+  │  ┌───────────────────────────────────────┐  │
+  │  │   BISCUIT-7X2K              [📋 Copy]│  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  Share this code with someone you'd like    │
+  │  to help care for [Puppy Name].             │
+  │                                             │
+  │  ─────────────────────────────────────────  │
+  │                                             │
+  │  Current Caretakers:                        │
+  │  👤 Mike (mike@email.com)                   │
+  │  Joined: Feb 7, 2025                        │
+  │  [Remove]                                   │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+-> Push notification (P1): "Mike joined as a caretaker
+   for [Puppy Name]!"
 ```
 
 ---
 
-## Flow 4: Caretaker - Accept Invite & Onboarding
+## Flow 4: Caretaker - Join via Invite Code
 
-### Step 1: Receiving the Link
+### Step 1: Receiving the Code
 ```
-Caretaker receives a message (iMessage, WhatsApp, etc.):
-"Hey, I set up a routine for Biscuit! Download PupPlan
- and help me track his schedule: https://pupplan.app/invite/abc123"
-```
+The primary owner shares their invite code with the caretaker
+through any channel (text message, in person, email, etc.):
 
-### Step 2a: App Not Installed
-```
-Tap link -> Safari opens
--> App Store redirect (with deferred deep link stored)
--> User downloads and installs PupPlan
--> Opens app for first time
--> App detects deferred deep link
--> Shows invite screen (Step 3)
+  "Hey, download PupPlan and use my invite code: BISCUIT-7X2K"
+
+No deep link or special URL is involved. The caretaker simply
+needs the code and the app.
 ```
 
-### Step 2b: App Already Installed
+### Step 2: Invite Code Entry Screen
 ```
-Tap link -> Universal Link opens PupPlan directly
--> Shows invite screen (Step 3)
+After downloading and signing into PupPlan for the first time,
+the new user sees the New User Choice Screen (Flow 1, Step 1B).
+
+User taps "I have an invite code"
+
+-> Navigates to the Invite Code Entry Screen:
+
+  ┌─────────────────────────────────────────────┐
+  │                                             │
+  │            Enter your invite code           │
+  │                                             │
+  │  Ask the puppy's owner for their invite     │
+  │  code. You can find it in their app under   │
+  │  Settings > Caretakers.                     │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │                                       │  │
+  │  │   Invite code                         │  │
+  │  │   (text input, paste-friendly)        │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │           [Submit]                          │
+  │            ↑ Disabled until field is        │
+  │              non-empty                      │
+  │                                             │
+  │           [← Back]                          │
+  │            ↑ Returns to choice screen       │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+User pastes or types the invite code (e.g., "BISCUIT-7X2K")
+User taps "Submit"
+
+-> Code is validated against the server:
+
+   If VALID:
+   -> Success screen (Step 3)
+
+   If INVALID:
+   -> Inline error message below the input field:
+      "That code doesn't match any household. Please
+       check with the puppy's owner and try again."
+   -> Input field gets error styling (red border)
+   -> User can re-enter and try again
+
+Input behavior:
+- Text input, single line
+- Auto-capitalizes input (codes are case-insensitive)
+- Trims leading/trailing whitespace before validation
+- Supports paste from clipboard
+- [Submit] button is disabled when the field is empty
+- [← Back] returns to the New User Choice Screen (Step 1B)
 ```
 
-### Step 3: Accept Invite Screen
+### Step 3: Invite Code Accepted
 ```
-Screen: You've Been Invited!
+Screen: You're In!
 
-  [Puppy Photo]
-  "Sarah invited you to help care for Biscuit!"
-  Breed: Golden Retriever
-  Age: 10 weeks
+After the code is validated successfully:
 
-  "As a caretaker, you can view Biscuit's daily routine
-   and mark activities as complete."
+  ┌─────────────────────────────────────────────┐
+  │                                             │
+  │            🎉 You're in!                    │
+  │                                             │
+  │            [Puppy Photo]                    │
+  │                                             │
+  │   You've joined as a caretaker for          │
+  │   Biscuit!                                  │
+  │                                             │
+  │   Breed: Golden Retriever                   │
+  │   Age: 10 weeks                             │
+  │                                             │
+  │   "You can view Biscuit's daily routine     │
+  │    and mark activities as complete."         │
+  │                                             │
+  │          [View Routine]                     │
+  │           (primary button)                  │
+  │                                             │
+  └─────────────────────────────────────────────┘
 
-  [Accept Invite] (primary button)
-  [Decline] (text link)
-
-User taps "Accept Invite"
--> If not signed in: Welcome screen with Google Sign-In
-   (same as primary owner flow, but after auth the user
-   is routed back to accept the invite rather than onboarding)
--> If already signed in: invite accepted immediately
-
--> Transition to Biscuit's daily routine view
+User taps "View Routine"
+-> Transition to Biscuit's daily routine view (Step 4)
 ```
 
 ### Step 4: Caretaker Daily View
@@ -280,24 +398,21 @@ Bottom nav shows:
 
 ## Flow 5: Error & Edge Cases
 
-### Expired Invite Link
+### Invalid Invite Code
 ```
-Caretaker taps an expired invite link
+User enters an invite code that does not match any household
 
-Screen: Invite Expired
-  "This invite link has expired."
-  "Ask [Owner Name] to send you a new invite."
-  [OK]
-```
+Screen: Invite Code Entry (same screen, inline error)
+  -> Inline error message below the input field:
+     "That code doesn't match any household. Please
+      check with the puppy's owner and try again."
+  -> Input field gets error styling (red border)
+  -> User can clear the field and re-enter a new code
 
-### Revoked Invite
-```
-Caretaker taps a revoked invite link
-
-Screen: Invite No Longer Valid
-  "This invite is no longer active."
-  "Contact the puppy's owner for a new invite."
-  [OK]
+Common causes:
+- Typo in the code
+- Owner shared the wrong code
+- Code from a deleted household
 ```
 
 ### Offline Mode
@@ -1443,4 +1558,536 @@ Offline handling:
 - Same offline-first behavior as other task fields
 - pottyDetails changes queue locally and sync on reconnection
 - Last-write-wins for conflicts (same as other task fields)
+```
+
+---
+
+## Flow 8: Day Navigation — Calendar Picker for Past & Next Day Tasks
+
+**Context:** Users need to review past task completion and preview tomorrow's schedule without leaving the main routine screen. Currently the app only displays today's tasks with no way to look back or ahead. This feature makes the date header tappable — tapping it opens a calendar picker overlay where users can select any date from the puppy's creation date through tomorrow. Selecting a date loads that day's task list.
+
+### Problem & Motivation
+
+```
+Core pain:
+- The app resets to a today-only view every day, erasing context
+- Users cannot verify whether yesterday's tasks were completed (and by whom)
+- Users cannot preview tomorrow's schedule to plan ahead
+- Current workaround: texting each other ("did you do the 3pm potty break?")
+  or taking screenshots of the timeline before midnight
+
+Pain severity: High — daily friction for every user
+Pain frequency: Daily — every morning (planning) and every evening (reviewing)
+
+Impact hypothesis:
+We believe that adding a calendar picker for browsing past and next-day
+task lists for puppy owners and caretakers will increase daily app opens
+and session duration. We will know we are right when users navigate to
+non-today views at least 3 times per week on average within the first month.
+```
+
+### Flow 8A: Tappable Date Header
+
+```
+Screen: Daily Routine (Main Screen)
+
+Current header (before this feature):
+  ┌─────────────────────────────────────────────┐
+  │            🐾 Biscuit's Day                 │
+  │       Wednesday, February 19                │
+  └─────────────────────────────────────────────┘
+
+Updated header (date is now tappable):
+  ┌─────────────────────────────────────────────┐
+  │            🐾 Biscuit's Day                 │
+  │                                             │
+  │         Wednesday, February 19  ▾           │
+  │         (tappable date + chevron indicator)  │
+  └─────────────────────────────────────────────┘
+
+Date header specs:
+- The entire date text area is tappable (minimum 44pt tap target)
+- A small downward chevron (▾) appears to the right of the date
+  to signal that tapping opens a picker
+- Tap state: subtle press highlight on the date text
+- When viewing today: date displays normally
+  (e.g., "Wednesday, February 19")
+- When viewing a non-today date: date text shows the selected
+  date (e.g., "Tuesday, February 18") and a "Today" pill button
+  appears below it (see Flow 8E)
+```
+
+### Flow 8B: Calendar Picker Overlay
+
+```
+User taps the date header text
+
+-> A calendar picker overlay slides up from the bottom of the screen
+   (similar to the existing bottom sheet pattern used elsewhere in
+   the app, e.g., "Add Custom Task" and "Edit Task" sheets)
+
+  ┌─────────────────────────────────────────────┐
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │          February 2025        ▾      │  │
+  │  │     (month/year — tappable to        │  │
+  │  │      switch months)                  │  │
+  │  │                                       │  │
+  │  │  Su   Mo   Tu   We   Th   Fr   Sa   │  │
+  │  │  ──   ──   ──   ──   ──   ──   ──   │  │
+  │  │                              1     │  │
+  │  │   2    3    4    5    6    7    8    │  │
+  │  │   9   10   11   12   13   14   15   │  │
+  │  │  16   17   18  [19]  20   ··   ··   │  │
+  │  │  ··   ··   ··   ··   ··   ··   ··   │  │
+  │  │                                       │  │
+  │  │  ↑                                    │  │
+  │  │  Puppy creation date = Feb 9          │  │
+  │  │  Dates before Feb 9 are grayed out    │  │
+  │  │  and not tappable                     │  │
+  │  │                                       │  │
+  │  │  Today (19th) is highlighted with     │  │
+  │  │  a filled circle (primary color)      │  │
+  │  │                                       │  │
+  │  │  Tomorrow (20th) is the last          │  │
+  │  │  tappable date — dates after the      │  │
+  │  │  20th are grayed out and disabled     │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │           [Today]        [Close]            │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+Calendar picker specs:
+
+Layout:
+- Bottom sheet overlay (same animation/behavior as existing sheets)
+- Backdrop dim behind the sheet (tap backdrop to dismiss = cancel)
+- Month/year header at the top (e.g., "February 2025")
+- Standard 7-column grid (Su Mo Tu We Th Fr Sa)
+- "Today" button at bottom-left for quick return
+- "Close" button at bottom-right to dismiss without changing date
+
+Date range:
+- EARLIEST selectable date: the puppy's creation date
+  (derived from routines.generated_at or puppies.created_at,
+   whichever is earlier)
+- LATEST selectable date: tomorrow (today + 1 day)
+- Dates outside this range are GRAYED OUT and NOT TAPPABLE
+
+Visual states for dates:
+- Disabled (out of range): gray text, no tap response
+- Available (in range, not selected): default text color, tappable
+- Today: filled circle behind the date number (primary/orange color),
+  white text — always visually distinct even when not selected
+- Selected (non-today): outlined circle or highlighted background
+  (secondary color), to distinguish from the "today" indicator
+- Tomorrow: regular available style (no special decoration beyond
+  being tappable)
+
+Month navigation:
+- Left/right arrows flanking the month/year header
+  (e.g., ◀ February 2025 ▶)
+- Left arrow navigates to the previous month
+- Right arrow navigates to the next month
+- Left arrow is DISABLED when viewing the month containing the
+  puppy's creation date AND no earlier dates are selectable
+- Right arrow is DISABLED when viewing the month containing
+  tomorrow's date AND no later dates are selectable
+- Swiping left/right on the calendar grid also navigates months
+
+Interaction:
+- User taps a date → calendar dismisses → task list loads for
+  that date (see Flows 8C and 8D for what loads)
+- User taps "Today" → calendar dismisses → returns to today's
+  live task view
+- User taps "Close" or taps the backdrop → calendar dismisses →
+  no date change, stays on previously viewed date
+- User taps the already-selected date → no-op (calendar stays
+  open, nothing changes)
+```
+
+### Flow 8C: View Tomorrow's Tasks via Calendar
+
+```
+Screen: Daily Routine → user taps date header → calendar opens
+
+User taps tomorrow's date (e.g., February 20)
+
+-> Calendar picker dismisses
+-> Date header updates to tomorrow's date:
+   "Thursday, February 20  ▾"
+-> "Today" pill button appears below the date header (see Flow 8E)
+
+-> Task list shows the ACTIVE ROUTINE items at their scheduled times
+   (same AI-generated routine as today — the base template)
+
+-> All tasks appear UNCHECKED (no completion data for future dates)
+
+-> NO custom tasks appear (custom tasks are date-specific;
+   none have been added for tomorrow yet)
+
+-> NO edited routine items apply (edits are date-specific;
+   none exist for tomorrow yet)
+
+-> NO deleted routine items apply (deletions are date-specific;
+   none exist for tomorrow yet)
+
+Example tomorrow view:
+  ┌─────────────────────────────────────────────┐
+  │            🐾 Biscuit's Day                 │
+  │                                             │
+  │         Thursday, February 20  ▾            │
+  │              [ ← Today ]                    │
+  │              ↑ pill button to return         │
+  │                                             │
+  │  6:30 AM  [ ] Wake up & potty break        │
+  │  7:00 AM  [ ] Breakfast                    │
+  │  7:30 AM  [ ] Morning play session         │
+  │  8:30 AM  [ ] Potty break                  │
+  │  9:00 AM  [ ] Crate time / nap             │
+  │  ...                                        │
+  │  10:00 PM [ ] Final potty break & bedtime  │
+  │                                             │
+  │                               (no FAB)      │
+  └─────────────────────────────────────────────┘
+
+Key behaviors:
+- FAB (+ button) is HIDDEN — cannot add tasks to future dates
+- Swipe-to-delete is DISABLED — cannot delete tasks for future dates
+- Tapping task cards is DISABLED — cannot edit tasks for future dates
+- Tapping the completion circle does NOTHING — cannot pre-complete
+- Progress stats card is HIDDEN — no progress to show
+- Real-time subscriptions are NOT active for non-today views
+```
+
+### Flow 8D: View a Past Day's Tasks via Calendar
+
+```
+Screen: Daily Routine → user taps date header → calendar opens
+
+User taps a past date (e.g., February 15)
+
+-> Calendar picker dismisses
+-> Date header updates to the selected date:
+   "Saturday, February 15  ▾"
+-> "Today" pill button appears below the date header (see Flow 8E)
+
+-> Task list shows the routine as it was on that day:
+   • AI-generated routine items (base template)
+   • PLUS any custom tasks that were added on that date
+   • MINUS any routine items that were deleted on that date
+   • WITH any edits (time changes, activity type changes, notes)
+     that were made on that date
+   • WITH completion status — completed tasks show the avatar
+     of the user who completed them (+ green dot)
+   • WITH potty details (💩💦) if recorded on that date
+
+Example past day view (February 15):
+  ┌─────────────────────────────────────────────┐
+  │            🐾 Biscuit's Day                 │
+  │                                             │
+  │         Saturday, February 15  ▾            │
+  │              [ ← Today ]                    │
+  │                                             │
+  │  6:30 AM  [👤+🟢] Wake up & potty break 💦│
+  │  7:00 AM  [👤+🟢] Breakfast                │
+  │  7:30 AM  [👤+🟢] Morning play session     │
+  │  8:30 AM  [ ] Potty break       ← missed   │
+  │  9:00 AM  [👤+🟢] Crate time / nap        │
+  │  11:30 AM [👤+🟢] Potty Break 💩💦  ✏️    │
+  │           ↑ custom task added that day      │
+  │  ...                                        │
+  │  10:00 PM [👤+🟢] Final potty break 💦     │
+  │                                             │
+  │                               (no FAB)      │
+  └─────────────────────────────────────────────┘
+
+Key behaviors:
+- FAB (+ button) is HIDDEN — cannot add tasks to past dates
+- Swipe-to-delete is DISABLED — cannot delete past tasks
+- Tapping task cards opens a READ-ONLY detail view (see Flow 8F)
+- Tapping the completion circle does NOTHING — cannot change past
+  completion status
+- Progress stats card is HIDDEN — past progress is not shown
+  in the day navigation view (available in the Progress tab)
+- Real-time subscriptions are NOT active for non-today views
+
+Jumping to a distant date:
+- Unlike arrow-based navigation, the calendar lets users jump
+  directly to any valid date (e.g., from today to 3 weeks ago)
+  in a single tap — no need to step through one day at a time
+```
+
+### Flow 8E: Return to Today
+
+```
+When viewing any non-today date, the user can return to today via:
+
+Option 1: "Today" pill button (fastest)
+- A small pill-shaped button labeled "← Today" appears directly
+  below the date header text when viewing a non-today date
+- Tapping it immediately jumps back to today's live view
+- The pill disappears when viewing today (since you're already there)
+
+  Pill specs:
+  - Position: centered below the date header text, 4px gap
+  - Style: small rounded pill, secondary/muted background,
+    text: "← Today" in primary text color
+  - Tap target: minimum 44pt height
+  - Only visible when selectedDate ≠ today
+
+Option 2: Open calendar and tap "Today" button
+- User taps the date header → calendar opens → taps the "Today"
+  button at the bottom-left of the calendar sheet
+- Calendar dismisses → returns to today's live view
+
+Option 3: Open calendar and tap today's date
+- User taps the date header → calendar opens → taps today's
+  date cell (the filled circle) → calendar dismisses → returns
+  to today's live view
+
+When returning to today:
+-> Date header shows today's date
+-> "Today" pill button disappears
+-> FAB reappears
+-> Task completion is re-enabled
+-> Swipe-to-delete is re-enabled
+-> Task card tapping opens editable bottom sheet again
+-> Progress stats card reappears
+-> Real-time subscriptions reactivate
+-> Any changes that occurred while browsing past dates are
+   reflected (e.g., if caretaker completed a task)
+```
+
+### Flow 8F: Read-Only Task Detail (Non-Today Views)
+
+```
+When viewing a past day, tapping a task card opens a READ-ONLY
+bottom sheet (not the editable version from Flow 6A):
+
+  ┌─────────────────────────────────────────────┐
+  │              Task Details                    │
+  │                                             │
+  │ Time                                        │
+  │ 7:00 AM                                    │
+  │                                             │
+  │ Activity Type                               │
+  │ 🍽️ Meal                                     │
+  │                                             │
+  │ Notes                                       │
+  │ 1/2 cup kibble — wait 30 min before play   │
+  │                                             │
+  │ Status                                      │
+  │ ✅ Completed by Sarah at 7:05 AM           │
+  │                                             │
+  │                   [Close]                   │
+  └─────────────────────────────────────────────┘
+
+Differences from Edit Task bottom sheet:
+- Title: "Task Details" (not "Edit Task")
+- All fields are display-only (no pickers, no text input)
+- Shows completion status with who completed and when
+- Single "Close" button (no "Save Changes" or "Cancel")
+- Potty details shown as text: "Poop 💩, Pee 💦" (not toggles)
+
+For uncompleted past tasks:
+- Status line shows: "⚪ Not completed"
+- No user attribution
+
+For tomorrow's view:
+- Tapping task cards is DISABLED entirely (no bottom sheet opens)
+- Tomorrow's tasks have no meaningful detail beyond what's
+  visible on the card
+```
+
+### Flow 8G: Data Fetching for Non-Today Views
+
+```
+When the user selects a different day from the calendar, the app
+fetches:
+
+For past days:
+1. Active routine items (from Supabase routines/routine_items)
+   → Same base routine template as today
+2. Activity logs for that date (from Supabase activity_logs)
+   → Completion status, completed_by, completed_at
+3. Custom tasks for that date (from Firebase tasks collection)
+   → where('date', '==', selectedDateString)
+4. Edited routine items for that date (from Firebase)
+   → where('date', '==', selectedDateString)
+5. Deleted routine items for that date (from Firebase)
+   → where('date', '==', selectedDateString)
+
+For tomorrow:
+1. Active routine items only (from Supabase routines/routine_items)
+   → No activity logs, custom tasks, edits, or deletions exist yet
+
+Query changes required:
+- All service functions (tasks.ts, activity-logs.ts,
+  edited-routine-items.ts, deleted-routine-items.ts) must accept
+  an optional date parameter instead of hardcoding today's date
+- Default behavior (no date param) remains today for backwards
+  compatibility
+- Supabase activity_logs already indexed on (puppy_id, date) —
+  no new indexes needed
+- Firebase queries already filter by date string — no schema
+  changes needed
+
+Performance:
+- Each date selection triggers a new set of queries
+- Loading spinner shown briefly while fetching
+  (on the task list area, not the whole screen)
+- Data is NOT cached between date navigations in v1
+  (each selection fetches fresh data)
+- No real-time subscriptions for non-today views
+  (static data, loaded once per selection)
+- Calendar picker itself does not trigger any data fetches —
+  only the final date selection does
+```
+
+### Flow 8H: State Management
+
+```
+New state in Dashboard component:
+
+  selectedDate: Date
+  - Defaults to new Date() (today)
+  - Updated when user taps a date in the calendar picker
+  - Reset to today via "Today" pill button or calendar "Today" button
+
+  isCalendarOpen: boolean
+  - Controls visibility of the calendar picker bottom sheet
+  - Set to true when user taps the date header
+  - Set to false when user selects a date, taps "Close",
+    taps backdrop, or taps "Today" button in calendar
+
+  isViewingToday: boolean (derived)
+  - true when selectedDate matches today's date
+  - Controls visibility of FAB, editability, real-time subs,
+    and "Today" pill button
+
+  calendarMinDate: Date (derived)
+  - The puppy's creation date (earliest selectable date)
+  - Derived from routines.generated_at or puppies.created_at
+    (whichever is earlier)
+
+  calendarMaxDate: Date (derived)
+  - Tomorrow's date (today + 1 day)
+  - The latest selectable date in the calendar
+
+Conditional rendering based on isViewingToday:
+  ┌───────────────────────┬──────────┬────────────┐
+  │ UI Element            │  Today   │  Non-Today │
+  ├───────────────────────┼──────────┼────────────┤
+  │ FAB (+ button)        │ Visible  │ Hidden     │
+  │ Swipe-to-delete       │ Enabled  │ Disabled   │
+  │ Completion tap        │ Enabled  │ Disabled   │
+  │ Task card tap → Edit  │ Yes      │ Read-only  │
+  │ Progress stats card   │ Visible  │ Hidden     │
+  │ Real-time subs        │ Active   │ Inactive   │
+  │ Current time line     │ Visible  │ Hidden     │
+  │ "Today" pill button   │ Hidden   │ Visible    │
+  │ Date header chevron   │ Visible  │ Visible    │
+  └───────────────────────┴──────────┴────────────┘
+```
+
+### Flow 8I: Permissions & Access Control
+
+```
+Who can use the calendar picker:
+✓ Primary Owner — can browse all past days and tomorrow
+✓ Caretaker — can browse all past days and tomorrow
+
+Both roles see the same data for any given date. There is
+no role-based restriction on which dates can be viewed.
+
+Both roles are read-only on non-today views. Neither role
+can modify past or future task data through the calendar
+navigation.
+```
+
+### Flow 8J: Edge Cases
+
+```
+Edge case 1: Midnight rollover while viewing a past date
+- User is viewing Feb 15 at 11:59 PM
+- Clock rolls over to midnight (now Feb 20)
+- User's "today" is now Feb 20
+- The view they're looking at (Feb 15) stays on Feb 15
+- "Today" pill button still works — tapping it goes to Feb 20
+- If user opens the calendar, the "today" indicator (filled
+  circle) now shows on Feb 20, and the max selectable date
+  shifts to Feb 21
+
+Edge case 2: First day of app usage
+- User just completed onboarding today
+- Opening the calendar shows only today and tomorrow as
+  selectable dates (all prior dates are grayed out)
+- Calendar min date = today (puppy creation date)
+- Calendar max date = tomorrow
+
+Edge case 3: Routine was regenerated
+- If the owner regenerated the routine on Feb 15, past days
+  before Feb 15 may show a different routine structure
+- In v1, all past days show the CURRENT active routine as the
+  base template (not the historical routine that was active
+  on that specific date)
+- This is an accepted trade-off for v1 simplicity
+- Activity logs, custom tasks, edits, and deletions from those
+  dates are still accurately shown
+
+Edge case 4: Offline while selecting a date
+- If the user is offline when selecting a date from the calendar,
+  cached data may be stale or unavailable
+- Show: "You're offline. Showing cached data for this date."
+- If no cached data exists for the requested date:
+  "Unable to load tasks for this date. Please check your connection."
+- User can still return to today (today's data has offline
+  persistence via Firebase/Supabase caching)
+
+Edge case 5: Calendar across month boundaries
+- If the puppy was created on Jan 28 and today is Feb 5, the
+  calendar should allow navigating back to January to reach
+  Jan 28-31
+- Month navigation arrows (◀ ▶) at the top of the calendar
+  handle this seamlessly
+
+Edge case 6: Long-time user with many months of data
+- A user who has been using the app for 6+ months can navigate
+  back through multiple months using the month navigation arrows
+- The calendar only allows navigation back to the month
+  containing the puppy's creation date
+- Performance: The calendar itself is lightweight (just renders
+  a grid of dates). Data is only fetched when a date is selected,
+  not when browsing months.
+
+Edge case 7: Selecting today from the calendar
+- If user opens the calendar and taps today's date (the filled
+  circle), it behaves the same as the "Today" button — returns
+  to the full live view with FAB, completions, and real-time
+  subscriptions enabled.
+```
+
+### Flow 8K: Future Considerations (v2+)
+
+```
+Potential enhancements for future versions:
+- Dot indicators on calendar dates: Show small dots under dates
+  that have activity data (e.g., green dot = all tasks completed,
+  orange dot = partial, red dot = mostly missed) to give users
+  a quick visual summary without selecting each date
+- Multi-day future view: Allow viewing 2-7 days ahead (extend
+  calendarMaxDate beyond tomorrow)
+- Carry-forward incomplete tasks: Option to move yesterday's
+  missed tasks into today's list
+- Historical routine accuracy: Store routine snapshots so past
+  days reflect the routine that was actually active on that date
+- Week view toggle: Add a "Week" toggle at the top of the
+  calendar sheet to show a horizontal scrollable week strip
+  as an alternative to the full month grid
+- Swipe gesture navigation: Swipe left/right on the task list
+  itself to navigate between days (as a quick-browse complement
+  to the calendar picker for adjacent-day navigation)
 ```

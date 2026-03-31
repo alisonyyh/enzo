@@ -45,23 +45,26 @@
 #### F2: Authentication (Google Sign-In)
 **Priority: P0 (Launch Blocker)**
 
-**Description:** Authentication is the first action a user takes in the app. The welcome screen presents Sign in with Google as the sole authentication method. This handles both new account creation and returning user sign-in via Google OAuth. All users are treated as primary owners by default unless they have accepted an invite link from a primary owner. During OAuth, the user's Google profile picture is automatically captured and stored.
+**Description:** Authentication is the first action a user takes in the app. The welcome screen presents Sign in with Google as the sole authentication method. This handles both new account creation and returning user sign-in via Google OAuth. During OAuth, the user's Google profile picture is automatically captured and stored. New users are routed to a choice screen where they select whether they have an invite code (caretaker path) or not (primary owner path).
 
 **Behavior:**
 - User opens the app and sees the welcome screen with the Google Sign-In button
 - Tapping triggers the Google OAuth flow (redirects to Google's consent screen)
 - Backend captures user's `name`, `email`, and `picture` URL from Google OAuth response
-- If the user is new (no existing PupPlan account): account is created with Google profile picture, user is routed to the onboarding questionnaire (F1)
+- If the user is new (no existing PupPlan account): account is created with Google profile picture, user is routed to the **New User Choice Screen** with two options:
+  - **"I have an invite code"** → routes to the Invite Code Entry Screen (F7) where the user enters a code to join an existing household as a caretaker
+  - **"I do not have an invite code"** → routes to the onboarding questionnaire (F1) to set up a new puppy routine as a primary owner
 - If the user is returning (existing account): user is signed in and routed directly to the daily routine view (F4)
-- If the user opened the app via an invite deep link: after auth, user is routed to the invite acceptance screen (F7) instead of onboarding
 
 **Acceptance Criteria:**
 - Google Sign-In works via Supabase OAuth
 - Google profile picture URL is captured and stored in `User.google_profile_picture_url`
-- New users are correctly identified and routed to onboarding
-- Returning users bypass onboarding and land on the daily routine
+- New users are routed to the New User Choice Screen (not directly to onboarding)
+- Choice screen presents exactly two options: "I have an invite code" and "I do not have an invite code"
+- "I have an invite code" routes to the Invite Code Entry Screen (F7)
+- "I do not have an invite code" routes to the onboarding questionnaire (F1)
+- Returning users bypass the choice screen and land on the daily routine
 - Auth fails gracefully with clear error messages (network error, cancelled by user)
-- Invite deep link context is preserved through the auth flow
 
 ---
 
@@ -124,7 +127,7 @@
 - Uncompleted tasks show empty checkbox (no profile picture, no green dot)
 - Green dot is visible on all profile picture backgrounds
 - Missed activities are visually distinct (e.g., faded or red/warning color)
-- User can see past days' routines by swiping or using a date picker
+- User can see past days' routines and preview tomorrow's by tapping the date header to open a calendar picker (see F12)
 - Works offline: completions are queued and synced when connectivity returns
 - Activity left-border color coding matches category (orange for feeding, green for potty, etc.)
 
@@ -165,47 +168,57 @@
 #### F6: Caretaker Invite System
 **Priority: P0 (Launch Blocker)**
 
-**Description:** The primary owner can generate an invite link and share it with one caretaker. No in-app messaging integration required.
+**Description:** Each household has a unique, persistent invite code that the primary owner can view and copy from Settings > Caretakers. The owner shares this code with a caretaker through any channel (text, in person, email, etc.). The caretaker enters the code during first-time sign-up to join the household. No deep links, no share sheets, no expiration. Maximum 1 caretaker per puppy in v1.
 
 **Behavior:**
-- Owner navigates to Settings > Manage Caretakers
-- Taps "Invite Caretaker" which generates a unique deep link
-- Web share API or native share sheet appears (user can copy link, send via iMessage, WhatsApp, etc.)
-- Link is valid for 72 hours, single-use
-- Owner can see invite status: Pending, Accepted, or Expired
-- Owner can revoke a pending invite or remove an accepted caretaker
-- Maximum 1 caretaker per puppy in v1
-
-**Invite Link Behavior:**
-- If recipient has the app open in a browser: deep link opens the app with an accept-invite flow
-- If recipient doesn't have the link yet: link opens app in browser, after navigating the invite context is preserved
+- Owner navigates to Settings > Caretakers
+- The screen displays the household's unique invite code (e.g., "BISCUIT-7X2K") with a [Copy] button
+- The invite code is persistent — it exists from the moment the primary owner completes onboarding and does not expire or change
+- Tapping [Copy] copies the code to the device clipboard; button text briefly changes to "Copied!" with a checkmark for 2 seconds, then reverts
+- Below the invite code, the screen shows a list of current caretakers (or "None yet")
+- Owner can remove an accepted caretaker via a [Remove] button
+- The owner shares the code however they prefer (text it, say it aloud, write it down, etc.)
 
 **Acceptance Criteria:**
-- Invite link generates instantly
-- Deep link correctly routes to accept-invite screen in-app
-- Owner sees real-time status update when caretaker accepts
-- Revoking an invite invalidates the link immediately
-- Attempting to use an expired or revoked link shows a clear error
+- Invite code is displayed on Settings > Caretakers screen at all times for the primary owner
+- Invite code is unique per household
+- Invite code is generated automatically when the household is created (no "generate" action needed)
+- Invite code does not expire and does not change
+- [Copy] button copies the code to the clipboard with visual confirmation ("Copied!" for 2 seconds)
+- Owner sees the caretaker listed when they join (push notification: "[Name] joined as a caretaker for [Puppy Name]!")
+- Removing a caretaker revokes their access immediately
+- Codes are case-insensitive (server normalizes before validation)
 
 ---
 
-#### F7: Caretaker Onboarding
+#### F7: Caretaker Onboarding (Invite Code Entry)
 **Priority: P0 (Launch Blocker)**
 
-**Description:** The flow a caretaker goes through when accepting an invite.
+**Description:** The flow a new user goes through to join an existing household as a caretaker by entering an invite code. This replaces the previous deep-link-based invite flow. The caretaker receives the code from the primary owner (via text, in person, etc.), then enters it during first-time sign-up after selecting "I have an invite code" on the New User Choice Screen.
 
 **Behavior:**
-- Caretaker taps invite link -> app opens in browser
-- Caretaker sees: "You've been invited to help care for [Puppy Name]!" with puppy's photo (if available) and the owner's name
-- Caretaker authenticates via Google Sign-In (same welcome screen as primary owner flow) or signs in if they already have an account
-- Google profile picture is captured during OAuth
-- On acceptance, caretaker immediately sees the puppy's daily routine
+- New user signs in via Google OAuth → sees the New User Choice Screen
+- Taps "I have an invite code" → navigates to the Invite Code Entry Screen
+- Screen displays: "Enter your invite code" with helper text: "Ask the puppy's owner for their invite code. You can find it in their app under Settings > Caretakers."
+- Text input field for the invite code (single line, paste-friendly, auto-capitalizes, trims whitespace)
+- [Submit] button (disabled until field is non-empty)
+- [Back] button returns to the New User Choice Screen
+- On submit, code is validated server-side:
+  - **Valid code:** Navigates to a success screen ("You're in!") showing the puppy's photo, name, breed, and age. Caretaker taps "View Routine" to enter the daily routine view.
+  - **Invalid code:** Inline error below input field: "That code doesn't match any household. Please check with the puppy's owner and try again." Input field gets red border styling. User can re-enter.
+- Google profile picture is captured during OAuth (before the choice screen)
 - Caretaker has read + track access (can view routine and mark activities complete)
 - Caretaker's profile picture appears next to tasks they complete
 - Caretaker cannot: edit routine, change puppy profile, invite others, or modify settings
 
 **Acceptance Criteria:**
-- Caretaker can go from link tap to viewing the routine in under 2 minutes
+- "I have an invite code" on the choice screen routes to the Invite Code Entry Screen
+- Input field supports paste from clipboard
+- Input auto-capitalizes and trims whitespace (codes are case-insensitive)
+- [Submit] button is disabled when input is empty
+- Valid code routes to success screen showing puppy details, then to daily routine view
+- Invalid code shows inline error with red border styling; user can retry
+- [Back] returns to the New User Choice Screen without side effects
 - Caretaker's Google profile picture is captured and stored
 - Caretaker permissions are correctly enforced (no access to settings/edit)
 - If the caretaker already has an account with their own puppy, the invited puppy appears as a second profile they can switch to
@@ -582,6 +595,143 @@ pottyDetails?: {
 
 ---
 
+#### F12: Day Navigation — Calendar Picker
+**Priority: P0 (Launch Blocker)**
+
+**Description:** A calendar picker that lets users view their puppy's task list for any past day (back to the puppy's creation date) and preview tomorrow's routine. Users tap the date header on the Daily Routine screen to open a calendar bottom sheet. Selecting a date loads that day's task list. All non-today views are read-only — users cannot edit, delete, add, or complete tasks for past or future dates. A "Today" pill button provides instant return to the live view.
+
+**Context:** The app currently only shows today's tasks with no way to look back or ahead. Users cannot verify whether yesterday's tasks were completed (and by whom), and they cannot preview tomorrow's schedule to plan ahead. This forces users to text each other for status updates or take screenshots of their timeline before midnight — exactly the coordination overhead the app is meant to eliminate.
+
+**Behavior:**
+
+**Tappable Date Header:**
+- The date text in the Daily Routine header (e.g., "Wednesday, February 19") becomes tappable
+- A small downward chevron (▾) appears to the right of the date to indicate the picker affordance
+- Tapping the date opens the calendar picker bottom sheet
+- When viewing a non-today date, a "← Today" pill button appears directly below the date header for quick return to today's live view
+
+**Calendar Picker Bottom Sheet:**
+- Slides up from the bottom using the same bottom sheet pattern as "Add Custom Task" and "Edit Task"
+- Displays a standard monthly calendar grid (Su Mo Tu We Th Fr Sa)
+- Month/year header at top (e.g., "February 2025") with left/right arrows for month navigation
+- Date range: from the puppy's creation date (earliest) to tomorrow (latest)
+- Dates outside this range are grayed out and not tappable
+- Today's date always shows a filled circle (primary/orange color) for quick identification
+- The currently selected non-today date shows an outlined circle or highlighted background
+- "Today" button at bottom-left for quick return; "Close" button at bottom-right to dismiss without changing date
+- Swiping left/right on the calendar grid navigates months
+- Month navigation arrows disable at the boundaries (earliest month / month containing tomorrow)
+
+**Past Day View (Read-Only):**
+- Selecting a past date loads the task list as it was on that day:
+  - AI-generated routine items (current active routine as base template)
+  - Plus any custom tasks that were added on that date
+  - Minus any routine items that were deleted on that date
+  - With any edits (time changes, activity type changes, notes) from that date
+  - With completion status — completed tasks show the avatar of the user who completed them (+ green dot)
+  - With potty details (💩💦) if recorded
+- FAB is hidden; swipe-to-delete is disabled; completion tapping is disabled
+- Tapping a task card on a past day opens a read-only "Task Details" bottom sheet (title: "Task Details", all fields display-only, shows completion status with who and when, single "Close" button, potty details shown as text not toggles)
+- Progress stats card is hidden
+- Real-time subscriptions are not active (static data, loaded once per selection)
+- Current time indicator line is hidden
+
+**Tomorrow View (Read-Only Preview):**
+- Selecting tomorrow's date loads the active routine items at their scheduled times
+- All tasks appear unchecked (no completion data exists)
+- No custom tasks, edits, or deletions appear (none exist for future dates)
+- FAB is hidden; all task interactions are disabled
+- Tapping task cards is disabled entirely (no bottom sheet opens)
+
+**Return to Today:**
+- Option 1: Tap the "← Today" pill button below the date header (fastest — one tap)
+- Option 2: Open calendar → tap the "Today" button at bottom-left
+- Option 3: Open calendar → tap today's date cell (filled circle)
+- When returning to today: FAB reappears, task completion re-enables, swipe-to-delete re-enables, task card editing re-enables, progress stats card reappears, real-time subscriptions reactivate, current time line reappears
+
+**Acceptance Criteria:**
+- Date header is tappable with a chevron (▾) indicator; minimum 44pt tap target
+- Tapping the date header opens the calendar picker bottom sheet with standard slide-up animation
+- Calendar displays a 7-column month grid with month/year header and month navigation arrows
+- Earliest selectable date equals the puppy's creation date (derived from `routines.generated_at` or `puppies.created_at`, whichever is earlier)
+- Latest selectable date equals tomorrow (today + 1 day)
+- Dates outside the valid range are grayed out and not tappable
+- Today's date always displays with a filled circle (primary/orange color, white text) regardless of which date is selected
+- Selected non-today date shows a distinct visual indicator (outlined circle or highlighted background)
+- Tapping a valid date in the calendar dismisses the sheet and loads that day's task list
+- Tapping "Close" or the backdrop dismisses the calendar with no date change
+- Tapping the already-selected date is a no-op (calendar stays open)
+- Past day views show correct completion status, custom tasks, edits, deletions, and potty details for that date
+- Tomorrow view shows active routine items with all tasks unchecked, no custom tasks, no edits
+- All non-today views are fully read-only: FAB hidden, completion disabled, swipe-to-delete disabled, task editing disabled
+- Tapping a task card on a past day opens a read-only "Task Details" bottom sheet with completion attribution
+- Tapping a task card on tomorrow does nothing (disabled)
+- "← Today" pill button appears below the date header when viewing any non-today date
+- "← Today" pill button is hidden when viewing today
+- Tapping "← Today" returns to today's live view with all interactive features restored
+- Progress stats card is hidden on non-today views
+- Current time indicator line is hidden on non-today views
+- Real-time subscriptions are only active when viewing today
+- Data loads within 2 seconds when selecting a new date (loading spinner shown on task list area)
+- Calendar picker itself does not trigger any data fetches; only the final date selection does
+- Month navigation works across boundaries (e.g., puppy created Jan 28, today is Feb 5 — user can navigate back to January)
+- Both primary owner and caretaker can use the calendar picker with identical access
+- Midnight rollover: if clock rolls past midnight while viewing a past date, the viewed date stays stable; "Today" pill routes to the new current day
+- First day of usage: calendar shows only today and tomorrow as selectable
+- Offline: shows cached data with "You're offline" banner, or "Unable to load" if no cache exists for the requested date
+
+**Data Fetching:**
+- Past day queries:
+  1. Active routine items (Supabase `routines`/`routine_items`)
+  2. Activity logs for that date (Supabase `activity_logs`) — completion status, completed_by, completed_at
+  3. Custom tasks for that date (Firebase `tasks` collection) — `where('date', '==', selectedDateString)`
+  4. Edited routine items for that date (Firebase) — `where('date', '==', selectedDateString)`
+  5. Deleted routine items for that date (Firebase) — `where('date', '==', selectedDateString)`
+- Tomorrow query: Active routine items only (no logs, tasks, edits, or deletions exist)
+- All service functions (`tasks.ts`, `activity-logs.ts`, `edited-routine-items.ts`, `deleted-routine-items.ts`) must accept an optional date parameter instead of hardcoding today's date
+- Default behavior (no date param) remains today for backwards compatibility
+- Existing Supabase index on `activity_logs(puppy_id, date)` is sufficient — no new indexes needed
+- Firebase queries already filter by date string — no schema changes needed
+- Data is NOT cached between date navigations in v1 (fresh fetch each time)
+
+**State Management:**
+```typescript
+// New state in Dashboard component
+selectedDate: Date           // Defaults to today, updated on calendar selection
+isCalendarOpen: boolean      // Controls calendar sheet visibility
+isViewingToday: boolean      // Derived: selectedDate === today
+calendarMinDate: Date        // Derived: puppy creation date
+calendarMaxDate: Date        // Derived: tomorrow (today + 1)
+```
+
+**Conditional rendering based on `isViewingToday`:**
+```
+| UI Element            | Today    | Non-Today  |
+|-----------------------|----------|------------|
+| FAB (+ button)        | Visible  | Hidden     |
+| Swipe-to-delete       | Enabled  | Disabled   |
+| Completion tap        | Enabled  | Disabled   |
+| Task card tap → Edit  | Yes      | Read-only  |
+| Progress stats card   | Visible  | Hidden     |
+| Real-time subs        | Active   | Inactive   |
+| Current time line     | Visible  | Hidden     |
+| "Today" pill button   | Hidden   | Visible    |
+| Date header chevron   | Visible  | Visible    |
+```
+
+**Permissions:**
+- Both primary owner and caretaker can browse all past days and tomorrow
+- Both roles see the same data for any given date (no role-based restriction on viewing)
+- Both roles are read-only on non-today views (neither can modify past or future task data)
+
+**v1 Trade-offs:**
+- Past days show the CURRENT active routine as the base template, not the historical routine that was active on that date. If the owner regenerated the routine, past days may show different structure. Activity logs, custom tasks, edits, and deletions from those dates remain accurate.
+- Maximum future view is 1 day (tomorrow only)
+- No caching between date navigations
+- No dot indicators on calendar dates showing completion summaries (v2)
+
+---
+
 ### Out of Scope (v1)
 
 | Feature | Rationale |
@@ -601,7 +751,7 @@ pottyDetails?: {
 | Profile picture galleries or avatar libraries | Must take or upload own image, or use Google default. Pre-made avatars are P2. |
 | Reset to Google profile picture | Reverting a custom photo back to the Google OAuth picture is P1. In v1, once a custom photo is set it stays until replaced with a new upload. |
 | Task completion history/changelog | Who completed → uncompleted → re-completed tracking is P2. |
-| Multi-day task editing | Only today's tasks are editable in v1. Editing past/future days is P1. |
+| Multi-day task editing | Past and future days are viewable (read-only) via the calendar picker (F12), but only today's tasks are editable. Editing past/future task data is P1. |
 | Custom activity types | Pre-defined activity list only (Potty, Meal, Training, etc.). Custom activities are P1. |
 | Rich text notes / markdown in Notes field | Notes field supports plain text only (max 200 chars). Rich text, markdown, or link rendering is P2. |
 | Task duration tracking | Tracking how long an activity actually took (vs. scheduled duration) is P2. |
@@ -613,6 +763,14 @@ pottyDetails?: {
 | Potty analytics / health dashboard | Aggregated poop/pee charts, frequency tracking, and health pattern analysis based on pottyDetails data is P2. V1 captures structured data; analytics come later. |
 | Custom potty detail types | Only poop (💩) and pee (💦) in v1. Additional detail types (e.g., consistency, color, accident vs. outdoor) are P2. |
 | Potty details for non-potty tasks | Details field is exclusive to Potty activity type in v1. Extending structured detail fields to other activity types is P2. |
+| Calendar dot indicators (completion summaries) | Showing colored dots on calendar dates to indicate completion status (green = all done, orange = partial, red = mostly missed) is P2. V1 requires tapping into each date to see its status. |
+| Multi-day future view (beyond tomorrow) | Calendar picker limits future navigation to tomorrow (today + 1 day). Viewing 2-7 days ahead is P2. |
+| Historical routine snapshots | Past days show the current active routine as base template, not the routine that was active on that date. Storing routine snapshots per day is P2. |
+| Carry-forward incomplete tasks | Automatically moving yesterday's missed tasks into today's list is P2. |
+| Calendar week view toggle | Horizontal scrollable week strip as alternative to full month grid is P2. |
+| Swipe gesture day navigation | Swiping left/right on the task list to navigate between adjacent days (as complement to calendar picker) is P2. |
+| Editing/completing tasks on past or future days | Non-today views are strictly read-only in v1. The ability to retroactively complete or edit past tasks is P1. |
+| Caching between date navigations | Each calendar date selection fetches fresh data. Client-side caching of previously viewed dates is P1. |
 
 ---
 
@@ -623,11 +781,13 @@ pottyDetails?: {
 Open app (first launch)
   -> Welcome screen with Sign in with Google
   -> Authenticate via Google Sign-In (new account created, profile picture captured)
+  -> New User Choice Screen: "I have an invite code" / "I do not have an invite code"
+  -> Taps "I do not have an invite code"
   -> Onboarding questionnaire (4 steps with progress bar)
   -> Complete questionnaire
   -> AI routine generation (loading screen, ~5-10 sec)
   -> View generated daily routine (main screen with unified progress tracker)
-  -> (Optional) Tap settings -> Invite Caretaker -> Share link
+  -> (Optional) Tap settings -> Caretakers -> See invite code -> Copy and share with caretaker
 ```
 
 #### Flow 2: Primary Owner - Daily Usage
@@ -644,14 +804,17 @@ Open app
   -> Partner can instantly scan timeline: "Sarah (her face) did morning tasks, I'll handle afternoon"
 ```
 
-#### Flow 3: Caretaker - Accept Invite & Daily Usage
+#### Flow 3: Caretaker - Join via Invite Code & Daily Usage
 ```
-Receive invite link via message
-  -> Tap link
-  -> App opens in browser
-  -> See invite screen ("Help care for [Puppy Name]!")
-  -> Authenticate via Google Sign-In (if not already signed in, profile picture captured)
-  -> Accept invite
+Receive invite code from owner (via text, in person, etc.)
+  -> Download PupPlan and open app
+  -> Welcome screen with Sign in with Google
+  -> Authenticate via Google Sign-In (account created, profile picture captured)
+  -> New User Choice Screen: taps "I have an invite code"
+  -> Invite Code Entry Screen: pastes or types the code (e.g., "BISCUIT-7X2K")
+  -> Taps Submit → code validated
+  -> Success screen: "You're in! You've joined as a caretaker for Biscuit!"
+  -> Taps "View Routine"
   -> View today's routine (same view as owner, but no edit/settings access)
   -> Tap tasks to mark complete → checkbox replaced by caretaker's profile picture with green dot
   -> Owner opens app → sees unified progress + caretaker's picture with green dot on tasks they completed
@@ -820,6 +983,70 @@ User edits a Potty task with 💩 selected
   -> Saves → pottyDetails cleared, task shows as Walk
 ```
 
+#### Flow 9: User Reviews Yesterday's Tasks via Calendar Picker
+```
+Scenario A: Evening review — "Did everything get done today?"
+
+Sarah opens app at 9:30 PM
+  -> Sees today's Daily Routine — most tasks completed
+  -> Wants to check yesterday (partner Mike handled afternoon)
+  -> Taps the date header: "Wednesday, February 19 ▾"
+  -> Calendar picker bottom sheet slides up
+  -> Sees February 2025 calendar grid
+     - Today (19th) has a filled orange circle
+     - Dates before Feb 9 (puppy creation) are grayed out
+     - Feb 20 (tomorrow) is the last selectable date
+  -> Taps "18" (Tuesday, February 18)
+  -> Calendar dismisses
+  -> Date header updates: "Tuesday, February 18 ▾"
+  -> "← Today" pill button appears below the date header
+  -> Task list shows yesterday's routine with completion status:
+     6:30 AM  [Mike's avatar+🟢] Wake up & potty break 💦
+     7:00 AM  [Mike's avatar+🟢] Breakfast
+     8:30 AM  [ ] Potty break                    ← missed!
+     9:00 AM  [Mike's avatar+🟢] Crate time / nap
+     ...
+  -> Sarah sees the 8:30 AM potty break was missed
+  -> Taps on the missed task card
+  -> Read-only "Task Details" bottom sheet opens:
+     Time: 8:30 AM
+     Activity Type: 🚽 Potty
+     Status: ⚪ Not completed
+     [Close]
+  -> Taps "Close" to dismiss
+  -> Taps "← Today" pill button
+  -> Returns to today's live view (FAB reappears, real-time sync active)
+
+Scenario B: Morning preview — "What does tomorrow look like?"
+
+Sarah opens app at 7:00 AM
+  -> Wants to preview tomorrow's schedule to plan her work meetings
+  -> Taps the date header: "Wednesday, February 19 ▾"
+  -> Calendar opens, taps "20" (Thursday, February 20)
+  -> Calendar dismisses
+  -> Date header: "Thursday, February 20 ▾"
+  -> "← Today" pill appears
+  -> Task list shows tomorrow's routine (all unchecked, base template):
+     6:30 AM  [ ] Wake up & potty break
+     7:00 AM  [ ] Breakfast
+     7:30 AM  [ ] Morning play session
+     ...
+  -> FAB is hidden, all tasks are non-interactive
+  -> Sarah notes the 10:00 AM training session conflicts with a meeting
+  -> Taps "← Today" to return to today
+  -> Makes a mental note to ask Mike to handle the 10:00 AM training
+
+Scenario C: Jump to a specific past date
+
+Sarah wants to check last Saturday's care when the dog-sitter helped
+  -> Taps date header → calendar opens
+  -> Uses month navigation arrow (◀) to go back if needed
+  -> Taps "15" (Saturday, February 15)
+  -> Calendar dismisses, loads Feb 15's task list
+  -> Sees full completion history for that day
+  -> Taps "← Today" when done reviewing
+```
+
 ---
 
 ### Data Model (High-Level)
@@ -858,15 +1085,15 @@ PuppyMembership
   - status (active | removed)
   - joined_at
 
-Invite
+InviteCode
   - id (UUID)
   - puppy_id (FK -> Puppy)
-  - invited_by (FK -> User)
-  - invite_token (unique string)
-  - status (pending | accepted | expired | revoked)
-  - expires_at
-  - accepted_by (FK -> User, nullable)
+  - code (unique string, e.g., "BISCUIT-7X2K")
+  - created_by (FK -> User) [primary owner]
   - created_at
+  Note: The invite code is persistent and does not expire.
+  It is generated automatically when the household is created.
+  Codes are case-insensitive (stored uppercase, normalized on lookup).
 
 Routine
   - id (UUID)
@@ -950,7 +1177,7 @@ ORDER BY routine_items.scheduled_time ASC
 | Backend | **Supabase** (Postgres + Auth + Realtime + Edge Functions + Storage) for user/puppy data. **Firebase Firestore** for real-time task sync (task editing feature only). Hybrid approach: Supabase for structured data, Firestore for real-time collaboration. |
 | AI Integration | **Client-side breed/age rules in v1** (mock AI). Future: Anthropic Claude API (claude-sonnet-4-5) server-side via Supabase Edge Function. |
 | Auth | **Google OAuth only** via Supabase Auth. Captures `email`, `name`, `picture` from OAuth response. Single auth method simplifies flow and works universally. Firebase uses same Google auth token for security rules. |
-| Deep Linking | URL-based invite flow with query parameters. Web-native, no app store deferred deep linking required. |
+| Invite Mechanism | Static invite code per household (no deep links, no URL routing). Owner copies code from Settings > Caretakers; caretaker enters code during sign-up. Case-insensitive, server-validated. |
 | Image Storage | **Firebase Storage** (`users/{userId}/profile_photo.jpg`) for custom profile pictures. Google profile pictures stored as URLs only (Google hosts). |
 | Image Processing | Client-side crop/resize before upload (use `react-image-crop` or equivalent). Output: 400×400px square JPEG. Max 5MB input, allowed types: JPEG, PNG, HEIC. Client-side validation before upload; server-side validation as secondary check. |
 | Offline Support | Core routine view and activity completion work offline with local-first data. **Firestore offline persistence** for task edits (built-in). IndexedDB or localStorage for other data. Background sync when reconnected. |
@@ -970,14 +1197,15 @@ ORDER BY routine_items.scheduled_time ASC
 
 New puppy owners are overwhelmed. They face a firehose of conflicting advice from Google, YouTube, breeders, and well-meaning friends about how to raise their puppy. The result is inconsistency - irregular feeding times, missed potty breaks, skipped training sessions - which leads to behavioral problems and a stressed household. When multiple family members or partners share puppy duties, the lack of coordination makes it worse: nobody knows if the puppy has been fed, when the last potty break was, or whether training happened today.
 
-**The deeper problem:** Even when owners have a plan (AI-generated or otherwise), puppies don't follow it. A puppy skips breakfast, needs an unplanned potty break, or falls asleep during training time. A static routine that can't be adjusted to reflect reality becomes "decoration" rather than a useful tool. Users stop opening the app after a few days because it shows what *should* happen, not what *actually* happened. Without the ability to edit tasks, users resort to keeping separate notes in their Notes app or texting their partner ("BTW he didn't eat lunch, did it at 2 instead"), defeating the purpose of a shared tracking tool. There is no simple tool that says "here's exactly what to do today" AND lets users adapt when reality diverges, all while keeping the whole household on the same page without creating scorekeeping dynamics.
+**The deeper problem:** Even when owners have a plan (AI-generated or otherwise), puppies don't follow it. A puppy skips breakfast, needs an unplanned potty break, or falls asleep during training time. A static routine that can't be adjusted to reflect reality becomes "decoration" rather than a useful tool. Users stop opening the app after a few days because it shows what *should* happen, not what *actually* happened. Without the ability to edit tasks, users resort to keeping separate notes in their Notes app or texting their partner ("BTW he didn't eat lunch, did it at 2 instead"), defeating the purpose of a shared tracking tool. And without the ability to review what happened yesterday or preview what's coming tomorrow, users lose context overnight — every morning the app resets to a blank slate, and every evening's completed tasks vanish into a void. There is no simple tool that says "here's exactly what to do today," lets users adapt when reality diverges, provides continuity across days, all while keeping the whole household on the same page without creating scorekeeping dynamics.
 
 ### Impact Hypothesis
 
-We believe that **providing new puppy owners with a personalized daily routine, real-time task editing, and a shared tracking tool with visual attribution** will **reduce the anxiety of puppy ownership, improve consistency in puppy care routines, and increase daily app engagement**. We will know we are right when:
+We believe that **providing new puppy owners with a personalized daily routine, real-time task editing, day-by-day calendar navigation, and a shared tracking tool with visual attribution** will **reduce the anxiety of puppy ownership, improve consistency in puppy care routines, and increase daily app engagement**. We will know we are right when:
 - 60%+ of users who complete onboarding are still using the app daily after 2 weeks
 - **At least 60% of users edit or add at least one task per day within the first week** (validates that task editing solves a real pain)
 - **7-day retention improves by 25%** compared to static routine baseline (task editing reduces abandonment)
+- **Users navigate to non-today views at least 3 times per week on average** within the first month (validates that day navigation solves a real review/planning need)
 - Users report reduced stress in puppy care (in-app survey, NPS > 40)
 - Caretaker invite conversion rate > 30% (owners invite, caretakers accept and use)
 - Reduced "Did you feed the puppy?" messages between household members (measurable via user surveys)
@@ -1022,9 +1250,12 @@ We believe that **providing new puppy owners with a personalized daily routine, 
   - **"Biscuit didn't eat breakfast on schedule - he was sleepy and ate at 7:30 instead of 7:00. Now the app is wrong and I can't fix it."**
   - **"The app says he should have a potty break at 10am, but he already had an accident at 9:30. I want to log that but I can't add it."**
   - **"I'm just checking off tasks at the wrong times because the app won't let me adjust. This defeats the whole purpose."**
-- **Current workaround:** A shared Google Doc titled "Biscuit Schedule" that was filled in enthusiastically on day 1 and abandoned by day 4 because it's clunky to check on a phone. Now she texts her partner when things happen off-schedule and keeps notes in her Notes app about "what actually happened" vs. the plan.
+  - **"I wish I could see what happened yesterday — did Mike do the evening potty breaks? I was out and now I have no way to check."**
+  - **"I want to see what tomorrow's schedule looks like so I can plan my work meetings around Biscuit's training sessions."**
+- **Current workaround:** A shared Google Doc titled "Biscuit Schedule" that was filled in enthusiastically on day 1 and abandoned by day 4 because it's clunky to check on a phone. Now she texts her partner when things happen off-schedule and keeps notes in her Notes app about "what actually happened" vs. the plan. She takes screenshots of the app before bed to remember what was completed that day.
 - **Why profile pictures solve coordination:** Sarah opens the app, sees her partner's picture next to "7:00 AM Breakfast" - instant relief, no text needed. She trusts the system and can focus on work.
 - **Why task editing solves flexibility:** Biscuit ate at 7:30 instead of 7:00. Sarah taps the task, changes the time to 7:30, saves. Now the app reflects reality. Her partner sees "7:30 AM Breakfast ✏️" and knows what actually happened. No dual systems, no notes app, no confusion.
+- **Why calendar navigation solves continuity:** Sarah taps the date, opens the calendar, selects yesterday. She sees Mike's avatar next to the evening potty breaks — he did them all. She taps tomorrow to preview the schedule and sees a 10:00 AM training session that conflicts with a meeting. She texts Mike to cover it. No guesswork, no lost context overnight.
 
 ### Secondary Persona: Mike, the Caretaker (Sarah's Partner)
 
@@ -1037,9 +1268,11 @@ We believe that **providing new puppy owners with a personalized daily routine, 
   - "Sarah texts 'did you feed him?' when I already checked it off - she didn't look at the app."
   - **"Biscuit refused to eat lunch at noon - he was playing and wouldn't come inside. I fed him at 1pm but the app still says noon. Now Sarah will think I forgot."**
   - **"I want to log that Biscuit had an accident at 11am so Sarah knows, but I can't add it to the timeline."**
-- **Needs from the app:** Open it, see what's next, do it, check it off. If timing changes, adjust it quickly. That's it.
+  - **"Sarah asked me what happened yesterday afternoon but the app only shows today. I can't prove I did everything."**
+- **Needs from the app:** Open it, see what's next, do it, check it off. If timing changes, adjust it quickly. Check yesterday if needed. That's it.
 - **Why profile pictures solve coordination:** Mike checks off tasks throughout the day; his picture auto-populates. Sarah sees his picture, doesn't need to ask. Mike feels trusted, Sarah feels informed.
 - **Why task editing solves flexibility:** Biscuit refused lunch at noon, Mike fed him at 1pm. Mike taps task, changes time to 1pm, saves. Sarah opens app, sees "1:00 PM Lunch ✏️" with Mike's picture. She knows what happened without a text. Mike feels competent, not anxious.
+- **Why calendar navigation solves accountability:** Sarah asks "Did you handle the afternoon yesterday?" Mike taps the date, selects yesterday from the calendar. His avatar is on every afternoon task. He shows Sarah the screen — visual proof, no argument. Mike feels validated.
 
 ### Anti-Persona: NOT for
 
@@ -1055,7 +1288,7 @@ We believe that **providing new puppy owners with a personalized daily routine, 
 
 ### Core Pain
 
-**New puppy owners lack a clear, personalized, and *adaptable* shared daily plan for their puppy, leading to inconsistent care and household friction. Co-caretakers waste mental energy re-confirming task completion because they lack passive visibility into who did what. Static routines that can't be adjusted when puppies deviate make apps feel disconnected from reality, causing users to abandon the tool and revert to fragmented workarounds (notes apps, texting).**
+**New puppy owners lack a clear, personalized, and *adaptable* shared daily plan for their puppy, leading to inconsistent care and household friction. Co-caretakers waste mental energy re-confirming task completion because they lack passive visibility into who did what. Static routines that can't be adjusted when puppies deviate make apps feel disconnected from reality, and the inability to review past days or preview upcoming ones erases context overnight — causing users to abandon the tool and revert to fragmented workarounds (notes apps, texting, screenshots).**
 
 ### Pain Severity: **High**
 
@@ -1063,14 +1296,16 @@ This is major daily friction. Inconsistent routines directly cause behavioral pr
 
 ### Current Workaround
 
-Owners cobble together advice from Google, Reddit, breeder handouts, and YouTube into a mental model or a shared doc/spreadsheet. For coordination, they text/call each other ("Did you walk the dog yet?"), check physical notes (whiteboards, sticky notes), or just assume and risk duplication/missed tasks. **When puppies deviate from the plan, users either (1) ignore the deviations and check off tasks at the wrong times (corrupts tracking data), (2) keep separate notes in Notes app or on paper about what actually happened (defeats purpose of shared tool), or (3) stop using the app entirely after a few days because it doesn't reflect reality.** The workaround fails because:
+Owners cobble together advice from Google, Reddit, breeder handouts, and YouTube into a mental model or a shared doc/spreadsheet. For coordination, they text/call each other ("Did you walk the dog yet?"), check physical notes (whiteboards, sticky notes), or just assume and risk duplication/missed tasks. **When puppies deviate from the plan, users either (1) ignore the deviations and check off tasks at the wrong times (corrupts tracking data), (2) keep separate notes in Notes app or on paper about what actually happened (defeats purpose of shared tool), or (3) stop using the app entirely after a few days because it doesn't reflect reality. And when they want to review what happened yesterday or plan for tomorrow, they have no way to do so — the app resets daily, so users take screenshots before bed or rely on memory.** The workaround fails because:
 - It requires manual research and synthesis (time-consuming, error-prone)
 - It's not personalized to their specific breed, age, and living situation
 - Shared docs are clunky on mobile and nobody updates them consistently
 - **Static plans can't be adjusted when puppies are unpredictable, making the tool feel useless**
+- **Today-only views erase yesterday's context every morning, making the app feel amnesic**
 - There's no feedback loop - no way to see if you're actually sticking to the plan OR what actually happened vs. what was planned
 - Manual communication interrupts work, meetings, sleep and doesn't scale (if you add a third caretaker, group chats become chaotic)
 - Keeping dual systems (app for planned routine + notes for actuals) is too much cognitive overhead
+- **Taking screenshots of the timeline before bed is a fragile workaround for the lack of historical browsing**
 
 ### Pain Frequency: **Multiple times daily**
 

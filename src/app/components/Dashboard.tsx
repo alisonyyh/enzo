@@ -1,14 +1,15 @@
-import { useState, useEffect } from "react";
-import { CheckCircle2, Circle, Settings } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { CheckCircle2, Circle, Settings, ChevronDown, ArrowLeft } from "lucide-react";
 import { RoutineReveal } from "./RoutineReveal";
 import { SwipeableTaskCard } from "./SwipeableTaskCard";
 import { AddTaskFAB, type EditingItem } from "./AddTaskFAB";
 import { NetworkStatusBanner } from "./NetworkStatusBanner";
 import { CompletionAvatar } from "./CompletionAvatar";
 import { SwipeableRoutineCard } from "./SwipeableRoutineCard";
-import { subscribeToTasks, Task } from "../../lib/services/tasks";
-import { subscribeToDeletedRoutineItems } from "../../lib/services/deleted-routine-items";
-import { subscribeToEditedRoutineItems, type RoutineItemEdit } from "../../lib/services/edited-routine-items";
+import { CalendarPicker } from "./CalendarPicker";
+import { subscribeToTasks, getTasksForDate, getTodayString, Task } from "../../lib/services/tasks";
+import { subscribeToDeletedRoutineItems, getDeletedRoutineItemsForDate } from "../../lib/services/deleted-routine-items";
+import { subscribeToEditedRoutineItems, getEditedRoutineItemsForDate, type RoutineItemEdit } from "../../lib/services/edited-routine-items";
 import { signInToFirebase } from "../../lib/firebase";
 import {
   getTodayLogs,
@@ -28,6 +29,8 @@ interface DashboardProps {
   userRole: "owner" | "caretaker";
   isFirstTime?: boolean;
   onOpenSettings: () => void;
+  /** Puppy creation date string (ISO) — used as calendar min bound (D59) */
+  puppyCreatedAt?: string;
 }
 
 // Category color mapping (matches original Figma design)
@@ -51,8 +54,47 @@ export function Dashboard({
   userId,
   userRole,
   isFirstTime = false,
-  onOpenSettings
+  onOpenSettings,
+  puppyCreatedAt
 }: DashboardProps) {
+  // Day Navigation — Calendar Picker state (D58, Flow 8)
+  const [selectedDate, setSelectedDate] = useState<Date>(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
+
+  // Derived: is user viewing today? (D60)
+  const isViewingToday = useMemo(() => {
+    const today = new Date();
+    return selectedDate.toDateString() === today.toDateString();
+  }, [selectedDate]);
+
+  // Selected date as YYYY-MM-DD string for service calls
+  const selectedDateString = useMemo(() => getTodayString(selectedDate), [selectedDate]);
+
+  // Calendar bounds (D59)
+  const calendarMinDate = useMemo(() => {
+    if (puppyCreatedAt) {
+      const d = new Date(puppyCreatedAt);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    }
+    // Fallback: 30 days ago
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [puppyCreatedAt]);
+
+  const calendarMaxDate = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1); // Tomorrow
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
+
   // Flow 6 custom tasks (Firebase)
   const [customTasks, setCustomTasks] = useState<Task[]>([]);
   const [isLoadingCustomTasks, setIsLoadingCustomTasks] = useState(true);
@@ -68,6 +110,17 @@ export function Dashboard({
   // Task or routine item being edited via bottom sheet (null = not editing)
   const [editingItem, setEditingItem] = useState<EditingItem | null>(null);
 
+  // View-only task detail for non-today views (D67)
+  const [viewingItem, setViewingItem] = useState<{
+    time: string;
+    activity: string;
+    description: string;
+    category: string;
+    pottyDetails?: { poop: boolean; pee: boolean };
+    isCompleted: boolean;
+    type: 'routine' | 'custom';
+  } | null>(null);
+
   // Edited routine item overrides (Firebase — persists edits to AI-generated items)
   const [editedRoutineItems, setEditedRoutineItems] = useState<Map<string, RoutineItemEdit>>(new Map());
 
@@ -82,10 +135,13 @@ export function Dashboard({
   });
 
   // Load routine activity logs from Supabase
+  // D64: Real-time subscription only for today; static fetch for other dates
   useEffect(() => {
+    setIsLoadingLogs(true);
+
     async function loadLogs() {
       try {
-        const logs = await getTodayLogs(puppyId);
+        const logs = await getTodayLogs(puppyId, selectedDateString);
         const logMap = new Map<string, ActivityLogWithProfile>();
         logs.forEach(log => {
           logMap.set(log.routine_item_id, log);
@@ -100,29 +156,31 @@ export function Dashboard({
 
     loadLogs();
 
-    // Subscribe to real-time updates (INSERT/UPDATE and DELETE)
-    const channel = subscribeToActivityLogs(
-      puppyId,
-      (log) => {
-        setActivityLogs(prev => {
-          const newMap = new Map(prev);
-          newMap.set(log.routine_item_id, log);
-          return newMap;
-        });
-      },
-      (routineItemId) => {
-        setActivityLogs(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(routineItemId);
-          return newMap;
-        });
-      }
-    );
+    // Only subscribe to real-time updates when viewing today (D64)
+    if (isViewingToday) {
+      const channel = subscribeToActivityLogs(
+        puppyId,
+        (log) => {
+          setActivityLogs(prev => {
+            const newMap = new Map(prev);
+            newMap.set(log.routine_item_id, log);
+            return newMap;
+          });
+        },
+        (routineItemId) => {
+          setActivityLogs(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(routineItemId);
+            return newMap;
+          });
+        }
+      );
 
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [puppyId]);
+      return () => {
+        channel.unsubscribe();
+      };
+    }
+  }, [puppyId, selectedDateString, isViewingToday]);
 
   // Subscribe to profile picture changes for all users who have completed tasks today.
   // When a co-user updates their avatar, update their avatar_url in the activityLogs map
@@ -154,48 +212,67 @@ export function Dashboard({
   }, [activityLogs]);
 
   // Initialize Firebase and subscribe to custom tasks + deleted/edited routine items
+  // D64: Real-time subscriptions for today; static fetch for other dates
   useEffect(() => {
     let unsubscribeTasks: (() => void) | null = null;
     let unsubscribeDeleted: (() => void) | null = null;
     let unsubscribeEdited: (() => void) | null = null;
 
+    setIsLoadingCustomTasks(true);
+
     async function init() {
       try {
         await signInToFirebase();
 
-        unsubscribeTasks = subscribeToTasks(
-          puppyId,
-          (updatedTasks) => {
-            setCustomTasks(updatedTasks);
-            setIsLoadingCustomTasks(false);
-          },
-          (err) => {
-            setCustomTasksError(err.message);
-            setIsLoadingCustomTasks(false);
-          }
-        );
+        if (isViewingToday) {
+          // Today: real-time subscriptions
+          unsubscribeTasks = subscribeToTasks(
+            puppyId,
+            (updatedTasks) => {
+              setCustomTasks(updatedTasks);
+              setIsLoadingCustomTasks(false);
+            },
+            (err) => {
+              setCustomTasksError(err.message);
+              setIsLoadingCustomTasks(false);
+            },
+            selectedDateString
+          );
 
-        // Subscribe to deleted routine item IDs
-        unsubscribeDeleted = subscribeToDeletedRoutineItems(
-          puppyId,
-          (deletedIds) => {
-            setDeletedRoutineItemIds(deletedIds);
-          },
-          (err) => {
-            console.error('Failed to load deleted routine items:', err);
-          }
-        );
+          unsubscribeDeleted = subscribeToDeletedRoutineItems(
+            puppyId,
+            (deletedIds) => {
+              setDeletedRoutineItemIds(deletedIds);
+            },
+            (err) => {
+              console.error('Failed to load deleted routine items:', err);
+            },
+            selectedDateString
+          );
 
-        // Subscribe to edited routine item overrides
-        unsubscribeEdited = subscribeToEditedRoutineItems(
-          puppyId,
-          (edits) => {
-            setEditedRoutineItems(edits);
-          },
-          (err) => {
-            console.error('Failed to load edited routine items:', err);
-          }
-        );
+          unsubscribeEdited = subscribeToEditedRoutineItems(
+            puppyId,
+            (edits) => {
+              setEditedRoutineItems(edits);
+            },
+            (err) => {
+              console.error('Failed to load edited routine items:', err);
+            },
+            selectedDateString
+          );
+        } else {
+          // Non-today: one-time static fetch (D64, D65)
+          const [tasks, deletedIds, edits] = await Promise.all([
+            getTasksForDate(puppyId, selectedDateString),
+            getDeletedRoutineItemsForDate(puppyId, selectedDateString),
+            getEditedRoutineItemsForDate(puppyId, selectedDateString),
+          ]);
+
+          setCustomTasks(tasks);
+          setDeletedRoutineItemIds(deletedIds);
+          setEditedRoutineItems(edits);
+          setIsLoadingCustomTasks(false);
+        }
       } catch (err) {
         console.error('Dashboard: Firebase init failed:', err);
         setCustomTasksError(err instanceof Error ? err.message : 'Failed to load custom tasks');
@@ -210,7 +287,7 @@ export function Dashboard({
       unsubscribeDeleted?.();
       unsubscribeEdited?.();
     };
-  }, [puppyId]);
+  }, [puppyId, selectedDateString, isViewingToday]);
 
   const handleRevealDismiss = () => {
     setShowReveal(false);
@@ -221,6 +298,19 @@ export function Dashboard({
       }, 500);
     }
   };
+
+  // Calendar navigation handlers (D58, D61)
+  const handleGoToToday = useCallback(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    setSelectedDate(today);
+    setIsCalendarOpen(false);
+  }, []);
+
+  const handleCalendarSelect = useCallback((date: Date) => {
+    setSelectedDate(date);
+    setIsCalendarOpen(false);
+  }, []);
 
   const handleRoutineActivityComplete = async (routineItemId: string) => {
     // Optimistic update — show completed immediately
@@ -369,77 +459,165 @@ export function Dashboard({
             </button>
           </div>
 
-          {/* Date below title */}
-          <p className="text-sm text-muted-foreground text-center">
-            {currentDate.toLocaleDateString("en-US", {
-              weekday: "long",
-              month: "long",
-              day: "numeric"
-            })}
-          </p>
+          {/* Tappable date header — opens calendar picker (D58, Flow 8A) */}
+          <button
+            onClick={() => setIsCalendarOpen(true)}
+            className="flex items-center justify-center gap-1 mx-auto active:opacity-70 transition-opacity"
+          >
+            <p className="text-sm text-muted-foreground">
+              {selectedDate.toLocaleDateString("en-US", {
+                weekday: "long",
+                month: "long",
+                day: "numeric"
+              })}
+            </p>
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </button>
+
+          {/* "← Today" pill button — only visible when not viewing today (D61) */}
+          {!isViewingToday && (
+            <div className="flex justify-center mt-2">
+              <button
+                onClick={handleGoToToday}
+                className="flex items-center gap-1 px-3 py-1 bg-primary text-primary-foreground text-xs font-semibold rounded-full hover:bg-primary/90 active:scale-95 transition-all"
+              >
+                <ArrowLeft className="size-3" />
+                Today
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Stats Overview - Progress Ring */}
-        <div className="px-5 pb-4">
-          <div className="bg-card rounded-2xl p-5" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm text-muted-foreground mb-1">Today's Progress</h3>
-                <p className="text-3xl font-bold text-foreground">
-                  {completedCount}<span className="text-lg text-muted-foreground">/{totalTasks}</span>
-                </p>
-              </div>
-              <div className="relative w-16 h-16">
-                <svg className="w-16 h-16 transform -rotate-90">
-                  <circle
-                    cx="32"
-                    cy="32"
-                    r="28"
-                    stroke="#F5E6DC"
-                    strokeWidth="6"
-                    fill="none"
-                  />
-                  <circle
-                    cx="32"
-                    cy="32"
-                    r="28"
-                    stroke="#E8722A"
-                    strokeWidth="6"
-                    fill="none"
-                    strokeDasharray={`${2 * Math.PI * 28}`}
-                    strokeDashoffset={`${2 * Math.PI * 28 * (1 - completionPercentage / 100)}`}
-                    strokeLinecap="round"
-                    className="transition-all duration-500"
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-sm font-bold text-foreground">{completionPercentage}%</span>
+        {/* Stats Overview - Progress Ring (D68: hidden on non-today views) */}
+        {isViewingToday ? (
+          <div className="px-5 pb-4">
+            <div className="bg-card rounded-2xl p-5" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm text-muted-foreground mb-1">Today's Progress</h3>
+                  <p className="text-3xl font-bold text-foreground">
+                    {completedCount}<span className="text-lg text-muted-foreground">/{totalTasks}</span>
+                  </p>
+                </div>
+                <div className="relative w-16 h-16">
+                  <svg className="w-16 h-16 transform -rotate-90">
+                    <circle
+                      cx="32"
+                      cy="32"
+                      r="28"
+                      stroke="#F5E6DC"
+                      strokeWidth="6"
+                      fill="none"
+                    />
+                    <circle
+                      cx="32"
+                      cy="32"
+                      r="28"
+                      stroke="#E8722A"
+                      strokeWidth="6"
+                      fill="none"
+                      strokeDasharray={`${2 * Math.PI * 28}`}
+                      strokeDashoffset={`${2 * Math.PI * 28 * (1 - completionPercentage / 100)}`}
+                      strokeLinecap="round"
+                      className="transition-all duration-500"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-sm font-bold text-foreground">{completionPercentage}%</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          /* Read-only banner for non-today views (D60) */
+          <div className="px-5 pb-4">
+            <div className="bg-accent rounded-2xl px-4 py-3 text-center">
+              <p className="text-sm text-muted-foreground">
+                {selectedDate > new Date() ? '📅 Tomorrow\'s Preview' : '📋 Past Day View'} — Read Only
+              </p>
+              <p className="text-xs text-muted-foreground/70 mt-0.5">
+                {completedCount}/{totalTasks} completed
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Timeline */}
         <div className="flex-1 overflow-y-auto px-5 pb-20 space-y-3">
           {timelineItems.length === 0 && (
             <div className="text-center py-12 text-muted-foreground">
               <div className="text-4xl mb-2">🐾</div>
-              <p>No activities for today</p>
-              <p className="text-xs mt-1">Tap + to add a custom task</p>
+              <p>No activities for {isViewingToday ? 'today' : 'this day'}</p>
+              {isViewingToday && <p className="text-xs mt-1">Tap + to add a custom task</p>}
             </div>
           )}
 
           {timelineItems.map((entry, index) => {
             if (entry.type === 'custom') {
-              // Custom task — swipeable, tapping opens edit bottom sheet
-              return (
-                <SwipeableTaskCard
-                  key={`custom-${entry.task.id}`}
-                  task={entry.task}
-                  onEdit={(task) => setEditingItem({ type: 'custom', task })}
-                />
-              );
+              if (isViewingToday) {
+                // Today: swipeable, tapping opens edit bottom sheet
+                return (
+                  <SwipeableTaskCard
+                    key={`custom-${entry.task.id}`}
+                    task={entry.task}
+                    onEdit={(task) => setEditingItem({ type: 'custom', task })}
+                  />
+                );
+              } else {
+                // Non-today: read-only card, tapping opens view-only detail (D67)
+                const task = entry.task;
+                const taskDate = task.actualTime.toDate();
+                const taskTime = `${taskDate.getHours().toString().padStart(2, '0')}:${taskDate.getMinutes().toString().padStart(2, '0')}`;
+                return (
+                  <div
+                    key={`custom-${task.id}`}
+                    onClick={() => setViewingItem({
+                      time: taskTime,
+                      activity: task.title,
+                      description: task.description || '',
+                      category: task.activityType,
+                      pottyDetails: task.pottyDetails,
+                      isCompleted: task.isCompleted,
+                      type: 'custom',
+                    })}
+                    className={`
+                      bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
+                      ${task.isCompleted ? 'opacity-60' : ''}
+                    `}
+                    style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
+                  >
+                    <div className="flex-shrink-0 pt-0.5">
+                      <div className="text-sm font-bold text-foreground w-14 text-left">
+                        {formatDisplayTime(taskTime)}
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5" style={{ backgroundColor: getCategoryColor(task.activityType) }} />
+                            <h3 className={`font-medium text-base text-foreground ${task.isCompleted ? 'line-through' : ''}`}>
+                              {task.title}
+                              {task.activityType === 'potty_break' && (task.pottyDetails?.poop || task.pottyDetails?.pee) && (
+                                <span className="ml-1">{task.pottyDetails?.poop && '💩'}{task.pottyDetails?.pee && '💦'}</span>
+                              )}
+                            </h3>
+                          </div>
+                          {task.description && (
+                            <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>{task.description}</p>
+                          )}
+                        </div>
+                        {task.isCompleted ? (
+                          <CheckCircle2 className="size-6 text-secondary flex-shrink-0 pt-0.5" />
+                        ) : (
+                          <Circle className="size-6 text-border flex-shrink-0 pt-0.5" />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
             }
 
             // Routine item — original Figma Make card style
@@ -448,17 +626,15 @@ export function Dashboard({
             const isCompleted = log?.status === 'completed';
             const completerProfile = log?.completer_profile;
             const { isPast } = getActivityStatus(item.time);
-            const isCurrent = !isCompleted && isPast;
+            // Only show "current" highlight on today's view (D69)
+            const isCurrent = isViewingToday && !isCompleted && isPast;
             const categoryColor = getCategoryColor(item.category);
 
-            return (
-              <SwipeableRoutineCard
-                key={`routine-${item.id}`}
-                puppyId={puppyId}
-                routineItemId={item.id}
-              >
-                <div
-                  onClick={() => {
+            // Routine card content (shared between swipeable and read-only)
+            const routineCardContent = (
+              <div
+                onClick={() => {
+                  if (isViewingToday) {
                     // Open edit bottom sheet for routine item
                     setEditingItem({
                       type: 'routine',
@@ -470,52 +646,66 @@ export function Dashboard({
                       description: item.description || '',
                       pottyDetails: item.pottyDetails,
                     });
-                  }}
-                  className={`
-                    bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
-                    ${isCurrent ? 'border-l-2 border-primary' : ''}
-                    ${isCompleted ? 'opacity-60' : ''}
-                  `}
-                  style={{
-                    backgroundColor: isCurrent ? '#FFF3EB' : '#FFFFFF',
-                    boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)'
-                  }}
-                >
-                  {/* Time on LEFT */}
-                  <div className="flex-shrink-0 pt-0.5">
-                    <div className="text-sm font-bold text-foreground w-14 text-left">
-                      {formatDisplayTime(item.time)}
-                    </div>
+                  } else {
+                    // Non-today: open view-only detail (D67)
+                    setViewingItem({
+                      time: item.time,
+                      activity: item.activity,
+                      description: item.description || '',
+                      category: item.category,
+                      pottyDetails: item.pottyDetails,
+                      isCompleted: !!isCompleted,
+                      type: 'routine',
+                    });
+                  }
+                }}
+                className={`
+                  bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
+                  ${isCurrent ? 'border-l-2 border-primary' : ''}
+                  ${isCompleted ? 'opacity-60' : ''}
+                `}
+                style={{
+                  backgroundColor: isCurrent ? '#FFF3EB' : '#FFFFFF',
+                  boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)'
+                }}
+              >
+                {/* Time on LEFT */}
+                <div className="flex-shrink-0 pt-0.5">
+                  <div className="text-sm font-bold text-foreground w-14 text-left">
+                    {formatDisplayTime(item.time)}
                   </div>
+                </div>
 
-                  {/* Activity Content in MIDDLE */}
-                  <div className="flex-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          {/* Category dot */}
-                          <div
-                            className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
-                            style={{ backgroundColor: categoryColor }}
-                          />
-                          <h3 className={`font-medium text-base text-foreground ${isCompleted ? 'line-through' : ''}`}>
-                            {item.activity}
-                            {(item.category === 'potty' || item.category === 'potty_break') && (item.pottyDetails?.poop || item.pottyDetails?.pee) && (
-                              <span className="ml-1">
-                                {item.pottyDetails.poop && '💩'}
-                                {item.pottyDetails.pee && '💦'}
-                              </span>
-                            )}
-                          </h3>
-                        </div>
-                        {item.description && (
-                          <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
-                            {item.description}
-                          </p>
-                        )}
+                {/* Activity Content in MIDDLE */}
+                <div className="flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        {/* Category dot */}
+                        <div
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
+                          style={{ backgroundColor: categoryColor }}
+                        />
+                        <h3 className={`font-medium text-base text-foreground ${isCompleted ? 'line-through' : ''}`}>
+                          {item.activity}
+                          {(item.category === 'potty' || item.category === 'potty_break') && (item.pottyDetails?.poop || item.pottyDetails?.pee) && (
+                            <span className="ml-1">
+                              {item.pottyDetails.poop && '💩'}
+                              {item.pottyDetails.pee && '💦'}
+                            </span>
+                          )}
+                        </h3>
                       </div>
+                      {item.description && (
+                        <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
+                          {item.description}
+                        </p>
+                      )}
+                    </div>
 
-                      {/* Tappable Status Icon on RIGHT — toggles complete/undo */}
+                    {/* Status Icon on RIGHT */}
+                    {isViewingToday ? (
+                      /* Today: tappable toggle complete/undo */
                       <button
                         className="flex-shrink-0 pt-0.5 -m-1 p-1"
                         onClick={(e) => {
@@ -539,20 +729,141 @@ export function Dashboard({
                           <Circle className="size-6 text-border" />
                         )}
                       </button>
-                    </div>
+                    ) : (
+                      /* Non-today: display-only status icon (D60) */
+                      <div className="flex-shrink-0 pt-0.5">
+                        {isCompleted ? (
+                          <CheckCircle2 className="size-6 text-secondary" />
+                        ) : (
+                          <Circle className="size-6 text-border" />
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </SwipeableRoutineCard>
+              </div>
             );
+
+            if (isViewingToday) {
+              return (
+                <SwipeableRoutineCard
+                  key={`routine-${item.id}`}
+                  puppyId={puppyId}
+                  routineItemId={item.id}
+                >
+                  {routineCardContent}
+                </SwipeableRoutineCard>
+              );
+            } else {
+              // Non-today: no swipe, just the card (D60)
+              return (
+                <div key={`routine-${item.id}`}>
+                  {routineCardContent}
+                </div>
+              );
+            }
           })}
         </div>
 
-        {/* FAB Button for Adding Custom Tasks + Edit Bottom Sheet */}
-        <AddTaskFAB
-          puppyId={puppyId}
-          editingItem={editingItem}
-          onEditDone={() => setEditingItem(null)}
-        />
+        {/* FAB Button for Adding Custom Tasks + Edit Bottom Sheet — only on today (D60) */}
+        {isViewingToday && (
+          <AddTaskFAB
+            puppyId={puppyId}
+            editingItem={editingItem}
+            onEditDone={() => setEditingItem(null)}
+          />
+        )}
+
+        {/* Calendar Picker Bottom Sheet (D58, D66) */}
+        {isCalendarOpen && (
+          <CalendarPicker
+            selectedDate={selectedDate}
+            minDate={calendarMinDate}
+            maxDate={calendarMaxDate}
+            onSelectDate={handleCalendarSelect}
+            onClose={() => setIsCalendarOpen(false)}
+            onGoToToday={handleGoToToday}
+          />
+        )}
+
+        {/* View-Only Task Detail Bottom Sheet — for non-today views (D67) */}
+        {viewingItem && (
+          <div
+            className="fixed inset-0 bg-black/50 z-50 flex items-end"
+            onClick={() => setViewingItem(null)}
+          >
+            <div
+              className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto"
+              style={{ boxShadow: '0 -4px 24px rgba(45, 27, 14, 0.15)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4" />
+              <h3 className="text-xl font-bold text-foreground mb-5">Task Details</h3>
+
+              <div className="space-y-4">
+                {/* Time */}
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Time</label>
+                  <p className="text-foreground text-sm">{formatDisplayTime(viewingItem.time)}</p>
+                </div>
+
+                {/* Activity Type */}
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Activity</label>
+                  <p className="text-foreground text-sm">{viewingItem.activity}</p>
+                </div>
+
+                {/* Potty Details */}
+                {(viewingItem.category === 'potty' || viewingItem.category === 'potty_break') && viewingItem.pottyDetails && (
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">Potty Details</label>
+                    <div className="flex gap-2">
+                      {viewingItem.pottyDetails.poop && <span className="text-sm">💩 Poop</span>}
+                      {viewingItem.pottyDetails.pee && <span className="text-sm">💦 Pee</span>}
+                      {!viewingItem.pottyDetails.poop && !viewingItem.pottyDetails.pee && <span className="text-sm text-muted-foreground">None recorded</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Notes */}
+                {viewingItem.description && (
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">Notes</label>
+                    <p className="text-foreground text-sm">{viewingItem.description}</p>
+                  </div>
+                )}
+
+                {/* Status */}
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Status</label>
+                  <div className="flex items-center gap-2">
+                    {viewingItem.isCompleted ? (
+                      <>
+                        <CheckCircle2 className="size-4 text-secondary" />
+                        <span className="text-sm text-foreground">Completed</span>
+                      </>
+                    ) : (
+                      <>
+                        <Circle className="size-4 text-border" />
+                        <span className="text-sm text-muted-foreground">Not completed</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Close button */}
+              <div className="mt-5">
+                <button
+                  onClick={() => setViewingItem(null)}
+                  className="w-full py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* First Time Tooltip */}
         {showFirstTimeTooltip && (

@@ -20,12 +20,13 @@ interface SettingsProps {
   };
   puppyId: string;
   userId: string;
+  userRole: "owner" | "caretaker";
   onBack: () => void;
   onSignOut: () => void;
   onAvatarUpdate: (newUrl: string) => void;
 }
 
-export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
+export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, userRole, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
   const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile">("main");
   const [invites, setInvites] = useState<Invite[]>([]);
   const [inviteLink, setInviteLink] = useState("");
@@ -35,10 +36,12 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load invites on mount
+  // Load invites on mount (owners only)
   useEffect(() => {
-    getPuppyInvites(puppyId).then(setInvites).catch(console.error);
-  }, [puppyId]);
+    if (userRole === "owner") {
+      getPuppyInvites(puppyId).then(setInvites).catch(console.error);
+    }
+  }, [puppyId, userRole]);
 
   const handleGenerateInvite = async () => {
     setGeneratingInvite(true);
@@ -448,28 +451,30 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
             </button>
           </div>
 
-          {/* Sharing Section */}
-          <div>
-            <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">Sharing</h3>
-            <button
-              onClick={() => setActiveSection("caretakers")}
-              className="w-full bg-card rounded-2xl p-4 flex items-center justify-between hover:bg-accent transition-colors"
-              style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
-                  <Users className="size-5 text-primary" />
+          {/* Sharing Section — owners only */}
+          {userRole === "owner" && (
+            <div>
+              <h3 className="text-sm font-semibold text-muted-foreground mb-3 px-1">Sharing</h3>
+              <button
+                onClick={() => setActiveSection("caretakers")}
+                className="w-full bg-card rounded-2xl p-4 flex items-center justify-between hover:bg-accent transition-colors"
+                style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-accent flex items-center justify-center">
+                    <Users className="size-5 text-primary" />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-medium text-foreground">Caretakers</p>
+                    <p className="text-sm text-muted-foreground">
+                      {invites.filter(i => i.status === "accepted").length === 0 ? "None added" : `${invites.filter(i => i.status === "accepted").length} active`}
+                    </p>
+                  </div>
                 </div>
-                <div className="text-left">
-                  <p className="font-medium text-foreground">Caretakers</p>
-                  <p className="text-sm text-muted-foreground">
-                    {invites.filter(i => i.status === "accepted").length === 0 ? "None added" : `${invites.filter(i => i.status === "accepted").length} active`}
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="size-5 text-muted-foreground" />
-            </button>
-          </div>
+                <ChevronRight className="size-5 text-muted-foreground" />
+              </button>
+            </div>
+          )}
 
           {/* App Info */}
           <div>
