@@ -182,6 +182,41 @@ export type Database = {
           code?: string;
         };
       };
+      weight_logs: {
+        Row: {
+          id: string;
+          puppy_id: string;
+          weight_value: number;
+          weight_unit: string;
+          logged_at: string;
+          logged_by: string | null;
+          note: string | null;
+          is_onboarding: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          puppy_id: string;
+          weight_value: number;
+          weight_unit?: string;
+          logged_at?: string;
+          logged_by?: string | null;
+          note?: string | null;
+          is_onboarding?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          weight_value?: number;
+          weight_unit?: string;
+          logged_at?: string;
+          logged_by?: string | null;
+          note?: string | null;
+          is_onboarding?: boolean;
+          updated_at?: string;
+        };
+      };
     };
   };
 };
@@ -194,6 +229,7 @@ export type Routine = Database['public']['Tables']['routines']['Row'];
 export type RoutineItem = Database['public']['Tables']['routine_items']['Row'];
 export type ActivityLog = Database['public']['Tables']['activity_logs']['Row'];
 export type InviteCode = Database['public']['Tables']['invite_codes']['Row'];
+export type WeightLog = Database['public']['Tables']['weight_logs']['Row'];
 
 // Questionnaire data stored as JSONB
 export interface QuestionnaireJson {
