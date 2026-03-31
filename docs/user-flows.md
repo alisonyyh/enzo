@@ -1444,3 +1444,653 @@ Offline handling:
 - pottyDetails changes queue locally and sync on reconnection
 - Last-write-wins for conflicts (same as other task fields)
 ```
+
+---
+
+## Flow 8: Weight Tracking — Log, View, and Track Puppy Growth
+
+**Context:** Puppies grow rapidly during their first year, and weight is a critical health indicator that determines food portions, exercise needs, and whether the puppy is developing normally. Currently, PupPlan captures weight once during onboarding and never updates it. This means the puppy's profile becomes stale within weeks, and the AI-generated routine was built on an outdated weight.
+
+Weight tracking lives within the Puppy Profile section of Settings. This is a natural home because weight is already displayed there (currently read-only), and it keeps health data grouped with identity data (name, breed, age, photo) rather than mixing it into the daily routine timeline.
+
+---
+
+### Flow 8A: Navigate to Weight Tracking
+
+```
+Screen: Settings > Puppy Profile
+
+Current Puppy Profile layout (before this feature):
+  ┌─────────────────────────────────────────────┐
+  │  ← Back            Puppy Profile            │
+  │                                             │
+  │            [Puppy Photo]                    │
+  │           (circular, 80px)                  │
+  │                                             │
+  │  Name:        Biscuit                       │
+  │  Breed:       Golden Retriever              │
+  │  Age:         3 months, 2 weeks             │
+  │  Weight:      12 lbs                        │
+  │                                             │
+  │  "To update your puppy's information,       │
+  │   please contact support."                  │
+  └─────────────────────────────────────────────┘
+
+Updated Puppy Profile layout (with weight tracking):
+  ┌─────────────────────────────────────────────┐
+  │  ← Back            Puppy Profile            │
+  │                                             │
+  │            [Puppy Photo]                    │
+  │           (circular, 80px)                  │
+  │                                             │
+  │  Name:        Biscuit                       │
+  │  Breed:       Golden Retriever              │
+  │  Age:         3 months, 2 weeks             │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │ Weight                                │  │
+  │  │                                       │  │
+  │  │  Current: 18.5 lbs                    │  │
+  │  │  Last logged: Feb 28, 2026            │  │
+  │  │                                       │  │
+  │  │  [Log Weight]        [View History >] │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  "To update other puppy information,        │
+  │   please contact support."                  │
+  └─────────────────────────────────────────────┘
+
+Changes from current layout:
+- Weight is no longer a simple inline field
+- Weight is now a dedicated card/section with:
+  • Current weight (most recent log entry)
+  • Date of last log
+  • [Log Weight] button (primary action)
+  • [View History >] link (navigates to full history + chart)
+- The "contact support" note now says "other puppy information"
+  to exclude weight, which is now self-service
+
+First-time state (only onboarding weight exists):
+  ┌───────────────────────────────────────┐
+  │ Weight                                │
+  │                                       │
+  │  Current: 12 lbs                      │
+  │  From onboarding (Jan 15, 2026)       │
+  │                                       │
+  │  [Log Weight]        [View History >] │
+  └───────────────────────────────────────┘
+
+  The onboarding weight is imported as the first historical
+  entry with the date set to the puppy's created_at date.
+  The label reads "From onboarding" instead of a "Last logged"
+  date to distinguish it from user-entered logs.
+```
+
+---
+
+### Flow 8B: Log a New Weight Entry
+
+```
+User taps [Log Weight] on the Puppy Profile screen
+
+-> Bottom sheet slides up:
+
+  ┌─────────────────────────────────────────────┐
+  │              Log Weight                      │
+  │                                             │
+  │ Weight *                                    │
+  │ ┌─────────────────────┐  ┌──────────────┐  │
+  │ │                     │  │  lbs  ▼      │  │
+  │ │  (number input)     │  │  (unit       │  │
+  │ │                     │  │   selector)  │  │
+  │ └─────────────────────┘  └──────────────┘  │
+  │                                             │
+  │ Date                                        │
+  │ ┌─────────────────────────────────────────┐ │
+  │ │  📅  Mar 2, 2026  (defaults to today)   │ │
+  │ └─────────────────────────────────────────┘ │
+  │                                             │
+  │ Note                                        │
+  │ ┌─────────────────────────────────────────┐ │
+  │ │  Add a note...  (placeholder)           │ │
+  │ └─────────────────────────────────────────┘ │
+  │   Optional. E.g., "Weighed at vet visit"   │
+  │                                             │
+  │ [Cancel]                    [Save]          │
+  │                              ↑ Disabled     │
+  │                                until weight │
+  │                                entered      │
+  └─────────────────────────────────────────────┘
+
+Field details:
+
+1. Weight (required)
+   - Numeric input (decimal allowed, e.g., 18.5)
+   - Placeholder: previous weight value (e.g., "12")
+   - Unit selector defaults to the puppy's existing weight_unit
+     (set during onboarding). User can switch between lbs and kg.
+   - Validation: must be > 0, max 300 (lbs) or 136 (kg)
+   - Decimal precision: up to 1 decimal place
+
+2. Date (required, defaults to today)
+   - Tapping opens a date picker
+   - Cannot select a future date
+   - Cannot select a date before the puppy's created_at date
+   - Format: "MMM D, YYYY" (e.g., "Mar 2, 2026")
+
+3. Note (optional)
+   - Free text, max 200 characters
+   - Single-line input (not multiline)
+   - Use cases: "Weighed at vet," "After morning meal," etc.
+
+User enters "18.5" in weight field, keeps "lbs" and today's date
+User taps [Save]
+
+-> Bottom sheet dismisses
+-> Weight card on Puppy Profile updates immediately:
+
+  ┌───────────────────────────────────────┐
+  │ Weight                                │
+  │                                       │
+  │  Current: 18.5 lbs                    │
+  │  Last logged: Mar 2, 2026             │
+  │                                       │
+  │  [Log Weight]        [View History >] │
+  └───────────────────────────────────────┘
+
+-> Toast: "Weight logged" (auto-dismisses after 2 seconds)
+-> puppies.weight_value updates to 18.5, puppies.weight_unit
+   stays "lbs" (current weight always reflects most recent log)
+```
+
+#### Unit Switching Behavior
+```
+If user changes the unit selector (e.g., from lbs to kg):
+- Only affects this entry — does NOT convert all historical data
+- The weight_unit on the puppy profile updates to match the most
+  recent entry's unit
+- Historical entries retain the unit they were logged in
+- Chart and history list display entries in whatever unit they
+  were originally logged in, with a toggle to convert all to
+  a single unit (see Flow 8D)
+
+Example: Sarah logged 18.5 lbs on Feb 28, then the vet says
+8.4 kg on Mar 2. Both entries are stored as-is. The chart
+normalizes to a single unit for display (user's preference).
+```
+
+---
+
+### Flow 8C: View Weight History & Growth Chart
+
+```
+User taps [View History >] on the Puppy Profile screen
+
+-> Navigates to: Weight History screen
+
+  ┌─────────────────────────────────────────────┐
+  │  ← Back          Weight History             │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │                                       │  │
+  │  │           Growth Chart                │  │
+  │  │                                       │  │
+  │  │  20 ─┤                          •     │  │
+  │  │       │                      •        │  │
+  │  │  15 ─┤                  •             │  │
+  │  │       │            •                  │  │
+  │  │  10 ─┤       •                        │  │
+  │  │       │  •                            │  │
+  │  │   5 ─┤                                │  │
+  │  │       ├────┬────┬────┬────┬────┬───── │  │
+  │  │       Jan  Feb  Mar  Apr  May  Jun    │  │
+  │  │                                       │  │
+  │  │  Unit: [lbs ▼]                        │  │
+  │  │                                       │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  History                                    │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │  Mar 2, 2026                          │  │
+  │  │  18.5 lbs  (+2.3 lbs)   Sarah        │  │
+  │  │  Weighed at vet visit                 │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │  Feb 15, 2026                         │  │
+  │  │  16.2 lbs  (+2.0 lbs)   Sarah        │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │  Feb 1, 2026                          │  │
+  │  │  14.2 lbs  (+2.2 lbs)   Mike         │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │  ┌───────────────────────────────────────┐  │
+  │  │  Jan 15, 2026                         │  │
+  │  │  12.0 lbs  (onboarding)  —            │  │
+  │  └───────────────────────────────────────┘  │
+  │                                             │
+  │                               [Log Weight]  │
+  │                                  ↑ FAB      │
+  └─────────────────────────────────────────────┘
+
+Screen sections:
+
+1. Growth Chart (top section)
+   - Line chart with data points connected by a smooth line
+   - X-axis: dates (auto-scaled based on data range)
+   - Y-axis: weight in the selected unit
+   - Each data point is tappable — shows a tooltip with the
+     exact value, date, and note (if any)
+   - Unit toggle below the chart: dropdown to switch between
+     "lbs" and "kg" — this converts ALL displayed values
+     (chart + history list) for comparison purposes. It does
+     NOT change stored data.
+   - If only 1 data point exists: chart shows a single dot
+     with a message "Log more weights to see your puppy's
+     growth trend"
+
+2. History List (below chart)
+   - Sorted newest-first (most recent entry at top)
+   - Each row shows:
+     • Date (e.g., "Mar 2, 2026")
+     • Weight + unit (e.g., "18.5 lbs")
+     • Delta from previous entry (e.g., "+2.3 lbs"),
+       displayed in green for gain, red for loss.
+       First entry (onboarding) shows "(onboarding)" instead.
+     • Who logged it (display name or "—" for onboarding)
+     • Note text below (if any), truncated to 1 line
+   - Tapping a row opens the Edit Weight Entry sheet (Flow 8E)
+
+3. Log Weight FAB (bottom-right)
+   - Same floating action button pattern as the daily routine
+   - Circular, 56px diameter, primary color
+   - Tapping opens the "Log Weight" bottom sheet (same as 8B)
+   - Positioned 16px from bottom, 16px from right, above safe area
+
+Chart empty state (only onboarding weight):
+  ┌───────────────────────────────────────┐
+  │                                       │
+  │          •  12.0 lbs                  │
+  │       Jan 15                          │
+  │                                       │
+  │  Log more weights to see your         │
+  │  puppy's growth trend                 │
+  │                                       │
+  └───────────────────────────────────────┘
+```
+
+---
+
+### Flow 8D: Growth Chart Interaction Details
+
+```
+Tapping a data point on the chart:
+
+-> Tooltip appears above/below the point (avoiding edge clipping):
+
+  ┌──────────────────────────┐
+  │  18.5 lbs                │
+  │  Mar 2, 2026             │
+  │  "Weighed at vet visit"  │
+  └──────────────────────────┘
+
+  - Tooltip shows weight, date, and note (if present)
+  - Tap anywhere else to dismiss tooltip
+  - Only one tooltip visible at a time
+
+Unit toggle behavior:
+  - Dropdown below chart: "lbs" or "kg"
+  - Defaults to the puppy's current weight_unit
+  - Switching converts all displayed values:
+    • Chart Y-axis relabels
+    • Data points re-plot at converted values
+    • History list values convert (e.g., "18.5 lbs" → "8.4 kg")
+    • Delta values convert accordingly
+  - Conversion factor: 1 lb = 0.453592 kg
+  - Converted values show 1 decimal place
+  - This is display-only — stored data is not modified
+  - User's unit preference is remembered for this session
+    (resets to puppy's weight_unit on next visit)
+
+Chart scaling:
+  - Y-axis: auto-scales with ~20% padding above highest point
+  - X-axis: shows all data points with reasonable date labels
+    • < 3 months of data: show every entry date
+    • 3-6 months: show month labels
+    • > 6 months: show month labels, skip as needed
+  - Minimum Y-axis value: 0 (weight can't be negative)
+```
+
+---
+
+### Flow 8E: Edit a Weight Entry
+
+```
+User taps a row in the Weight History list
+
+-> Bottom sheet slides up (same layout as "Log Weight" but in
+   edit mode):
+
+  ┌─────────────────────────────────────────────┐
+  │              Edit Weight Entry               │
+  │                                             │
+  │ Weight *                                    │
+  │ ┌─────────────────────┐  ┌──────────────┐  │
+  │ │  18.5               │  │  lbs  ▼      │  │
+  │ └─────────────────────┘  └──────────────┘  │
+  │   ↑ Pre-populated with existing value      │
+  │                                             │
+  │ Date                                        │
+  │ ┌─────────────────────────────────────────┐ │
+  │ │  📅  Mar 2, 2026                        │ │
+  │ └─────────────────────────────────────────┘ │
+  │   ↑ Pre-populated with existing date       │
+  │                                             │
+  │ Note                                        │
+  │ ┌─────────────────────────────────────────┐ │
+  │ │  Weighed at vet visit                   │ │
+  │ └─────────────────────────────────────────┘ │
+  │   ↑ Pre-populated with existing note       │
+  │                                             │
+  │ [Cancel]      [Delete]      [Save Changes] │
+  │                ↑ Red,                       │
+  │                  destructive                │
+  └─────────────────────────────────────────────┘
+
+Key differences from "Log Weight" mode:
+- Title: "Edit Weight Entry" (not "Log Weight")
+- All fields pre-populated with existing values
+- [Delete] button appears between Cancel and Save
+- Primary button: "Save Changes" (not "Save")
+
+Editing the onboarding entry:
+- The onboarding weight entry CAN be edited (in case the
+  user entered the wrong value during onboarding)
+- It CANNOT be deleted (it's the foundational data point)
+- The [Delete] button is hidden for the onboarding entry
+
+Save behavior:
+- Updates the existing weight_log record
+- If this was the most recent entry, puppies.weight_value
+  and puppies.weight_unit update to reflect the edit
+- Chart and history list refresh
+- Toast: "Weight entry updated"
+```
+
+---
+
+### Flow 8F: Delete a Weight Entry
+
+```
+User taps [Delete] on the "Edit Weight Entry" sheet
+
+-> Confirmation modal appears:
+
+  ┌─────────────────────────────────────────────┐
+  │           Delete Weight Entry?              │
+  │                                             │
+  │  Are you sure you want to delete the        │
+  │  weight entry from Mar 2, 2026 (18.5 lbs)? │
+  │                                             │
+  │  This action cannot be undone.              │
+  │                                             │
+  │         [Cancel]    [Delete]                │
+  │                      ↑ Red, destructive     │
+  └─────────────────────────────────────────────┘
+
+User taps [Delete]
+
+-> Modal dismisses
+-> Bottom sheet dismisses
+-> Entry removed from history list + chart
+-> If this was the most recent entry:
+   • puppies.weight_value reverts to the next most recent entry
+   • Weight card on Puppy Profile updates accordingly
+-> Toast: "Weight entry deleted"
+
+Deletion rules:
+- Any user (owner or caretaker) can delete any weight entry
+  (same permission model as task management in v1)
+- The onboarding entry CANNOT be deleted
+  (the [Delete] button is hidden for this entry)
+- If all user-logged entries are deleted, the puppy reverts
+  to showing only the onboarding weight
+```
+
+---
+
+### Flow 8G: Onboarding Weight Migration
+
+```
+When a user first accesses the Weight Tracking feature:
+
+Existing puppy (created before this feature):
+- A weight_log entry is automatically created from the
+  existing puppies.weight_value and puppies.weight_unit
+- The logged_at date is set to the puppy's created_at date
+- logged_by is set to the primary owner's user ID
+- note is set to null
+- This migration runs once, on first access to the Puppy
+  Profile screen after the feature is deployed
+- A flag (e.g., weight_migrated boolean on the puppy record
+  or simply checking if any weight_log exists) prevents
+  duplicate migration
+
+New puppy (created after this feature):
+- During onboarding, when the puppy is created with
+  weight_value, a weight_log entry is simultaneously created
+- No migration needed — the onboarding flow writes to both
+  puppies.weight_value and weight_logs in one transaction
+
+Display:
+- The migrated/onboarding entry shows "(onboarding)" as its
+  label instead of a delta value
+- logged_by shows "—" for migrated entries (or the owner's
+  name if created during onboarding after the feature ships)
+```
+
+---
+
+### Flow 8H: Weight Tracking — Data Model & Backend
+
+```
+New Supabase table: weight_logs
+
+CREATE TABLE weight_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
+  weight_value DECIMAL NOT NULL,
+  weight_unit TEXT NOT NULL DEFAULT 'lbs',
+  logged_at DATE NOT NULL DEFAULT CURRENT_DATE,
+  logged_by UUID REFERENCES auth.users(id),
+  note TEXT,
+  is_onboarding BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Index for efficient queries (newest first per puppy)
+CREATE INDEX idx_weight_logs_puppy_date
+  ON weight_logs(puppy_id, logged_at DESC);
+
+-- RLS: same access pattern as puppies table via memberships
+ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view weight logs for their puppies"
+  ON weight_logs FOR SELECT
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can insert weight logs for their puppies"
+  ON weight_logs FOR INSERT
+  WITH CHECK (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update weight logs for their puppies"
+  ON weight_logs FOR UPDATE
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can delete weight logs for their puppies"
+  ON weight_logs FOR DELETE
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+    )
+    AND is_onboarding = false
+  );
+
+TypeScript interface:
+
+interface WeightLog {
+  id: string;
+  puppy_id: string;
+  weight_value: number;
+  weight_unit: 'lbs' | 'kg';
+  logged_at: string;        // YYYY-MM-DD
+  logged_by: string | null; // user ID
+  note: string | null;
+  is_onboarding: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+Sync behavior:
+- Weight logs use standard Supabase queries (not real-time
+  subscriptions). Weight logging is infrequent enough that
+  fetching on screen load is sufficient.
+- When a new weight_log is inserted or the most recent one is
+  updated/deleted, a Supabase database trigger (or client-side
+  logic) updates puppies.weight_value and puppies.weight_unit
+  to match the most recent entry by logged_at date.
+
+Trigger (optional, can also be done client-side):
+
+CREATE OR REPLACE FUNCTION update_current_weight()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE puppies
+  SET weight_value = (
+    SELECT weight_value FROM weight_logs
+    WHERE puppy_id = COALESCE(NEW.puppy_id, OLD.puppy_id)
+    ORDER BY logged_at DESC, created_at DESC
+    LIMIT 1
+  ),
+  weight_unit = (
+    SELECT weight_unit FROM weight_logs
+    WHERE puppy_id = COALESCE(NEW.puppy_id, OLD.puppy_id)
+    ORDER BY logged_at DESC, created_at DESC
+    LIMIT 1
+  )
+  WHERE id = COALESCE(NEW.puppy_id, OLD.puppy_id);
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER weight_log_sync
+  AFTER INSERT OR UPDATE OR DELETE ON weight_logs
+  FOR EACH ROW EXECUTE FUNCTION update_current_weight();
+```
+
+---
+
+### Flow 8I: Permissions & Access Control
+
+```
+Who can log weight:
+  ✓ Primary Owner
+  ✓ Caretaker
+
+Who can view weight history & chart:
+  ✓ Primary Owner
+  ✓ Caretaker
+
+Who can edit weight entries:
+  ✓ Primary Owner (any entry)
+  ✓ Caretaker (any entry)
+
+Who can delete weight entries:
+  ✓ Primary Owner (any entry except onboarding)
+  ✓ Caretaker (any entry except onboarding)
+
+(Both roles have equal weight tracking permissions in v1,
+consistent with task management permissions.)
+
+Who can access the Weight History screen:
+  ✓ Primary Owner (via Settings > Puppy Profile)
+  ✓ Caretaker (via Settings > Puppy Profile)
+
+Note: Caretakers already have read access to the Puppy
+Profile section in Settings. Weight tracking extends this
+with write access for logging weights.
+```
+
+---
+
+### Flow 8J: Edge Cases & Error States
+
+```
+Duplicate date entry:
+- Users CAN log multiple weights on the same date
+  (e.g., morning vs. evening weigh-in)
+- The most recent entry by created_at becomes "current weight"
+  if both share the same logged_at date
+- Both entries appear separately in the history list
+
+Very rapid weight change:
+- No validation or warning for large changes in v1
+- Future consideration (P2): show a gentle nudge if weight
+  changes by >20% between consecutive entries
+  ("That's a big change — double-check the value?")
+
+Unit mismatch across entries:
+- Fully supported. Each entry stores its own unit.
+- Display conversion normalizes all values to the user's
+  selected display unit on the Weight History screen.
+- The chart always plots in a single unit (user-selectable).
+
+No weight entries (edge case — should not happen):
+- If somehow all entries including onboarding are missing,
+  the Weight card shows:
+    ┌───────────────────────────────────────┐
+    │ Weight                                │
+    │                                       │
+    │  No weight recorded                   │
+    │                                       │
+    │  [Log Weight]                         │
+    └───────────────────────────────────────┘
+  - [View History] link is hidden (nothing to show)
+
+Network failure during save:
+- Toast: "Couldn't save weight. Please try again."
+  (red, auto-dismisses after 3 seconds)
+- Bottom sheet stays open so user doesn't lose their input
+- User can tap [Save] again to retry
+
+Network failure during load:
+- Weight History screen shows:
+  "Couldn't load weight history. Pull down to retry."
+- Pull-to-refresh triggers a re-fetch
+
+Max entries:
+- No hard limit on number of weight entries in v1
+- Practical expectation: ~52 entries/year (weekly logging)
+- History list uses simple rendering (no virtualization needed
+  for this volume)
+```

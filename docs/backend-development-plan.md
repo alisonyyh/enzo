@@ -135,6 +135,18 @@ invites
   - accepted_by (UUID, FK → auth.users, nullable)
   - expires_at (timestamp)
   - created_at (timestamp)
+
+weight_logs (NEW — F12 / Flow 8, D58-D67)
+  - id (UUID, PK)
+  - puppy_id (UUID, FK → puppies, CASCADE)
+  - weight_value (DECIMAL, NOT NULL)
+  - weight_unit (TEXT, NOT NULL, default 'lbs')
+  - logged_at (DATE, NOT NULL, default CURRENT_DATE)
+  - logged_by (UUID, FK → auth.users, nullable)
+  - note (TEXT, nullable, max 200 chars)
+  - is_onboarding (BOOLEAN, NOT NULL, default false)
+  - created_at (TIMESTAMPTZ)
+  - updated_at (TIMESTAMPTZ)
 ```
 
 ### 2.2 Required Row-Level Security (RLS) Policies
@@ -193,6 +205,11 @@ CREATE POLICY "Members can view memberships for their puppies"
 
 -- routines, routine_items, activity_logs: Similar member-based access
 -- (Full policies available in migration files)
+
+-- weight_logs: Both owner and caretaker have full CRUD (D58)
+-- DELETE policy includes is_onboarding = false guard (D65)
+ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
+-- (Full policies in migration file 20260302000001_weight_logs.sql)
 ```
 
 ### 2.3 Missing Indexes (Performance Optimization)
@@ -218,6 +235,15 @@ CREATE INDEX idx_activity_logs_puppy_date
 CREATE INDEX idx_invites_token
   ON invites(invite_token)
   WHERE status = 'pending';
+
+-- Speed up weight log queries (newest first per puppy) — F12
+CREATE INDEX idx_weight_logs_puppy_date
+  ON weight_logs(puppy_id, logged_at DESC, created_at DESC);
+
+-- Speed up onboarding migration check — F12
+CREATE INDEX idx_weight_logs_onboarding
+  ON weight_logs(puppy_id)
+  WHERE is_onboarding = true;
 ```
 
 ---
@@ -2949,6 +2975,468 @@ The `addTask()` and `editTask()` functions in the code sample have also been upd
 - [ ] Multi-user sync: potty details appear on co-user's device within 3s
 - [ ] Offline: add potty details offline → sync when reconnected
 - [ ] Build succeeds: `npx vite build` with no errors in modified files
+
+---
+
+## 21. F12 / Flow 8: Weight Tracking — Backend Plan
+
+**Added:** 2026-03-02
+**Decision References:** D58–D67 (decisions-log.md)
+**Priority:** P0 (Launch Blocker — frontend already implemented)
+**Complexity:** Medium (new Supabase table + RLS + trigger + migration)
+
+---
+
+### 21.1 Overview
+
+Flow 8 adds a complete weight tracking system to PupPlan. Users can log weight entries over time, view an Apple Health-style growth chart with time-range filtering (W/M/6M/Y), and browse a chronological history list. The most recent weight entry automatically becomes the puppy's "current weight" on their profile.
+
+**Key architectural decision (D58):** Weight data lives in **Supabase** (not Firebase). Weight logs are permanent historical health data — not ephemeral daily tasks. They need relational integrity (foreign key to puppies), date-range queries with ordering, and aggregation (averages by period). This is the same backend as puppies, routines, and profiles. Firebase is reserved for real-time collaborative task editing only.
+
+**Frontend Components Already Shipped:**
+- `WeightHistory.tsx` — Apple Health-style chart with W/M/6M/Y time range tabs, average summary, custom SVG chart (380px), and "All Entries" history list
+- `LogWeightSheet.tsx` — Bottom sheet for logging/editing weight entries (add + edit + delete modes)
+- `Settings.tsx` — Updated with dedicated Weight card (replaces inline weight field), navigates to weight-history section
+- `weight-logs.ts` (service layer) — CRUD operations: `getWeightLogs()`, `addWeightLog()`, `updateWeightLog()`, `deleteWeightLog()`, `ensureOnboardingWeight()`
+- `database.types.ts` — Added `weight_logs` table types (Row, Insert, Update) and `WeightLog` convenience type
+- `App.tsx` — Added `weightValue`, `weightUnit`, `puppyCreatedAt` props to Settings, `onWeightUpdate` callback
+
+---
+
+### 21.2 Backend Assessment
+
+#### Supabase Database: New Table Required
+
+**Status: NOT YET CREATED**
+
+The `weight_logs` table must be created in the Supabase database. The frontend service layer (`weight-logs.ts`) already calls `supabase.from('weight_logs')` for all CRUD operations. The table will fail with a Postgres error until the migration is applied.
+
+#### Supabase RLS: New Policies Required
+
+**Status: NOT YET CREATED**
+
+Four RLS policies needed — one per operation (SELECT, INSERT, UPDATE, DELETE). Both owner and caretaker have equal access (D58). The DELETE policy includes an additional `is_onboarding = false` guard to prevent deletion of the baseline weight entry at the database level (D65).
+
+#### Supabase Trigger: New Trigger Required
+
+**Status: NOT YET CREATED**
+
+A database trigger (`update_current_weight`) should fire AFTER INSERT, UPDATE, or DELETE on `weight_logs`. It updates `puppies.weight_value` and `puppies.weight_unit` to match the most recent entry by `logged_at` date. The frontend currently handles this optimistically (D66), but the trigger ensures data consistency even if the client crashes mid-operation.
+
+#### Supabase Edge Functions: No Changes Needed
+
+The `generate-routine` Edge Function generates AI routines and doesn't interact with weight data. The `accept-invite` Edge Function handles caretaker invites and doesn't touch weight. No new Edge Functions are needed — weight logging is a simple CRUD flow handled entirely by the Supabase JS SDK from the client.
+
+#### Firebase: No Changes Needed
+
+Weight tracking is entirely Supabase-based (D58). No Firestore collections, no Firestore security rules, no Firebase custom token changes.
+
+#### Supabase Realtime: Not Required
+
+Weight logging is infrequent (once every few days/weeks) and not collaborative in real-time. The frontend fetches weight logs on screen load — no WebSocket subscription needed. If two household members both log weight around the same time, the next screen load will show both entries. This is a non-issue for the weight logging use case (unlike task completion, which needs <3s sync).
+
+---
+
+### 21.3 Data Model
+
+```sql
+-- New table: weight_logs
+-- Stores historical weight entries for a puppy
+-- Each entry records its own unit independently (D63)
+
+CREATE TABLE weight_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
+  weight_value DECIMAL NOT NULL,
+  weight_unit TEXT NOT NULL DEFAULT 'lbs',
+  logged_at DATE NOT NULL DEFAULT CURRENT_DATE,
+  logged_by UUID REFERENCES auth.users(id),
+  note TEXT,
+  is_onboarding BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Constraints:
+-- weight_value > 0 (enforced client-side in LogWeightSheet: min 0.1, max 300)
+-- weight_unit IN ('lbs', 'kg') (enforced client-side in unit selector)
+-- note max 200 chars (enforced client-side in input maxLength)
+-- logged_at <= CURRENT_DATE (enforced client-side in date picker max)
+-- logged_at >= puppy.created_at (enforced client-side in date picker min)
+-- Multiple entries on the same date ARE allowed (product spec Flow 8J)
+```
+
+**Column Details:**
+
+| Column | Type | Nullable | Default | Purpose |
+|---|---|---|---|---|
+| `id` | UUID | NO | `gen_random_uuid()` | Primary key |
+| `puppy_id` | UUID | NO | — | Foreign key → `puppies(id)`, CASCADE delete |
+| `weight_value` | DECIMAL | NO | — | Weight amount (e.g., 18.5) |
+| `weight_unit` | TEXT | NO | `'lbs'` | Unit of measurement ('lbs' or 'kg') |
+| `logged_at` | DATE | NO | `CURRENT_DATE` | Date the weight was recorded |
+| `logged_by` | UUID | YES | — | Who logged it (FK → `auth.users(id)`) |
+| `note` | TEXT | YES | — | Optional note, max 200 chars |
+| `is_onboarding` | BOOLEAN | NO | `false` | True for migrated onboarding entry (D62) |
+| `created_at` | TIMESTAMPTZ | NO | `now()` | Row creation timestamp |
+| `updated_at` | TIMESTAMPTZ | NO | `now()` | Last modification timestamp |
+
+**Relationship to existing tables:**
+
+```
+puppies (1) ──< (N) weight_logs
+  puppies.weight_value ← synced from most recent weight_logs entry (via trigger)
+  puppies.weight_unit  ← synced from most recent weight_logs entry (via trigger)
+```
+
+---
+
+### 21.4 Migration File
+
+**File:** `supabase/migrations/20260302000001_weight_logs.sql`
+
+```sql
+-- ============================================================================
+-- WEIGHT TRACKING: weight_logs table, RLS policies, indexes, and sync trigger
+-- Feature: F12 / Flow 8 (decisions-log.md D58-D67)
+-- ============================================================================
+
+-- ============================================================================
+-- TABLE: weight_logs
+-- ============================================================================
+
+CREATE TABLE weight_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
+  weight_value DECIMAL NOT NULL,
+  weight_unit TEXT NOT NULL DEFAULT 'lbs',
+  logged_at DATE NOT NULL DEFAULT CURRENT_DATE,
+  logged_by UUID REFERENCES auth.users(id),
+  note TEXT,
+  is_onboarding BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Add CHECK constraints for data integrity
+ALTER TABLE weight_logs
+  ADD CONSTRAINT weight_logs_weight_positive CHECK (weight_value > 0),
+  ADD CONSTRAINT weight_logs_weight_max CHECK (weight_value <= 300),
+  ADD CONSTRAINT weight_logs_unit_valid CHECK (weight_unit IN ('lbs', 'kg')),
+  ADD CONSTRAINT weight_logs_note_length CHECK (note IS NULL OR char_length(note) <= 200);
+
+-- ============================================================================
+-- INDEXES
+-- ============================================================================
+
+-- Primary query pattern: fetch all logs for a puppy, newest first
+-- Used by getWeightLogs() in weight-logs.ts
+CREATE INDEX idx_weight_logs_puppy_date
+  ON weight_logs(puppy_id, logged_at DESC, created_at DESC);
+
+-- Speed up onboarding check: ensureOnboardingWeight() queries by puppy_id + is_onboarding
+CREATE INDEX idx_weight_logs_onboarding
+  ON weight_logs(puppy_id)
+  WHERE is_onboarding = true;
+
+-- Speed up RLS subquery: membership lookups
+-- (Uses existing idx_puppy_memberships_user_puppy from 20260211000002_indexes.sql)
+
+-- ============================================================================
+-- ROW LEVEL SECURITY
+-- ============================================================================
+
+ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
+
+-- SELECT: Both owner and caretaker can view weight logs
+CREATE POLICY "Members can view weight logs for their puppies"
+  ON weight_logs FOR SELECT
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+        AND status = 'active'
+    )
+  );
+
+-- INSERT: Both owner and caretaker can add weight logs
+CREATE POLICY "Members can insert weight logs for their puppies"
+  ON weight_logs FOR INSERT
+  WITH CHECK (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+        AND status = 'active'
+    )
+  );
+
+-- UPDATE: Both owner and caretaker can edit weight logs
+CREATE POLICY "Members can update weight logs for their puppies"
+  ON weight_logs FOR UPDATE
+  USING (
+    puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+        AND status = 'active'
+    )
+  );
+
+-- DELETE: Both owner and caretaker can delete weight logs
+-- EXCEPT onboarding entries (is_onboarding = false guard) per D65
+CREATE POLICY "Members can delete weight logs for their puppies"
+  ON weight_logs FOR DELETE
+  USING (
+    is_onboarding = false
+    AND puppy_id IN (
+      SELECT puppy_id FROM puppy_memberships
+      WHERE user_id = auth.uid()
+        AND status = 'active'
+    )
+  );
+
+-- ============================================================================
+-- TRIGGER: Sync most recent weight to puppies table
+-- ============================================================================
+
+-- When a weight_log is inserted, updated, or deleted, update
+-- puppies.weight_value and puppies.weight_unit to reflect the
+-- most recent entry (by logged_at DESC, created_at DESC).
+-- This ensures the puppy profile always shows current weight
+-- even if the client didn't update it (crash, network error, etc.)
+
+CREATE OR REPLACE FUNCTION update_current_weight()
+RETURNS TRIGGER AS $$
+DECLARE
+  target_puppy_id UUID;
+  latest_weight DECIMAL;
+  latest_unit TEXT;
+BEGIN
+  -- Determine which puppy to update
+  target_puppy_id := COALESCE(NEW.puppy_id, OLD.puppy_id);
+
+  -- Find the most recent weight entry
+  SELECT weight_value, weight_unit
+  INTO latest_weight, latest_unit
+  FROM weight_logs
+  WHERE puppy_id = target_puppy_id
+  ORDER BY logged_at DESC, created_at DESC
+  LIMIT 1;
+
+  -- Update the puppies table
+  -- If all weight logs were deleted, latest_weight will be NULL
+  -- In that case, keep the existing values (should not happen in practice
+  -- because onboarding entries can't be deleted)
+  IF latest_weight IS NOT NULL THEN
+    UPDATE puppies
+    SET weight_value = latest_weight,
+        weight_unit = latest_unit
+    WHERE id = target_puppy_id;
+  END IF;
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER weight_log_sync
+  AFTER INSERT OR UPDATE OR DELETE ON weight_logs
+  FOR EACH ROW EXECUTE FUNCTION update_current_weight();
+
+-- ============================================================================
+-- UPDATED_AT AUTO-UPDATE TRIGGER
+-- ============================================================================
+
+-- Automatically set updated_at on row modifications
+CREATE OR REPLACE FUNCTION update_weight_logs_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER weight_logs_updated_at
+  BEFORE UPDATE ON weight_logs
+  FOR EACH ROW EXECUTE FUNCTION update_weight_logs_updated_at();
+```
+
+---
+
+### 21.5 Implementation Steps
+
+**Step 1: Create and apply the migration** → unblocks all frontend CRUD
+```bash
+# File: supabase/migrations/20260302000001_weight_logs.sql
+# (contents above)
+supabase db push
+# OR: Apply via Supabase Dashboard > SQL Editor if using hosted Supabase
+```
+
+**Step 2: Verify RLS policies** → unblocks safe multi-user access
+```sql
+-- Test as authenticated owner:
+-- Should succeed: SELECT, INSERT, UPDATE on own puppy's weight logs
+-- Should succeed: DELETE on non-onboarding entries
+-- Should FAIL: DELETE on is_onboarding = true entries
+
+-- Test as authenticated caretaker:
+-- Should succeed: All same operations (equal access per D58)
+
+-- Test as unauthenticated:
+-- Should FAIL: All operations
+```
+
+**Step 3: Verify trigger fires correctly** → unblocks weight sync
+```sql
+-- Insert a weight log → check puppies.weight_value updated
+-- Update the weight log → check puppies.weight_value reflects edit
+-- Delete a non-onboarding log → check puppies.weight_value reverts to previous
+-- Verify onboarding entry survives DELETE attempt (RLS blocks it)
+```
+
+**Step 4: Verify frontend service layer works end-to-end** → unblocks full feature testing
+- Open Settings > Weight card
+- Confirm `ensureOnboardingWeight()` creates first entry
+- Log a new weight → chart updates, Weight card updates
+- Edit an entry → chart and history list reflect changes
+- Delete a non-onboarding entry → entry removed, chart updates
+- Attempt to delete onboarding entry → Delete button hidden (client-side guard)
+
+---
+
+### 21.6 Frontend Service ↔ Backend Mapping
+
+| Frontend Function | Supabase Operation | RLS Policy | Trigger Fires? |
+|---|---|---|---|
+| `getWeightLogs(puppyId)` | `SELECT * FROM weight_logs WHERE puppy_id = ? ORDER BY logged_at DESC, created_at DESC` | Members can view | No |
+| `addWeightLog(entry)` | `INSERT INTO weight_logs (...) VALUES (...) RETURNING *` | Members can insert | Yes → `update_current_weight()` |
+| `updateWeightLog(id, updates)` | `UPDATE weight_logs SET ... WHERE id = ? RETURNING *` | Members can update | Yes → `update_current_weight()` |
+| `deleteWeightLog(id)` | `DELETE FROM weight_logs WHERE id = ? AND is_onboarding = false` | Members can delete (+ `is_onboarding = false` guard) | Yes → `update_current_weight()` |
+| `ensureOnboardingWeight(...)` | `SELECT id FROM weight_logs WHERE puppy_id = ? AND is_onboarding = true LIMIT 1` then `INSERT` if none | Members can view + Members can insert | Yes (on insert) |
+
+**Double-guard on onboarding deletion (D65):**
+1. **Client-side:** `LogWeightSheet.tsx` hides the Delete button when `editingEntry?.is_onboarding === true`
+2. **Service-side:** `deleteWeightLog()` includes `.eq('is_onboarding', false)` in the query
+3. **Database-side:** RLS DELETE policy includes `is_onboarding = false` in the USING clause
+
+All three layers independently prevent deletion of onboarding entries.
+
+---
+
+### 21.7 Database Schema Update
+
+After migration, the `weight_logs` table should be added to the existing schema documentation. Update `src/lib/database.types.ts` if using Supabase type generation:
+
+```bash
+# Regenerate types from live database
+supabase gen types typescript --project-id <project-id> > src/lib/database.types.ts
+```
+
+**Note:** The frontend already has manually-added `weight_logs` types in `database.types.ts` (added during frontend implementation). After running type generation, verify the auto-generated types match the manual types. If they differ, the auto-generated version takes precedence.
+
+---
+
+### 21.8 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Supabase Database (`weight_logs` table) | Create table with CHECK constraints | **Required** (blocking) |
+| Supabase RLS (4 policies) | SELECT, INSERT, UPDATE, DELETE with membership check | **Required** (blocking) |
+| Supabase Index (`idx_weight_logs_puppy_date`) | Composite index for query performance | **Required** |
+| Supabase Index (`idx_weight_logs_onboarding`) | Partial index for onboarding check | **Recommended** |
+| Supabase Trigger (`update_current_weight`) | Sync `puppies.weight_value/unit` after weight CRUD | **Required** |
+| Supabase Trigger (`weight_logs_updated_at`) | Auto-update `updated_at` on row modification | **Recommended** |
+| Supabase Edge Functions | None | No changes needed |
+| Supabase Realtime | None | Not needed (fetch-on-load is sufficient) |
+| Supabase Storage | None | Weight tracking has no file uploads |
+| Firebase / Firestore | None | Weight data lives in Supabase (D58) |
+| Firestore Security Rules | None | No Firestore involvement |
+| Firebase Custom Token | None | No changes |
+| Frontend Service Layer (`weight-logs.ts`) | Already shipped | 5 functions, all tested |
+| Frontend Components | Already shipped | WeightHistory, LogWeightSheet, Settings, App |
+| Deployment | `supabase db push` (one migration file) | **One command** |
+
+**Bottom line:** Weight tracking requires a single Supabase migration file containing the table definition, CHECK constraints, indexes, RLS policies, and two triggers (weight sync + updated_at auto-update). No Edge Functions, no Firebase changes, no new dependencies. The entire frontend is already built and tested — it just needs the database table to exist. Total backend effort: ~1–2 hours (write migration, apply, test RLS, verify trigger).
+
+---
+
+### 21.9 Cost Impact
+
+**Minimal.** Weight logging is infrequent — a typical user logs weight once every 3–7 days.
+
+| Resource | Impact |
+|---|---|
+| Supabase Database (rows) | ~50-100 rows per puppy per year. Well within free tier (500MB). |
+| Supabase API calls | ~5-10 extra API calls per session (fetch logs, save entry). Negligible vs. dashboard loads. |
+| Supabase bandwidth | Weight entries are tiny (~200 bytes each). Even fetching 100 entries is <20KB. |
+| Trigger overhead | One extra UPDATE on `puppies` table per weight CRUD operation. Sub-millisecond Postgres operation. |
+| Storage | No file uploads. Zero additional storage cost. |
+
+**At 1000 active users:** ~50K weight_logs rows per year, ~500KB total storage. Zero measurable cost increase.
+
+---
+
+### 21.10 Deployment Checklist
+
+**Supabase Database:**
+- [ ] Migration file created: `supabase/migrations/20260302000001_weight_logs.sql`
+- [ ] Migration applied: `supabase db push`
+- [ ] Verified: `weight_logs` table exists with all columns
+- [ ] Verified: CHECK constraints prevent invalid data (negative weight, unknown unit, long notes)
+- [ ] Verified: `idx_weight_logs_puppy_date` index created
+- [ ] Verified: `idx_weight_logs_onboarding` partial index created
+
+**RLS Policies:**
+- [ ] Verified: Authenticated owner can SELECT weight logs for own puppy
+- [ ] Verified: Authenticated caretaker can SELECT weight logs for shared puppy
+- [ ] Verified: Unauthenticated request is rejected on all operations
+- [ ] Verified: Authenticated owner can INSERT weight log for own puppy
+- [ ] Verified: Authenticated caretaker can INSERT weight log for shared puppy
+- [ ] Verified: INSERT for unrelated puppy is rejected
+- [ ] Verified: UPDATE succeeds for own puppy's weight logs
+- [ ] Verified: DELETE succeeds for non-onboarding entries on own puppy
+- [ ] Verified: DELETE is REJECTED for `is_onboarding = true` entries (RLS guard)
+
+**Trigger:**
+- [ ] Verified: INSERT weight_log → `puppies.weight_value` and `weight_unit` updated
+- [ ] Verified: UPDATE weight_log → `puppies.weight_value` and `weight_unit` reflect edit
+- [ ] Verified: DELETE weight_log → `puppies.weight_value` reverts to next most recent
+- [ ] Verified: `updated_at` auto-updates on row modification
+- [ ] Verified: Trigger uses SECURITY DEFINER (bypasses RLS for the puppies UPDATE)
+
+**Frontend Integration (already shipped — verify end-to-end):**
+- [ ] `ensureOnboardingWeight()` creates first entry from `puppies.weight_value/unit`
+- [ ] `getWeightLogs()` returns logs sorted newest-first
+- [ ] `addWeightLog()` inserts entry and triggers puppy weight sync
+- [ ] `updateWeightLog()` updates entry and triggers puppy weight sync
+- [ ] `deleteWeightLog()` deletes non-onboarding entry and triggers puppy weight sync
+- [ ] Weight card on Puppy Profile shows current weight from latest log
+- [ ] Weight History chart renders with correct data points
+- [ ] Log Weight bottom sheet saves and dismisses correctly
+- [ ] Edit Weight Entry bottom sheet pre-populates and saves changes
+- [ ] Delete confirmation modal removes entry from history
+- [ ] Onboarding entry: Delete button hidden, edit allowed
+- [ ] Toast notifications: "Weight logged", "Weight entry updated", "Weight entry deleted"
+- [ ] Build succeeds: `npx vite build` with no errors
+
+**Type Safety:**
+- [ ] Regenerated types match manual types: `supabase gen types typescript`
+- [ ] No TypeScript errors related to `weight_logs` table operations
+
+---
+
+### 21.11 Known Limitations & Future Improvements
+
+| Limitation | Impact | Resolution (P1/P2) |
+|---|---|---|
+| No server-side weight validation | Client validates but determined user could bypass via API | P1: Add CHECK constraints (included in migration above) + consider Edge Function validation for sensitive operations |
+| No `logged_by` attribution in UI | History list shows "From onboarding" label only, not who logged each entry | P1: Add profiles JOIN in `getWeightLogs()` query, display in history list |
+| No unit toggle on chart | Chart always shows in puppy's default unit | P1: Add display-only toggle below chart (D63 supports this) |
+| No data point tooltips on chart | Chart data points visible but not tappable | P1: Add touch event handling on SVG circles with tooltip overlay |
+| Straight line segments (not curved) | SVG `<polyline>` with straight segments | P1: Add Bézier curve interpolation for smooth line |
+| No weight alerts | No warning for rapid weight gain/loss | P2: Add gentle nudge if weight changes >20% in one week |
+| No vet integration | Weight data lives only in PupPlan | P2: Export to CSV/PDF for vet visits |
+| `ensureOnboardingWeight()` runs client-side | First-access latency, relies on client to trigger | P2: Migrate to server-side trigger or batch backfill script |
+| No Supabase Realtime subscription | Co-user doesn't see new weight entry until next screen load | P2: Add if multi-user weight logging becomes common usage pattern |
 
 ---
 

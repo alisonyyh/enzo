@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { ArrowLeft, Users, Share2, Copy, Check, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
+import { format } from "date-fns";
 import { createInvite, getPuppyInvites, revokeInvite, getInviteUrl } from "../../lib/services/invites";
 import { uploadUserAvatar, updateProfile } from "../../lib/services/auth";
-import type { Invite } from "../../lib/database.types";
+import { getWeightLogs, addWeightLog, updateWeightLog, deleteWeightLog, ensureOnboardingWeight } from "../../lib/services/weight-logs";
+import type { Invite, WeightLog } from "../../lib/database.types";
+import { LogWeightSheet } from "./LogWeightSheet";
+import { WeightHistory } from "./WeightHistory";
 
 interface SettingsProps {
   accountData: { name: string; email: string };
@@ -15,18 +19,22 @@ interface SettingsProps {
     photoUrl: string;
     age: string;
     weight: string;
+    weightValue: number | null;
+    weightUnit: string;
     livingSituation: string;
     workArrangement: string;
   };
   puppyId: string;
+  puppyCreatedAt: string;
   userId: string;
   onBack: () => void;
   onSignOut: () => void;
   onAvatarUpdate: (newUrl: string) => void;
+  onWeightUpdate?: (weightValue: number, weightUnit: string) => void;
 }
 
-export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId, onBack, onSignOut, onAvatarUpdate }: SettingsProps) {
-  const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile">("main");
+export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, puppyCreatedAt, userId, onBack, onSignOut, onAvatarUpdate, onWeightUpdate }: SettingsProps) {
+  const [activeSection, setActiveSection] = useState<"main" | "caretakers" | "profile" | "weight-history">("main");
   const [invites, setInvites] = useState<Invite[]>([]);
   const [inviteLink, setInviteLink] = useState("");
   const [copied, setCopied] = useState(false);
@@ -35,10 +43,110 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Weight tracking state
+  const [weightLogs, setWeightLogs] = useState<WeightLog[]>([]);
+  const [weightLogsLoaded, setWeightLogsLoaded] = useState(false);
+  const [showLogWeightSheet, setShowLogWeightSheet] = useState(false);
+
   // Load invites on mount
   useEffect(() => {
     getPuppyInvites(puppyId).then(setInvites).catch(console.error);
   }, [puppyId]);
+
+  // Load weight logs + ensure onboarding entry exists
+  const loadWeightLogs = useCallback(async () => {
+    try {
+      // Ensure onboarding weight is migrated
+      await ensureOnboardingWeight(
+        puppyId,
+        puppyProfile.weightValue,
+        puppyProfile.weightUnit || 'lbs',
+        puppyCreatedAt,
+      );
+      const logs = await getWeightLogs(puppyId);
+      setWeightLogs(logs);
+      setWeightLogsLoaded(true);
+    } catch (err) {
+      console.error('Error loading weight logs:', err);
+      setWeightLogsLoaded(true);
+    }
+  }, [puppyId, puppyProfile.weightValue, puppyProfile.weightUnit, puppyCreatedAt]);
+
+  useEffect(() => {
+    loadWeightLogs();
+  }, [loadWeightLogs]);
+
+  // Derived: latest weight log
+  const latestLog = weightLogs.length > 0 ? weightLogs[0] : null;
+  const currentWeight = latestLog
+    ? `${latestLog.weight_value} ${latestLog.weight_unit}`
+    : puppyProfile.weight;
+  const lastLoggedDate = latestLog
+    ? format(new Date(latestLog.logged_at + 'T00:00:00'), 'MMM d')
+    : null;
+  const isOnboardingOnly = weightLogs.length === 1 && weightLogs[0]?.is_onboarding;
+
+  // Weight CRUD handlers
+  const handleAddWeight = async (data: {
+    weight_value: number;
+    weight_unit: string;
+    logged_at: string;
+    note: string | null;
+  }) => {
+    try {
+      await addWeightLog({
+        puppy_id: puppyId,
+        weight_value: data.weight_value,
+        weight_unit: data.weight_unit,
+        logged_at: data.logged_at,
+        logged_by: userId,
+        note: data.note,
+      });
+      await loadWeightLogs();
+      onWeightUpdate?.(data.weight_value, data.weight_unit);
+      toast.success('Weight logged');
+      setShowLogWeightSheet(false);
+    } catch (err) {
+      console.error('Error adding weight:', err);
+      toast.error("Couldn't save weight. Please try again.");
+      throw err;
+    }
+  };
+
+  const handleEditWeight = async (
+    id: string,
+    data: {
+      weight_value?: number;
+      weight_unit?: string;
+      logged_at?: string;
+      note?: string | null;
+    }
+  ) => {
+    try {
+      await updateWeightLog(id, data);
+      await loadWeightLogs();
+      if (data.weight_value && data.weight_unit) {
+        onWeightUpdate?.(data.weight_value, data.weight_unit);
+      }
+      toast.success('Weight entry updated');
+    } catch (err) {
+      console.error('Error editing weight:', err);
+      toast.error("Couldn't update weight. Please try again.");
+      throw err;
+    }
+  };
+
+  const handleDeleteWeight = async (id: string) => {
+    try {
+      await deleteWeightLog(id);
+      await loadWeightLogs();
+      toast.success('Weight entry deleted');
+    } catch (err) {
+      console.error('Error deleting weight:', err);
+      toast.error("Couldn't delete weight. Please try again.");
+      throw err;
+    }
+  };
 
   const handleGenerateInvite = async () => {
     setGeneratingInvite(true);
@@ -105,6 +213,24 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
     }
   };
 
+  // ─── Weight History Screen ───
+  if (activeSection === "weight-history") {
+    return (
+      <WeightHistory
+        weightLogs={weightLogs}
+        puppyId={puppyId}
+        userId={userId}
+        puppyCreatedAt={puppyCreatedAt}
+        defaultUnit={puppyProfile.weightUnit || 'lbs'}
+        onBack={() => setActiveSection("profile")}
+        onAddWeight={handleAddWeight}
+        onEditWeight={handleEditWeight}
+        onDeleteWeight={handleDeleteWeight}
+      />
+    );
+  }
+
+  // ─── Caretakers Screen ───
   if (activeSection === "caretakers") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-0">
@@ -225,6 +351,7 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
     );
   }
 
+  // ─── Puppy Profile Screen ───
   if (activeSection === "profile") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-0">
@@ -254,7 +381,7 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
               </div>
             )}
 
-            {/* Profile Info */}
+            {/* Profile Info (Name, Breed, Age — no Weight here anymore) */}
             <div className="bg-card rounded-2xl p-4 space-y-3" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
               <div>
                 <p className="text-sm text-muted-foreground">Name</p>
@@ -268,11 +395,33 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
                 <p className="text-sm text-muted-foreground">Age</p>
                 <p className="text-base font-medium text-foreground">{puppyProfile.age}</p>
               </div>
-              <div className="border-t border-border pt-3">
-                <p className="text-sm text-muted-foreground">Weight</p>
-                <p className="text-base font-medium text-foreground">{puppyProfile.weight}</p>
-              </div>
             </div>
+
+            {/* Weight Card — tapping always opens weight detail screen */}
+            <button
+              onClick={() => setActiveSection("weight-history")}
+              className="w-full bg-card rounded-2xl p-4 text-left hover:bg-accent transition-colors"
+              style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">Weight</p>
+                  <p className="text-base font-medium text-foreground">
+                    {currentWeight || 'Not recorded'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 text-muted-foreground">
+                  {weightLogsLoaded && weightLogs.length > 0 && (
+                    <span className="text-sm">
+                      {isOnboardingOnly
+                        ? format(new Date(puppyCreatedAt), 'MMM d')
+                        : lastLoggedDate}
+                    </span>
+                  )}
+                  <ChevronRight className="size-4" />
+                </div>
+              </div>
+            </button>
 
             {/* Living Details */}
             <div className="bg-card rounded-2xl p-4 space-y-3" style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}>
@@ -287,15 +436,27 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
             </div>
 
             <p className="text-sm text-muted-foreground text-center px-4">
-              To update your puppy's information, please contact support
+              To update other puppy information, please contact support
             </p>
           </div>
         </div>
+
+        {/* Log Weight Bottom Sheet */}
+        {showLogWeightSheet && (
+          <LogWeightSheet
+            defaultUnit={puppyProfile.weightUnit || 'lbs'}
+            minDate={puppyCreatedAt}
+            onSave={async (data) => {
+              await handleAddWeight(data);
+            }}
+            onClose={() => setShowLogWeightSheet(false)}
+          />
+        )}
       </div>
     );
   }
 
-  // Main settings screen
+  // ─── Main Settings Screen ───
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">
       {/* Hidden file input — triggered programmatically from action sheet */}
@@ -323,8 +484,6 @@ export function Settings({ accountData, avatarUrl, puppyProfile, puppyId, userId
             <button
               className="w-full h-12 rounded-xl bg-accent text-foreground font-medium hover:opacity-80 transition-opacity"
               onClick={() => {
-                // Web doesn't have a native camera picker separate from file input,
-                // so we use capture="user" to hint the camera on mobile.
                 if (fileInputRef.current) {
                   fileInputRef.current.setAttribute("capture", "user");
                   fileInputRef.current.click();

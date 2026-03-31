@@ -66,6 +66,17 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D55 | Activity Type Label Rename Scope | **"Potty" in grid buttons only; "Potty Break" persists in timeline titles** | The Activity Type grid in the bottom sheet shows "🚽 Potty" instead of "🚽 Potty Break". However, task titles in the timeline still render as "Potty Break". Rationale: (1) The grid button label "Potty Break" is unnecessarily long — "Potty" is clearer at the grid cell's constrained width and matches the brevity of other labels (Meal, Walk, Nap). (2) The underlying `activityType` enum value remains `"potty_break"` — no data migration, no backend changes, no breaking existing Firestore documents. (3) Timeline titles derive from `ACTIVITY_CONFIG[activityType].label` which keeps "Potty Break" for readability in the card context. (4) The grid and timeline use separate label lookups, so this is a display-only change scoped to the `ACTIVITIES` array in AddTaskFAB. |
 | D56 | Potty Emoji Display on Task Cards | **Inline after title text, before edit indicator** | Selected potty detail emojis (💩, 💦, or both) display inline on the TaskCard component, appended to the task title. Rationale: (1) Inline display is the most compact — no extra row, no badge, no tooltip. Users scanning the timeline can instantly see what happened at each potty event. (2) Order is always 💩 then 💦 (alphabetical by label: Pee < Poop reversed to match common logging convention — solids first). (3) Position after title but before ✏️ edit indicator maintains the existing card information hierarchy: time → status → title → details → edit marker. (4) Only rendered when `task.pottyDetails?.poop` or `task.pottyDetails?.pee` is true AND `activityType === 'potty_break'`. Non-potty tasks are completely unaffected. (5) No potty details saved = no emojis shown (clean default). |
 | D57 | Potty Details Persistence Path | **Same Firestore collections as other task fields (no new collection)** | `pottyDetails` is stored as a field within existing Firestore documents — `tasks/{taskId}` for custom tasks and `editedRoutineItems/{docId}` for AI-generated routine item edits (D48). Rationale: (1) Potty details are a property of a task, not a separate entity — storing them in a separate collection would violate the flat document model (D32) and add unnecessary query complexity. (2) Real-time sync, offline persistence, and conflict resolution all come for free — `pottyDetails` travels with the task document through Firestore's existing sync infrastructure (D30, D33). (3) `saveRoutineItemEdit()` already handles arbitrary field additions via the spread operator — adding `pottyDetails` to the edit payload requires no structural changes to the overlay pattern. (4) Firestore charges per document read/write, not per field — adding a field has zero cost impact. |
+| **WEIGHT TRACKING (Flow 8 / F12)** ||||
+| D58 | Storage Backend | **Supabase (not Firebase)** | Weight logs are permanent historical health data — not ephemeral daily tasks. They need relational integrity (foreign key to puppies), date-range queries with ordering, and aggregation (averages by period). Supabase/Postgres is the natural fit (same as puppies, routines, profiles). Firebase Firestore is reserved for real-time collaborative editing (tasks). Weight logging is infrequent (once every few days/weeks) and doesn't need <3-second cross-device sync — standard Supabase queries are sufficient. Keeps health data in the primary database where it can participate in future analytics queries. |
+| D59 | Data Model | **`weight_logs` table with `is_onboarding` flag** | New Supabase table: `id` (uuid), `puppy_id` (FK), `weight_value` (numeric), `weight_unit` (text, default 'lbs'), `logged_at` (date), `logged_by` (uuid, nullable), `note` (text, nullable, 200 char max), `is_onboarding` (boolean, default false), `created_at`, `updated_at`. `is_onboarding` flag identifies the auto-migrated onboarding entry — this entry can be edited but not deleted (preserves the historical baseline). Each entry stores its own `weight_unit` independently, enabling mixed lbs/kg logs. Index on `(puppy_id, logged_at DESC)` for efficient chronological queries. |
+| D60 | Chart Implementation | **Custom SVG (no chart library)** | Built a 380px-tall SVG chart directly in React instead of adding a dependency like Recharts or Chart.js. Rationale: (1) The chart requirements are specific to the Apple Health aesthetic (column-based weekly positioning, time-range tabs, average summary) — a library would need heavy customization to match. (2) Zero additional bundle size. Recharts adds ~150KB gzipped. (3) Full control over layout math: `computeYTicks()` for nice Y-axis values, `getXAxisLabels()` for range-appropriate labels (day names for W, dates for M, months for 6M/Y), `dateToX()` / `valueToY()` mapping. (4) 0→1 stage — the chart has one specific design; we don't need a generalized charting framework. Trade-off: More code to maintain, but the chart logic is isolated in `WeightHistory.tsx` and has no external dependencies. |
+| D61 | Chart UX — Apple Health Style | **Time range tabs (W/M/6M/Y) + average summary + tall chart** | Modeled after Apple Health's weight chart. Three visual zones: (1) `TimeRangeSelector` — segmented control with animated pill highlight (W, M, 6M, Y). (2) Average summary — green "AVERAGE" label (#4A9B7F), large weight value, date range in muted text. (3) SVG chart with horizontal grid lines, orange data line (#FF9F0A), filled circles with white stroke at data points. Weekly view uses column-based x-positioning (evenly spaced columns per day-of-week); longer ranges use continuous date-to-x mapping. This pattern is immediately familiar to iOS users and sets the visual quality bar for PupPlan's health tracking features. |
+| D62 | Onboarding Weight Migration | **`ensureOnboardingWeight()` — idempotent, runs on first access** | When a user first navigates to the weight section, `ensureOnboardingWeight(puppyId, weightValue, weightUnit, createdAt)` checks if any weight log exists for the puppy. If none, it creates the first entry from the puppy's existing `weight_value`/`weight_unit` with `logged_at = created_at` and `is_onboarding = true`. Idempotent: subsequent calls are no-ops (checks count first). Runs client-side in `Settings.tsx` `loadWeightLogs()` callback — no migration script needed. Trade-off: first-access latency (~100ms extra query), but simplifies deployment (no database migration to backfill existing puppies). |
+| D63 | Unit Handling | **Each entry stores own unit; chart converts for display** | Weight entries store the exact unit used at logging time (`weight_unit` per row). The chart's display converts all values to the puppy's default unit via `convertWeight(value, fromUnit, toUnit)` using standard conversion factors (1 lb = 0.453592 kg). This means a user who switches between lbs and kg across entries will see a coherent chart. The puppy's profile `weight_unit` reflects the most recent entry's unit. No destructive conversion — raw data is always preserved. Product spec (Flow 8D) specifies this as display-only conversion. |
+| D64 | Navigation Pattern | **Weight card always navigates to Weight History screen** | Tapping the Weight card on Puppy Profile always opens the full Weight History screen (never the log sheet directly). The + button in the Weight History header opens the Log Weight bottom sheet. Rationale: (1) The Weight History screen handles its own empty state ("Log your puppy's first weight to start tracking growth"). (2) Centralizes all weight actions (view chart, log new, edit existing, delete) in one screen. (3) Avoids conditional card behavior (different tap action based on whether logs exist) that would confuse users. (4) The card's chevron icon consistently signals "navigate to detail screen" — same pattern as other settings items. |
+| D65 | Onboarding Entry Protection | **Can edit, cannot delete** | The `is_onboarding` weight entry (migrated from puppy creation data) can be edited (to correct mistakes) but cannot be deleted. The Delete button is hidden when `editingEntry?.is_onboarding === true` in `LogWeightSheet.tsx`. Rationale: (1) Preserves the historical baseline — the onboarding weight is a known anchor point for growth tracking. (2) Users might have entered wrong weight during onboarding and need to correct it (edit allowed). (3) Deleting the baseline could leave the chart with no starting reference. Product spec (Flow 8E) explicitly requires this behavior. |
+| D66 | Current Weight Sync | **Most recent log determines puppy's current weight** | When a weight log is added, edited, or deleted, `puppies.weight_value` and `puppies.weight_unit` update to reflect the most recent entry (by `logged_at` date). Client-side sync: `onWeightUpdate` callback in `App.tsx` updates the in-memory `currentPuppy` state. Product spec (Flow 8H) envisions a Postgres trigger for this, but the front-end implementation handles it optimistically — the Weight card reads from the latest `weight_logs` entry directly rather than waiting for a trigger to update the puppy row. Backend trigger to be added when the database migration is implemented. |
+| D67 | Header Layout | **Circular icon buttons (not text links)** | Weight History screen uses circular accent-colored buttons in the header: ArrowLeft (back) on the left, Plus (log new weight) on the right. Both are 40px circles with `bg-accent` background and `text-foreground` icons. This matches the Apple Health aesthetic and provides larger touch targets than text links. The centered "Weight" title uses `text-lg font-bold`. No FAB at bottom-right (product spec suggested a FAB, but the header + button is cleaner and avoids obscuring the history list on small screens). |
 
 ---
 
@@ -94,7 +105,8 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 │  Auth (Google OAuth)        │  │  Collection: tasks/         │
 │  Postgres:                  │  │  - puppyId, date,           │
 │    - users, puppies         │  │    scheduledTime,           │
-│    - routines, routine_items│  │    actualTime,              │
+│    - routines, routine_items│  │    actualTime,
+│    - weight_logs            │  │              │
 │    - puppy_memberships      │  │    activityType, isEdited,  │
 │    - invites, profiles      │  │    isUserAdded, isCompleted │
 │  Realtime (other features)  │  │  Collection: editedRoutineItems/│
@@ -151,6 +163,8 @@ puppy_daycare/
 │   │       ├── CompletionAvatar.tsx # Profile picture + green dot component
 │   │       ├── RoutineReveal.tsx    # First-time routine reveal overlay
 │   │       ├── Settings.tsx         # Settings screen
+│   │       ├── WeightHistory.tsx   # Weight history + Apple Health-style chart (F12)
+│   │       ├── LogWeightSheet.tsx  # Log/edit weight bottom sheet (F12)
 │   │       └── ui/                  # shadcn/ui components (inline)
 │   │           ├── button.tsx
 │   │           ├── input.tsx
@@ -168,7 +182,8 @@ puppy_daycare/
 │           ├── invites.ts           # generateInvite, acceptInvite
 │           ├── tasks.ts             # editTask, deleteTask, addTask, completeTask (Firestore)
 │           ├── deleted-routine-items.ts  # Persist routine item deletions (Firestore overlay)
-│           └── edited-routine-items.ts   # Persist routine item edits (Firestore overlay, D48)
+│           ├── edited-routine-items.ts   # Persist routine item edits (Firestore overlay, D48)
+│           └── weight-logs.ts           # Weight log CRUD + onboarding migration (F12, Supabase)
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql   # Tables, triggers, RLS policies
@@ -234,6 +249,7 @@ PupPlan-iOS/
 | `activity_logs` | Full CRUD | Insert (mark complete) + Read |
 | `invites` | Full CRUD (own invites) | Read (own invite) |
 | `puppy_memberships` | Full CRUD | Read (own membership) |
+| `weight_logs` | Full CRUD | Full CRUD (D58) |
 
 RLS policies use `auth.uid()` joined through `puppy_memberships` to determine access. This means permission enforcement happens at the database level — the iOS app doesn't need to implement permission checks beyond hiding UI elements.
 
@@ -835,3 +851,195 @@ export interface Task {
 ### Firestore Security Rules
 
 No changes needed. Existing rules allow authenticated users to read/write documents in `tasks` and `editedRoutineItems` collections where they are the puppy's owner or caretaker. `pottyDetails` is just another field on those documents — Firestore rules operate at the document level, not the field level.
+
+---
+
+## Flow 8 / F12 — Weight Tracking (Log, View, and Track Puppy Growth)
+
+### Summary
+
+Flow 8 adds a complete weight tracking feature to the Puppy Profile section in Settings. Users can log weight entries over time, view an Apple Health-style growth chart with time-range filtering (W/M/6M/Y), and browse a chronological history list. The most recent weight entry automatically becomes the puppy's "current weight" on their profile. Weight data lives in Supabase (not Firebase) because it's permanent health data — not ephemeral daily tasks.
+
+### Decisions
+
+| # | Decision | Choice | Rationale |
+|---|---|---|---|
+| D58 | Storage backend | Supabase (Postgres) | Permanent health data with relational integrity. Not real-time collaborative. |
+| D59 | Data model | `weight_logs` table with `is_onboarding` flag | Each entry stores own unit. Onboarding flag protects baseline from deletion. |
+| D60 | Chart implementation | Custom SVG (no library) | Apple Health aesthetic requires specific layout math. Zero bundle size increase. |
+| D61 | Chart UX | Time range tabs + average summary + tall chart | Familiar Apple Health pattern. W/M/6M/Y segmented control. |
+| D62 | Onboarding migration | `ensureOnboardingWeight()` — idempotent, client-side | No migration script needed. First-access creates baseline entry. |
+| D63 | Unit handling | Per-entry storage, display-only conversion | Raw data preserved. `convertWeight()` for chart display. |
+| D64 | Navigation pattern | Weight card always opens Weight History | Centralizes all weight actions. Empty state handled in history screen. |
+| D65 | Onboarding entry protection | Can edit, cannot delete | Preserves historical baseline. Delete button hidden for `is_onboarding`. |
+| D66 | Current weight sync | Most recent log determines puppy's current weight | Client-side optimistic. Backend trigger to be added with migration. |
+| D67 | Header layout | Circular icon buttons (ArrowLeft, Plus) | Apple Health aesthetic. 40px touch targets. No FAB. |
+
+### Data Model
+
+```typescript
+// src/lib/database.types.ts — weight_logs table types
+weight_logs: {
+  Row: {
+    id: string;
+    puppy_id: string;
+    weight_value: number;
+    weight_unit: string;        // 'lbs' or 'kg'
+    logged_at: string;          // YYYY-MM-DD
+    logged_by: string | null;   // auth.uid() of logger
+    note: string | null;        // max 200 chars
+    is_onboarding: boolean;     // true for migrated entry
+    created_at: string;
+    updated_at: string;
+  };
+  Insert: {
+    id?: string;
+    puppy_id: string;
+    weight_value: number;
+    weight_unit?: string;       // defaults to 'lbs'
+    logged_at?: string;         // defaults to today
+    logged_by?: string;
+    note?: string;
+    is_onboarding?: boolean;    // defaults to false
+    created_at?: string;
+    updated_at?: string;
+  };
+  Update: { /* all fields optional */ };
+};
+
+// Convenience type
+export type WeightLog = Database['public']['Tables']['weight_logs']['Row'];
+```
+
+### Service Layer — `weight-logs.ts`
+
+```typescript
+// src/lib/services/weight-logs.ts — 5 functions
+
+getWeightLogs(puppyId: string)
+// Fetch all weight logs for a puppy, sorted newest-first
+// SELECT * FROM weight_logs WHERE puppy_id = ? ORDER BY logged_at DESC, created_at DESC
+
+addWeightLog(entry: { puppy_id, weight_value, weight_unit, logged_at, logged_by?, note? })
+// INSERT into weight_logs. Returns the new row.
+
+updateWeightLog(id: string, updates: Partial<WeightLogUpdate>)
+// UPDATE weight_logs SET ... WHERE id = ?. Also sets updated_at = now().
+
+deleteWeightLog(id: string)
+// DELETE FROM weight_logs WHERE id = ? AND is_onboarding = false
+// Guard: onboarding entries cannot be deleted (D65)
+
+ensureOnboardingWeight(puppyId, weightValue, weightUnit, createdAt)
+// Idempotent migration (D62):
+// 1. SELECT count(*) FROM weight_logs WHERE puppy_id = ?
+// 2. If count === 0: INSERT with is_onboarding = true, logged_at = createdAt
+// 3. If count > 0: no-op (already migrated)
+```
+
+### Component Architecture
+
+**Settings.tsx (modified):**
+- Removed weight from the basic profile info card (now shows Name, Breed, Age only)
+- Added dedicated Weight card below profile card:
+  - Shows current weight (from latest log) + last logged date + ChevronRight icon
+  - First-time state: "From onboarding" label with the puppy's `created_at` date
+  - Always navigates to `weight-history` section on tap (D64)
+- Added `activeSection: "weight-history"` to the section routing union
+- State: `weightLogs[]`, `weightLogsLoaded`, `showLogWeightSheet`
+- `loadWeightLogs()`: calls `ensureOnboardingWeight()` then `getWeightLogs()`
+- CRUD handlers with toast notifications: `handleAddWeight`, `handleEditWeight`, `handleDeleteWeight`
+
+**WeightHistory.tsx (new — 662 lines):**
+- Header: circular ArrowLeft + "Weight" title + circular Plus button (D67)
+- `TimeRangeSelector` component: W|M|6M|Y segmented control with animated pill highlight
+- Average weight summary: green "AVERAGE" label (#4A9B7F), large weight value, date range
+- `HealthChart` SVG component (380px tall):
+  - `computeYTicks(min, max)`: Calculates nice Y-axis values (rounds to sensible steps)
+  - `getXAxisLabels(range, startDate, endDate)`: Range-appropriate labels
+    - W: Day names (Mon, Tue, ...)
+    - M: Date numbers (1, 5, 10, ...)
+    - 6M/Y: Month abbreviations (Jan, Feb, ...)
+  - `dateToX(date)`: Maps date to x-coordinate
+    - Weekly: column-based (7 evenly-spaced columns)
+    - M/6M/Y: continuous proportional mapping
+  - `valueToY(value)`: Maps weight value to y-coordinate within chart bounds
+  - Visual: horizontal grid lines, orange data line (#FF9F0A), filled circles with white stroke
+- "All Entries" history list (below chart):
+  - Sorted newest-first (unfiltered — always shows all entries)
+  - Each row: date, weight + unit, delta badge (green ↑ for gain, red ↓ for loss)
+  - "From onboarding" label for `is_onboarding` entries
+  - Note text (if present) on second line
+  - Tap to edit (opens LogWeightSheet in edit mode)
+- Helper functions:
+  - `convertWeight(value, fromUnit, toUnit)`: lbs ↔ kg conversion
+  - `getDateRange(range)`: Returns start/end dates for W/M/6M/Y
+  - `formatDateRange(start, end)`: Human-readable range label (e.g., "22–28 Feb 2026")
+
+**LogWeightSheet.tsx (new — 245 lines):**
+- Bottom sheet overlay following AddTaskFAB pattern:
+  - `bg-black/50` overlay at `z-50`
+  - `rounded-t-3xl`, `max-h-[70vh]`, scrollable content area
+  - Drag handle at top (12px × 1px muted bar)
+- Fields:
+  1. Weight input: `type="number"`, `inputMode="decimal"`, step 0.1, range 0.1–300
+  2. Unit selector: `<select>` with lbs/kg options, defaults to puppy's current unit
+  3. Date picker: `type="date"`, max = today, min = puppy's `created_at`
+  4. Note (optional): `type="text"`, 200 char max, live character counter
+- Dual mode via `editingEntry` prop:
+  - Add mode: title "Log Weight", button "Save"
+  - Edit mode: title "Edit Weight Entry", button "Save Changes", pre-populated via useEffect
+- Delete flow (edit mode only, non-onboarding entries):
+  - Delete button between Cancel and Save (red, destructive)
+  - Confirmation modal at `z-[60]` (above sheet):
+    - "Delete Weight Entry?" title
+    - Shows date and weight of entry being deleted
+    - "This action cannot be undone." warning
+    - Cancel + Delete buttons
+
+**App.tsx (modified):**
+- Added `weightValue` and `weightUnit` to `puppyProfile` object passed to Settings
+- Added `puppyCreatedAt={currentPuppy.created_at}` prop
+- Added `onWeightUpdate` callback that syncs weight back to `currentPuppy` state
+
+### RLS Policies
+
+```sql
+-- Same pattern as other puppy-scoped tables — access via puppy_memberships
+
+CREATE POLICY "Users can view weight logs for their puppies"
+  ON weight_logs FOR SELECT
+  USING (puppy_id IN (
+    SELECT puppy_id FROM puppy_memberships WHERE user_id = auth.uid()
+  ));
+
+CREATE POLICY "Users can insert weight logs for their puppies"
+  ON weight_logs FOR INSERT
+  WITH CHECK (puppy_id IN (
+    SELECT puppy_id FROM puppy_memberships WHERE user_id = auth.uid()
+  ));
+
+CREATE POLICY "Users can update weight logs for their puppies"
+  ON weight_logs FOR UPDATE
+  USING (puppy_id IN (
+    SELECT puppy_id FROM puppy_memberships WHERE user_id = auth.uid()
+  ));
+
+CREATE POLICY "Users can delete weight logs for their puppies"
+  ON weight_logs FOR DELETE
+  USING (puppy_id IN (
+    SELECT puppy_id FROM puppy_memberships WHERE user_id = auth.uid()
+  ));
+```
+
+Both owner and caretaker have equal weight tracking permissions (D58). Permission differentiation is a P1 consideration.
+
+### Spec Deviations
+
+| Spec (product-spec.md) | Implementation | Reason |
+|---|---|---|
+| FAB (bottom-right) for Log Weight on history screen | + button in header (circular, top-right) | Matches Apple Health aesthetic (D67). FAB would obscure history list entries on small screens. Header button is always visible and doesn't interfere with scrolling. |
+| Unit toggle below chart for lbs/kg switching | Not implemented in v1 | Chart auto-converts all entries to the puppy's default unit (D63). Unit toggle adds UI complexity for a rare use case (most users stick to one unit). Can be added as a P1 enhancement. |
+| Tappable data points with tooltips on chart | Not implemented in v1 | Requires touch event handling on SVG elements with tooltip positioning logic. Chart data points are visible; exact values are available in the history list below. P1 enhancement. |
+| Smooth/curved line connecting data points | Straight line segments | SVG `<polyline>` with straight segments. Bézier curves (smooth line) add complexity to the chart math. Visual difference is minimal with daily data. P1 enhancement. |
+| `logged_by` attribution in history list | Shows "From onboarding" label only | Full attribution requires a profiles join (like activity logs). Deferred to P1 when multi-user weight logging becomes a real use case. |
