@@ -409,6 +409,8 @@ export default function App() {
         photoUrl: currentPuppy.photo_url || "",
         age: `${currentPuppy.age_months} months, ${currentPuppy.age_weeks} weeks`,
         weight: `${currentPuppy.weight_value || ""} ${currentPuppy.weight_unit || ""}`.trim(),
+        weightValue: currentPuppy.weight_value,
+        weightUnit: currentPuppy.weight_unit || "lbs",
       }
     : null;
 
@@ -513,11 +515,17 @@ export default function App() {
           avatarUrl={avatarUrl}
           puppyProfile={puppyProfile}
           puppyId={currentPuppy.id}
+          puppyCreatedAt={currentPuppy.created_at}
           userId={user?.id || ""}
           userRole={currentMembership?.role || "owner"}
           onBack={() => setAppState("dashboard")}
           onSignOut={handleSignOut}
           onAvatarUpdate={(newUrl) => setAvatarUrl(newUrl)}
+          onWeightUpdate={(weightValue, weightUnit) => {
+            setCurrentPuppy((prev) =>
+              prev ? { ...prev, weight_value: weightValue, weight_unit: weightUnit } : prev
+            );
+          }}
         />
       )}
 
