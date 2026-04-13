@@ -144,29 +144,6 @@ export function LogWeightSheet({
               />
             </div>
 
-            {/* Note */}
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1.5">
-                Note <span className="font-normal">(optional)</span>
-              </label>
-              <input
-                type="text"
-                value={note}
-                onChange={(e) => {
-                  if (e.target.value.length <= 200) {
-                    setNote(e.target.value);
-                  }
-                }}
-                placeholder="E.g., Weighed at vet visit"
-                maxLength={200}
-                className="w-full px-3 py-2.5 bg-accent border border-border rounded-xl text-foreground text-sm"
-              />
-              {note.length > 0 && (
-                <p className="text-[11px] text-muted-foreground mt-1 text-right">
-                  {note.length}/200
-                </p>
-              )}
-            </div>
           </div>
 
           {/* Footer Buttons */}

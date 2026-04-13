@@ -603,11 +603,7 @@ export function WeightHistory({
                             <span className="text-base font-medium text-foreground">
                               {displayValue.toFixed(1)} {displayUnit}
                             </span>
-                            {log.is_onboarding ? (
-                              <span className="text-xs text-muted-foreground italic">
-                                onboarding
-                              </span>
-                            ) : delta !== null ? (
+                            {delta !== null ? (
                               <span
                                 className={`text-xs font-medium ${
                                   delta >= 0

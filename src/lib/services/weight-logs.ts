@@ -87,35 +87,54 @@ export async function deleteWeightLog(id: string): Promise<void> {
 /**
  * Ensure the onboarding weight exists as the first weight log entry.
  * Runs once — skips if an onboarding entry already exists.
+ *
+ * Uses a per-puppy promise cache to prevent race conditions when
+ * multiple React renders call this concurrently.
  */
-export async function ensureOnboardingWeight(
+const onboardingPromises = new Map<string, Promise<void>>();
+
+export function ensureOnboardingWeight(
   puppyId: string,
   weightValue: number | null,
   weightUnit: string,
   createdAt: string,
 ): Promise<void> {
-  if (!weightValue) return;
+  if (!weightValue) return Promise.resolve();
 
-  // Check if onboarding entry already exists
-  const { data: existing } = await supabase
-    .from('weight_logs')
-    .select('id')
-    .eq('puppy_id', puppyId)
-    .eq('is_onboarding', true)
-    .limit(1);
+  // Deduplicate concurrent calls for the same puppy
+  const inflight = onboardingPromises.get(puppyId);
+  if (inflight) return inflight;
 
-  if (existing && existing.length > 0) return;
+  const promise = (async () => {
+    // Check if onboarding entry already exists
+    const { data: existing } = await supabase
+      .from('weight_logs')
+      .select('id')
+      .eq('puppy_id', puppyId)
+      .eq('is_onboarding', true)
+      .limit(1);
 
-  // Create onboarding entry
-  await supabase
-    .from('weight_logs')
-    .insert({
-      puppy_id: puppyId,
-      weight_value: weightValue,
-      weight_unit: weightUnit,
-      logged_at: createdAt.split('T')[0], // YYYY-MM-DD from ISO timestamp
-      logged_by: null,
-      note: null,
-      is_onboarding: true,
-    });
+    if (existing && existing.length > 0) return;
+
+    // Create onboarding entry — ignore unique violation (23505)
+    // in case the DB-level partial unique index catches a race
+    const { error } = await supabase
+      .from('weight_logs')
+      .insert({
+        puppy_id: puppyId,
+        weight_value: weightValue,
+        weight_unit: weightUnit,
+        logged_at: createdAt.split('T')[0],
+        logged_by: null,
+        note: null,
+        is_onboarding: true,
+      });
+
+    if (error && error.code !== '23505') throw error;
+  })();
+
+  onboardingPromises.set(puppyId, promise);
+  promise.finally(() => onboardingPromises.delete(puppyId));
+
+  return promise;
 }
