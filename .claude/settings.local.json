@@ -40,7 +40,9 @@
       "Bash(supabase migration repair:*)",
       "Bash(supabase migration:*)",
       "Bash(supabase db push:*)",
-      "Bash(npx firebase deploy:*)"
+      "Bash(npx firebase deploy:*)",
+      "Bash(ls -la /Users/yeohoho/Documents/Projects/enzo/.claude/worktrees/elastic-chandrasekhar/*.md)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }
