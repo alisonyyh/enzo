@@ -42,7 +42,8 @@
       "Bash(supabase db push:*)",
       "Bash(npx firebase deploy:*)",
       "Bash(ls -la /Users/yeohoho/Documents/Projects/enzo/.claude/worktrees/elastic-chandrasekhar/*.md)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(git cherry-pick:*)"
     ]
   }
 }
