@@ -113,8 +113,7 @@ export async function generateRoutineWithAI(
   questionnaireData: {
     puppyName: string;
     breed: string;
-    ageMonths: number;
-    ageWeeks: number;
+    dateOfBirth: string;
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
     wakeUpTime: string;

@@ -4,6 +4,30 @@
 export type Database = {
   public: {
     Tables: {
+      breed_profiles: {
+        Row: {
+          id: string;
+          breed_name: string;
+          breed_size: 'toy' | 'small' | 'medium' | 'large' | 'giant';
+          energy_level: 'high' | 'moderate' | 'low';
+          is_brachycephalic: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          breed_name: string;
+          breed_size: 'toy' | 'small' | 'medium' | 'large' | 'giant';
+          energy_level: 'high' | 'moderate' | 'low';
+          is_brachycephalic?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          breed_name?: string;
+          breed_size?: 'toy' | 'small' | 'medium' | 'large' | 'giant';
+          energy_level?: 'high' | 'moderate' | 'low';
+          is_brachycephalic?: boolean;
+        };
+      };
       profiles: {
         Row: {
           id: string;
@@ -29,6 +53,10 @@ export type Database = {
           breed: string;
           age_months: number;
           age_weeks: number;
+          date_of_birth: string | null;
+          breed_size: string | null;
+          energy_level: string | null;
+          is_brachycephalic: boolean;
           weight_value: number | null;
           weight_unit: string;
           photo_url: string | null;
@@ -39,8 +67,12 @@ export type Database = {
           id?: string;
           name: string;
           breed: string;
-          age_months: number;
-          age_weeks: number;
+          age_months?: number;
+          age_weeks?: number;
+          date_of_birth?: string | null;
+          breed_size?: string | null;
+          energy_level?: string | null;
+          is_brachycephalic?: boolean;
           weight_value?: number | null;
           weight_unit?: string;
           photo_url?: string | null;
@@ -52,6 +84,10 @@ export type Database = {
           breed?: string;
           age_months?: number;
           age_weeks?: number;
+          date_of_birth?: string | null;
+          breed_size?: string | null;
+          energy_level?: string | null;
+          is_brachycephalic?: boolean;
           weight_value?: number | null;
           weight_unit?: string;
           photo_url?: string | null;
@@ -222,6 +258,7 @@ export type Database = {
 };
 
 // Convenience types
+export type BreedProfile = Database['public']['Tables']['breed_profiles']['Row'];
 export type Profile = Database['public']['Tables']['profiles']['Row'];
 export type Puppy = Database['public']['Tables']['puppies']['Row'];
 export type PuppyMembership = Database['public']['Tables']['puppy_memberships']['Row'];

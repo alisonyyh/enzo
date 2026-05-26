@@ -13,6 +13,7 @@ export interface PuppyJoinData {
   puppyName: string;
   breed: string;
   ageWeeks: number;
+  dateOfBirth?: string | null;
   photoUrl: string | null;
 }
 

@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import Anthropic from 'https://esm.sh/@anthropic-ai/sdk@0.24.3';
+import { computeScheduleParams, type ScheduleParams, type BreedSize, type EnergyLevel } from './schedule-params.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -10,8 +11,7 @@ const corsHeaders = {
 interface QuestionnaireData {
   puppyName: string;
   breed: string;
-  ageMonths: number;
-  ageWeeks: number;
+  dateOfBirth: string;
   weight: number | null;
   weightUnit: 'lbs' | 'kg';
   wakeUpTime: string;
@@ -25,64 +25,41 @@ interface RoutineActivity {
   description: string;
 }
 
-// Build Claude prompt for routine generation
-function buildRoutinePrompt(data: QuestionnaireData): string {
-  const totalWeeks = data.ageMonths * 4 + data.ageWeeks;
-  const isYoung = totalWeeks < 16;
+function buildSlimPrompt(puppyName: string, params: ScheduleParams): string {
+  const pottyLine = params.pottyModel === 'event_based'
+    ? '  Wake-up potty + pre-nap potty each awake window. Post-meal potty only if 45+ min from adjacent potties.'
+    : `  Max daytime gap: ${params.pottyMaxDaytimeGapHours}h. Wake-up + final potty always. Post-meal potty if 45+ min from previous.`;
 
-  return `You are a certified professional dog trainer (CPDT-KA) and veterinary advisor. Generate a personalized daily care routine for a puppy.
+  return `You are a puppy care schedule assembler. Your job is to arrange pre-computed activities into a natural daily timeline.
 
-PUPPY DETAILS:
-- Name: ${data.puppyName}
-- Breed: ${data.breed}
-- Age: ${data.ageMonths} months, ${data.ageWeeks} weeks (${totalWeeks} weeks total)
-- Weight: ${data.weight || 'unknown'} ${data.weightUnit}
-- Wake-up Time: ${data.wakeUpTime}
-- Bedtime: ${data.bedTime}
+PUPPY: ${puppyName}
+SCHEDULE: ${params.wakeUpTime} wake → ${params.bedTime} bed (${params.wakingHours} waking hours)
 
-CRITICAL SAFETY RULES:
-1. Exercise: Max ${Math.min(totalWeeks * 5, 60)} minutes per day (5 min/week of age)
-2. Feeding: ${isYoung ? '4 meals/day' : '3 meals/day'} for this age
-3. Potty breaks: Every ${isYoung ? '2' : '3'} hours minimum
-4. Training sessions: 5-10 minutes max (puppies have short attention spans)
-5. Avoid: dog parks until fully vaccinated (16 weeks), jumping/stairs (joint damage)
+PRE-COMPUTED PARAMETERS (use these exact values):
+- Potty model: ${params.pottyModel}
+${pottyLine}
+- Overnight potty breaks: ${params.pottyOvernightBreaks}
+- Meals: ${params.mealsPerDay}/day at [${params.mealTimes.join(', ')}]
+- Walks: ${params.walkDurationMinutes} min × ${params.walkSessionsPerDay}/day
+- Training: ${params.trainingSessionMinutes} min × ${params.trainingSessionsPerDay}/day
+- Naps: ${params.napDurationMinutes} min × ${params.napsPerDay}/day (max awake window: ${params.awakeWindowMinutes} min)
+- Play: ${params.playSessionMinutes} min × ${params.playSessionsPerDay}/day
+- Calm bonding: ${params.calmBondingMinutes} min × ${params.calmBondingSessions}/day
 
-REQUIRED ACTIVITIES (15-20 total):
-- Feeding (age-appropriate portions for ${data.breed})
-- Potty breaks (frequent, after meals/play/naps)
-- Exercise (gentle walks, no forced running)
-- Training (positive reinforcement, basic commands)
-- Nap/crate time (puppies need 18-20 hours sleep)
-- Play sessions (interactive, mental stimulation)
-- Socialization (safe exposure to sounds, surfaces, people)
+ASSEMBLY RULES:
+1. Place meals at the exact pre-computed times.
+2. Distribute walks, training, play, and calm bonding evenly across waking hours.
+3. Never place two of the same activity back-to-back. Min 2h gap between walks, training, or play.
+4. Enforce awake window maximums — insert nap when window is reached.
+5. Morning walk after first meal. Evening walk in second half of day.
+6. Training after naps (when alert). Calm bonding as evening wind-down.
+7. Final 2 hours before bed: at least one activity (calm bonding + final potty).
 
-SCHEDULE CONSTRAINTS:
-- Align with owner's wake (${data.wakeUpTime}) and bed (${data.bedTime}) times
-- Space activities evenly throughout waking hours
-
-OUTPUT FORMAT (JSON array):
-[
-  {
-    "time": "07:00",
-    "activity": "Morning Potty Break",
-    "category": "potty",
-    "description": "Take puppy outside immediately after waking. Praise enthusiastically when they go. Young puppies have small bladders—don't delay!"
-  }
-]
-
-CATEGORIES (use exactly these):
-- feeding
-- potty
-- exercise
-- training
-- rest
-- play
-- bonding
-
-Return ONLY the JSON array. No additional text, explanations, or markdown formatting.`;
+OUTPUT: JSON array of activities. Each: { "time": "HH:MM", "activity": "title", "category": "type", "description": "1-2 sentence guidance" }
+Categories: feeding, potty, exercise, training, rest, play, bonding
+Return ONLY the JSON array.`;
 }
 
-// Validate Claude response
 function validateRoutine(activities: RoutineActivity[]): boolean {
   if (!Array.isArray(activities) || activities.length < 10 || activities.length > 25) {
     return false;
@@ -97,7 +74,6 @@ function validateRoutine(activities: RoutineActivity[]): boolean {
     if (!validCategories.includes(activity.category)) {
       return false;
     }
-    // Validate time format (HH:MM)
     if (!/^\d{2}:\d{2}$/.test(activity.time)) {
       return false;
     }
@@ -107,13 +83,11 @@ function validateRoutine(activities: RoutineActivity[]): boolean {
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    // Get auth token from request
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
       return new Response(
@@ -122,7 +96,6 @@ serve(async (req) => {
       );
     }
 
-    // Parse request body
     const { puppyId, questionnaireData } = await req.json();
 
     if (!puppyId || !questionnaireData) {
@@ -132,14 +105,13 @@ serve(async (req) => {
       );
     }
 
-    // Initialize Supabase client with user's auth token
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_ANON_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey, {
       global: { headers: { Authorization: authHeader } }
     });
 
-    // Verify user owns this puppy
+    // Verify user has access to this puppy
     const { data: membership, error: membershipError } = await supabase
       .from('puppy_memberships')
       .select('role')
@@ -149,23 +121,55 @@ serve(async (req) => {
 
     if (membershipError || !membership) {
       return new Response(
-        JSON.stringify({ error: 'Unauthorized - you do not own this puppy' }),
+        JSON.stringify({ error: 'Unauthorized - you do not have access to this puppy' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('Generating routine for puppy:', puppyId);
+    // Read puppy record to get denormalized breed fields
+    const { data: puppy, error: puppyError } = await supabase
+      .from('puppies')
+      .select('date_of_birth, breed_size, energy_level, is_brachycephalic')
+      .eq('id', puppyId)
+      .single();
 
-    // Call Claude API
+    if (puppyError || !puppy) {
+      return new Response(
+        JSON.stringify({ error: 'Puppy not found' }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const data = questionnaireData as QuestionnaireData;
+    const dateOfBirth = puppy.date_of_birth || data.dateOfBirth;
+    const breedSize = (puppy.breed_size || 'medium') as BreedSize;
+    const energyLevel = (puppy.energy_level || 'moderate') as EnergyLevel;
+    const isBrachycephalic = puppy.is_brachycephalic ?? false;
+
+    console.log('Computing schedule params for puppy:', puppyId);
+
+    // Layer 1: Deterministic parameter computation
+    const params = computeScheduleParams({
+      dateOfBirth,
+      breedSize,
+      energyLevel,
+      isBrachycephalic,
+      wakeUpTime: data.wakeUpTime,
+      bedTime: data.bedTime,
+    });
+
+    console.log('Schedule params:', JSON.stringify({ ageBracket: params.ageBracket, ageWeeks: params.ageWeeks, mealsPerDay: params.mealsPerDay }));
+
+    // Layer 2: LLM schedule assembly
     const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
     if (!anthropicKey) {
       throw new Error('ANTHROPIC_API_KEY not configured');
     }
 
     const anthropic = new Anthropic({ apiKey: anthropicKey });
-    const prompt = buildRoutinePrompt(questionnaireData);
+    const prompt = buildSlimPrompt(data.puppyName, params);
 
-    console.log('Calling Claude API...');
+    console.log('Calling Claude API with slim prompt...');
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-5-20250929',
       max_tokens: 4096,
@@ -175,7 +179,6 @@ serve(async (req) => {
       ]
     });
 
-    // Parse Claude response
     const content = response.content[0];
     if (content.type !== 'text') {
       throw new Error('Unexpected response type from Claude');
@@ -183,19 +186,16 @@ serve(async (req) => {
 
     let activities: RoutineActivity[];
     try {
-      // Claude sometimes wraps JSON in markdown code blocks, so we need to extract it
       let jsonText = content.text.trim();
       if (jsonText.startsWith('```')) {
-        // Remove markdown code block
         jsonText = jsonText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
       }
       activities = JSON.parse(jsonText);
-    } catch (parseError) {
+    } catch {
       console.error('Failed to parse Claude response:', content.text);
       throw new Error('Invalid JSON response from Claude');
     }
 
-    // Validate routine
     if (!validateRoutine(activities)) {
       console.error('Invalid routine structure:', activities);
       throw new Error('Generated routine failed validation');
@@ -203,14 +203,13 @@ serve(async (req) => {
 
     console.log('Generated', activities.length, 'activities');
 
-    // Deactivate existing routines for this puppy
+    // Save to database
     await supabase
       .from('routines')
       .update({ is_active: false })
       .eq('puppy_id', puppyId)
       .eq('is_active', true);
 
-    // Create new routine
     const { data: routine, error: routineError } = await supabase
       .from('routines')
       .insert({
@@ -226,15 +225,12 @@ serve(async (req) => {
       throw routineError;
     }
 
-    console.log('Created routine:', routine.id);
-
-    // Insert routine items
     const routineItems = activities.map((activity, index) => ({
       routine_id: routine.id,
       activity_type: activity.category,
       title: activity.activity,
       description: activity.description,
-      scheduled_time: activity.time + ':00', // Convert HH:MM to HH:MM:SS
+      scheduled_time: activity.time + ':00',
       sort_order: index,
       is_enabled: true,
     }));
@@ -251,7 +247,6 @@ serve(async (req) => {
 
     console.log('Inserted', insertedItems?.length, 'routine items');
 
-    // Return complete routine
     const result = {
       routine: {
         ...routine,
@@ -263,10 +258,7 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify(result),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
@@ -277,10 +269,7 @@ serve(async (req) => {
         error: 'Failed to generate routine',
         message: error instanceof Error ? error.message : 'Unknown error'
       }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });

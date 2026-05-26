@@ -21,11 +21,13 @@ import {
   generateRoutineWithAI,
   validateInviteCode,
   createInviteCode,
+  computeAgeDisplay,
 } from "../lib/services";
 import type { User } from "@supabase/supabase-js";
 import type { Profile, Puppy, PuppyMembership } from "../lib/database.types";
 import type { RoutineWithItems } from "../lib/services/routines";
 import type { PuppyJoinData } from "./components/InviteCodeEntryScreen";
+import type { QuestionnaireData } from "./components/OnboardingQuestionnaire";
 
 type AppState =
   | "loading"
@@ -37,19 +39,6 @@ type AppState =
   | "generating-routine"
   | "dashboard"
   | "settings";
-
-export interface QuestionnaireData {
-  puppyName: string;
-  breed: string;
-  photoUrl: string;
-  photoFile: File | null;
-  ageMonths: string;
-  ageWeeks: string;
-  weight: string;
-  weightUnit: "lbs" | "kg";
-  wakeUpTime: string;
-  bedTime: string;
-}
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>("loading");
@@ -300,8 +289,10 @@ export default function App() {
         const puppy = await createPuppy(user.id, {
           name: data.puppyName,
           breed: data.breed,
-          age_months: parseInt(data.ageMonths) || 0,
-          age_weeks: parseInt(data.ageWeeks) || 0,
+          date_of_birth: data.dateOfBirth,
+          breed_size: data.breedSize,
+          energy_level: data.energyLevel,
+          is_brachycephalic: data.isBrachycephalic,
           weight_value: parseFloat(data.weight) || null,
           weight_unit: data.weightUnit,
           photo_url: photoUrl,
@@ -330,19 +321,16 @@ export default function App() {
   // Called by AIRoutineGenerator after the 8-second animation.
   // IMPORTANT: This is called from inside a setTimeout in a useEffect,
   // so it runs with a stale closure. We use refs to access current values.
-  const handleRoutineGenerated = useCallback(async (generatedRoutine: any) => {
-    console.log("=== handleRoutineGenerated START ===");
+  const handleRoutineGenerated = useCallback(async (generatedRoutine: any, source: 'ai' | 'fallback') => {
+    console.log("=== handleRoutineGenerated START ===", { source });
 
-    // Read from refs (not state) to avoid stale closure
     let puppy = currentPuppyRef.current;
     const promise = puppyPromiseRef.current;
     const currentUser = userRef.current;
 
     console.log("handleRoutineGenerated: puppy from ref:", puppy?.id ?? "null");
     console.log("handleRoutineGenerated: promise from ref:", promise ? "exists" : "null");
-    console.log("handleRoutineGenerated: user from ref:", currentUser?.id ?? "null");
 
-    // Wait for puppy creation if it hasn't finished yet
     if (!puppy && promise) {
       console.log("handleRoutineGenerated: awaiting puppy promise...");
       puppy = await promise;
@@ -350,31 +338,35 @@ export default function App() {
     }
 
     if (!puppy) {
-      console.error("handleRoutineGenerated: CRITICAL - no puppy available. Cannot save routine.");
-      // Something went very wrong — fall back to dashboard anyway and let DashboardLoader retry
+      console.error("handleRoutineGenerated: CRITICAL - no puppy available.");
       setAppState("dashboard");
       return;
     }
 
-    // Convert client-side routine format to DB format
-    const items = generatedRoutine.dailySchedule.map((item: any, index: number) => ({
-      activity_type: item.category || "other",
-      title: item.activity,
-      description: item.description,
-      scheduled_time: item.time + ":00",
-      sort_order: index,
-    }));
-
     try {
-      console.log("handleRoutineGenerated: saving", items.length, "items for puppy", puppy.id);
-      const savedRoutine = await saveRoutine(puppy.id, items);
-      console.log("handleRoutineGenerated: routine saved, id:", savedRoutine.id);
+      if (source === 'ai') {
+        // AI routine is already saved to DB by the Edge Function
+        console.log("handleRoutineGenerated: AI routine already saved, id:", generatedRoutine.id);
+        setRoutine(generatedRoutine);
+      } else {
+        // Fallback: save client-side routine to DB
+        const items = generatedRoutine.dailySchedule.map((item: any, index: number) => ({
+          activity_type: item.category || "other",
+          title: item.activity,
+          description: item.description,
+          scheduled_time: item.time + ":00",
+          sort_order: index,
+        }));
 
-      setRoutine(savedRoutine);
+        console.log("handleRoutineGenerated: saving fallback routine,", items.length, "items for puppy", puppy.id);
+        const savedRoutine = await saveRoutine(puppy.id, items);
+        console.log("handleRoutineGenerated: routine saved, id:", savedRoutine.id);
+        setRoutine(savedRoutine);
+      }
+
       setCurrentPuppy(puppy);
       currentPuppyRef.current = puppy;
 
-      // Ensure membership is in state for Dashboard rendering
       setCurrentMembership((prev) => {
         if (prev) return prev;
         return {
@@ -388,7 +380,6 @@ export default function App() {
       });
     } catch (err) {
       console.error("handleRoutineGenerated: Error saving routine:", err);
-      // Even if save fails, go to dashboard — DashboardLoader will retry fetching
     }
 
     console.log("=== handleRoutineGenerated: transitioning to dashboard ===");
@@ -407,7 +398,7 @@ export default function App() {
         name: currentPuppy.name,
         breed: currentPuppy.breed,
         photoUrl: currentPuppy.photo_url || "",
-        age: `${currentPuppy.age_months} months, ${currentPuppy.age_weeks} weeks`,
+        age: computeAgeDisplay(currentPuppy.date_of_birth, currentPuppy.age_months, currentPuppy.age_weeks),
         weight: `${currentPuppy.weight_value || ""} ${currentPuppy.weight_unit || ""}`.trim(),
         weightValue: currentPuppy.weight_value,
         weightUnit: currentPuppy.weight_unit || "lbs",
@@ -479,6 +470,7 @@ export default function App() {
       {appState === "generating-routine" && questionnaireData && (
         <AIRoutineGenerator
           questionnaireData={questionnaireData}
+          puppyId={currentPuppy?.id ?? null}
           onComplete={handleRoutineGenerated}
         />
       )}
@@ -610,7 +602,6 @@ function DashboardLoader({
   );
 }
 
-// Helper: convert a Puppy DB record back to QuestionnaireData format
 function puppyToQuestionnaireData(puppy: Puppy): QuestionnaireData {
   const q = puppy.questionnaire_data as any;
   return {
@@ -618,11 +609,13 @@ function puppyToQuestionnaireData(puppy: Puppy): QuestionnaireData {
     breed: puppy.breed,
     photoUrl: puppy.photo_url || "",
     photoFile: null,
-    ageMonths: String(puppy.age_months),
-    ageWeeks: String(puppy.age_weeks),
+    dateOfBirth: puppy.date_of_birth || "",
     weight: String(puppy.weight_value || ""),
     weightUnit: (puppy.weight_unit as "lbs" | "kg") || "lbs",
     wakeUpTime: q?.wakeUpTime || "07:00",
     bedTime: q?.bedTime || "22:00",
+    breedSize: puppy.breed_size || "medium",
+    energyLevel: puppy.energy_level || "moderate",
+    isBrachycephalic: puppy.is_brachycephalic ?? false,
   };
 }
