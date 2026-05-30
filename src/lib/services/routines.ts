@@ -138,8 +138,18 @@ export async function generateRoutineWithAI(
     });
 
     if (error) {
-      console.error('Edge Function error:', error);
-      throw error;
+      // Extract the actual error body from FunctionsHttpError
+      let errorBody = '';
+      try {
+        if (error.context && typeof error.context.json === 'function') {
+          const body = await error.context.json();
+          errorBody = JSON.stringify(body);
+        } else if (error.context && typeof error.context.text === 'function') {
+          errorBody = await error.context.text();
+        }
+      } catch { /* ignore */ }
+      console.error('Edge Function error:', error, '| Response body:', errorBody);
+      throw new Error(`Edge Function failed: ${errorBody || error.message}`);
     }
 
     if (!data?.routine) {

@@ -471,6 +471,7 @@ export default function App() {
         <AIRoutineGenerator
           questionnaireData={questionnaireData}
           puppyId={currentPuppy?.id ?? null}
+          puppyIdPromise={puppyPromiseRef.current}
           onComplete={handleRoutineGenerated}
         />
       )}

@@ -5,6 +5,7 @@ import { generateRoutineWithAI } from "../../lib/services/routines";
 interface AIRoutineGeneratorProps {
   questionnaireData: QuestionnaireData;
   puppyId: string | null;
+  puppyIdPromise?: Promise<any> | null;
   onComplete: (routine: any, source: 'ai' | 'fallback') => void;
 }
 
@@ -15,18 +16,20 @@ const LOADING_MESSAGES = [
   "Almost ready!"
 ];
 
-export function AIRoutineGenerator({ questionnaireData, puppyId, onComplete }: AIRoutineGeneratorProps) {
+export function AIRoutineGenerator({ questionnaireData, puppyId, puppyIdPromise, onComplete }: AIRoutineGeneratorProps) {
   const [progress, setProgress] = useState(0);
   const [messageIndex, setMessageIndex] = useState(0);
 
   const onCompleteRef = useRef(onComplete);
   const questionnaireDataRef = useRef(questionnaireData);
   const puppyIdRef = useRef(puppyId);
+  const puppyIdPromiseRef = useRef(puppyIdPromise);
   const hasCompletedRef = useRef(false);
 
   onCompleteRef.current = onComplete;
   questionnaireDataRef.current = questionnaireData;
   puppyIdRef.current = puppyId;
+  puppyIdPromiseRef.current = puppyIdPromise;
 
   useEffect(() => {
     hasCompletedRef.current = false;
@@ -60,10 +63,19 @@ export function AIRoutineGenerator({ questionnaireData, puppyId, onComplete }: A
 
     const aiPromise = (async () => {
       const data = questionnaireDataRef.current;
-      const id = puppyIdRef.current;
+
+      // Wait for puppy creation to complete if puppyId isn't available yet
+      let id = puppyIdRef.current;
+      if (!id && puppyIdPromiseRef.current) {
+        console.log('AIRoutineGenerator: waiting for puppy creation...');
+        const puppy = await puppyIdPromiseRef.current;
+        id = puppy?.id ?? null;
+        console.log('AIRoutineGenerator: puppy created, id =', id);
+      }
 
       if (id) {
         try {
+          console.log('AIRoutineGenerator: calling Edge Function...');
           const routine = await generateRoutineWithAI(id, {
             puppyName: data.puppyName,
             breed: data.breed,
@@ -73,11 +85,14 @@ export function AIRoutineGenerator({ questionnaireData, puppyId, onComplete }: A
             wakeUpTime: data.wakeUpTime,
             bedTime: data.bedTime,
           });
+          console.log('AIRoutineGenerator: Edge Function SUCCESS');
           aiResult = routine;
-        } catch (err) {
+        } catch (err: any) {
           console.error('AI routine generation failed:', err);
           aiError = err;
         }
+      } else {
+        console.error('AIRoutineGenerator: puppy creation failed, no ID available');
       }
     })();
 
