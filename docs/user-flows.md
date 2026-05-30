@@ -27,16 +27,18 @@ Screen: Questionnaire (multi-step, 3 screens)
 
 Step 1/3 - "Tell us about your puppy"
   - Puppy's name (text input, required)
-  - Breed (searchable dropdown, required, includes "Mixed/Unknown")
+  - Breed (dropdown populated from breed_profiles table, required,
+    includes "Mixed/Unknown"). Each breed has pre-classified size,
+    energy level, and brachycephalic status stored in the database.
   - Upload a photo (optional, camera or photo library)
 
-Step 2/3 - "How old is your puppy?"
-  - Months (integer input field, required)
-  - Weeks (integer input field, required)
-    Note: Both fields displayed together. User enters e.g.
-    Months: 3, Weeks: 2 for a puppy that is 3 months and 2 weeks old.
-    Input restricted to integers only (no decimals, no text).
-    Validation: months >= 0, weeks >= 0, total age must be > 0.
+Step 2/3 - "When was your puppy born?"
+  - Date of birth (date picker, required)
+    Note: Replaces the previous separate months/weeks inputs.
+    The app computes the puppy's current age from DOB automatically,
+    so the schedule adapts as the puppy grows without re-onboarding.
+    Validation: DOB cannot be in the future. Puppy must be at least
+    8 weeks old.
   - Current weight (lbs or kg toggle)
 
 Step 3/3 - "Tell us about your schedule"
@@ -44,6 +46,14 @@ Step 3/3 - "Tell us about your schedule"
   - What time do you usually go to bed? (time picker)
 
 -> CTA: "Generate My Puppy's Routine"
+
+On submit:
+  - The selected breed's characteristics (size, energy level,
+    brachycephalic flag) are looked up from the breed_profiles
+    data and stored directly on the puppy record. This means
+    the scheduling system never needs to infer breed traits.
+  - Date of birth is stored on the puppy record for ongoing
+    age computation at each routine generation.
 ```
 
 ### Step 4: AI Routine Generation
@@ -230,7 +240,7 @@ Screen: You've Been Invited!
   [Puppy Photo]
   "Sarah invited you to help care for Biscuit!"
   Breed: Golden Retriever
-  Age: 10 weeks
+  Age: 10 weeks (computed from date of birth)
 
   "As a caretaker, you can view Biscuit's daily routine
    and mark activities as complete."
@@ -1459,6 +1469,7 @@ Current Puppy Profile layout (before this feature):
   │  Name:        Biscuit                       │
   │  Breed:       Golden Retriever              │
   │  Age:         3 months, 2 weeks             │
+  │               (computed from date of birth) │
   │  Weight:      12 lbs                        │
   │                                             │
   │  "To update your puppy's information,       │
@@ -1475,6 +1486,7 @@ Updated Puppy Profile layout (with weight tracking):
   │  Name:        Biscuit                       │
   │  Breed:       Golden Retriever              │
   │  Age:         3 months, 2 weeks             │
+  │               (computed from date of birth) │
   │                                             │
   │  ┌───────────────────────────────────────┐  │
   │  │ Weight                                │  │

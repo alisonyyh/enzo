@@ -17,24 +17,26 @@
 
 **Questionnaire Fields:**
 - Puppy's name
-- Breed (with search/autocomplete, including "Mixed/Unknown")
+- Breed (dropdown populated from `breed_profiles` table in Supabase, including "Mixed/Unknown"). The `breed_profiles` table is the single source of truth for available breeds — no hardcoded arrays in the frontend. Each breed has pre-classified size, energy level, and brachycephalic status (D68).
 - Photo (optional, upload from device)
-- Age in months (integer input, required)
-- Age in weeks (integer input, required) — both fields displayed together (e.g., 3 months, 2 weeks)
+- **Date of birth** (date picker, required). Replaces the previous age in months/weeks fields. The app computes the puppy's current age dynamically from DOB, so the schedule automatically adapts as the puppy grows without re-onboarding (D69).
 - Weight (current, lbs or kg toggle)
 - Typical wake-up time
 - Typical bedtime
 
+**On Submit:**
+- The selected breed's characteristics (size, energy level, brachycephalic flag) are looked up from the fetched `breed_profiles` data and stored directly on the puppy record (D72). This means the scheduling system never needs to infer breed traits — they're known facts.
+
 **Behavior:**
 - User sees the questionnaire only after authenticating via Google Sign-In as a new user
-- Progress bar at the top of each screen shows completion (e.g., step 2 of 4)
+- Progress bar at the top of each screen shows completion (e.g., step 2 of 3)
 - User can go back to previous steps to edit answers
 - Questionnaire data is synced to backend immediately (user is already authenticated)
 
 **Acceptance Criteria:**
 - All required fields must be completed before proceeding to the next step
-- Breed autocomplete returns results within 200ms
-- Age fields accept integers only (no decimals, no text). Months >= 0, weeks >= 0, total age must be > 0
+- Breed dropdown loads from `breed_profiles` table; fallback to cached list if network is slow
+- Date of birth picker does not allow future dates. Minimum age: 8 weeks (DOB no more than ~current date minus 8 weeks into the future... i.e., puppy must be at least 8 weeks old)
 - Questionnaire state persists if user closes and reopens the app before completing
 - Progress bar accurately reflects current step (1-3)
 
@@ -66,30 +68,41 @@
 #### F3: AI Routine Generation
 **Priority: P0 (Launch Blocker)**
 
-**Description:** Generates a personalized daily routine for the puppy based on questionnaire responses. In v1, this is client-side logic with breed/age-appropriate rules (mock AI); true LLM integration is deferred to P1.
+**Description:** Generates a personalized daily routine for the puppy using a two-layer system: (1) a deterministic parameter computation layer that calculates all scheduling values (walk duration, meal count, potty intervals, nap frequency, etc.) from the puppy's breed profile and current age, and (2) an LLM (Anthropic Claude) that assembles those parameters into a natural daily timeline. The LLM receives pre-computed constraints — it does not infer breed characteristics or do arithmetic (D70, D71).
+
+**How It Works (Behind the Scenes):**
+- The puppy's **date of birth** is used to calculate their current age in weeks and map it to one of 9 age brackets (newborn through young_adult). This happens fresh each time a routine is generated, so the schedule automatically adapts as the puppy grows (D69).
+- The puppy's **breed characteristics** (size, energy level, brachycephalic flag) were stored on the puppy record at onboarding from the `breed_profiles` table (D68, D72).
+- A deterministic function computes all scheduling parameters from age bracket + breed characteristics: how long walks should be, how many meals per day, potty break model and intervals, nap frequency and awake windows, training session length, play duration, calm bonding time (D70).
+- Meal times are pre-calculated using a specific algorithm: first meal = wake time + 15 min, last meal anchored 12 hours later (adjusted if too close to bedtime).
+- These computed parameters are passed to the LLM as a concise set of constraints (~50 lines instead of ~330 lines of lookup tables). The LLM focuses purely on assembling a natural daily schedule that distributes activities evenly across the waking day (D71).
 
 **Behavior:**
 - After completing the onboarding questionnaire, user sees a loading/generation screen (with engaging puppy animation or progress messaging like "Analyzing your puppy's needs...")
-- Client-side algorithm generates a structured daily routine including:
+- The system generates a structured daily routine including:
   - Wake-up time and morning routine
-  - Feeding times and portions (age/breed appropriate)
-  - Potty break schedule
-  - Exercise/play sessions (duration and type appropriate to breed and age)
+  - Feeding times (age/breed appropriate number of meals, precisely timed)
+  - Potty break schedule (event-based for young puppies, time-based for older dogs)
+  - Exercise/walk sessions (duration capped by 5-min-per-month-of-age rule; brachycephalic breeds capped at 15 min)
   - Training session windows (short, age-appropriate)
-  - Nap/crate time
+  - Play sessions (adjusted for energy level: +25% for high energy, -15-20% for low energy)
+  - Nap/crate time (enforced awake window maximums)
+  - Calm bonding sessions
   - Evening wind-down and bedtime
 - Routine is displayed as a timeline/schedule view for the current day
-- Each routine item shows: time, activity name, duration, and brief guidance note (e.g., "15 min walk - keep it gentle, puppy joints are still developing")
+- Each routine item shows: time, activity name, duration, and brief guidance note
 
 **Acceptance Criteria:**
 - Routine generates within 10 seconds
 - Routine is medically/behaviorally sound for the puppy's age and breed
+- Same dog with same inputs produces consistent scheduling parameters across regenerations (breed classification and parameter values are deterministic, not LLM-inferred)
 - Routine items are displayed in chronological order
 - If generation fails, user sees a retry option with a clear error message
+- Routine automatically uses age-appropriate parameters when regenerated as the puppy grows (no manual age update needed)
 
 **Decision (D4):** Users can edit the AI-generated routine minimally in v1 — adjust activity times (tap to change) and toggle activities on/off. Custom activity creation is P1.
 
-**Technical Note:** v1 uses client-side breed/age rules. Future iterations will use Anthropic Claude API server-side for true AI personalization.
+**Technical Note:** Schedule parameters are computed server-side in the Edge Function. The LLM (Claude Sonnet via Supabase Edge Function) handles schedule assembly only. Client-side fallback generation is available if the Edge Function fails.
 
 ---
 
@@ -695,7 +708,7 @@ interface WeightLog {
 | Feature | Rationale |
 |---|---|
 | Native mobile app (iOS/Android) | Web-first to reduce scope and enable cross-platform access. Evaluate native apps after validating product-market fit. |
-| True AI routine generation (Claude API) | Client-side breed/age rules sufficient for v1. LLM integration adds cost/complexity - defer to P1 after validating core workflow. |
+| Fully LLM-driven breed classification | Breed characteristics (size, energy, brachycephalic) are pre-computed from the `breed_profiles` table, not inferred by the LLM (D70). The LLM handles schedule assembly only. |
 | More than 1 caretaker | Keep permissions simple. Expand to multi-caretaker in v1.1 based on demand. |
 | In-app messaging between owner and caretaker | Adds significant complexity. Users already have iMessage/WhatsApp. |
 | Vet appointment scheduling | Different problem space. Could be P2. |
@@ -737,9 +750,14 @@ interface WeightLog {
 Open app (first launch)
   -> Welcome screen with Sign in with Google
   -> Authenticate via Google Sign-In (new account created, profile picture captured)
-  -> Onboarding questionnaire (3 steps with progress bar)
+  -> Onboarding questionnaire (3 steps with progress bar):
+     Step 1: Puppy name, breed (from breed_profiles dropdown), photo
+     Step 2: Date of birth (date picker), weight
+     Step 3: Wake-up time, bedtime
   -> Complete questionnaire
+     (breed's size/energy/brachycephalic copied from breed_profiles to puppy record)
   -> AI routine generation (loading screen, ~5-10 sec)
+     (age bracket computed from DOB, schedule params pre-computed, LLM assembles timeline)
   -> View generated daily routine (main screen with unified progress tracker)
   -> (Optional) Tap settings -> Invite Caretaker -> Share link
 ```
@@ -1031,12 +1049,23 @@ User
   computed field:
   - profile_picture_url = custom_profile_picture_url ?? google_profile_picture_url
 
+BreedProfile (reference data — single source of truth for breed characteristics, D68)
+  - id (UUID)
+  - breed_name (unique — display name used in onboarding dropdown)
+  - breed_size (toy | small | medium | large | giant)
+  - energy_level (high | moderate | low)
+  - is_brachycephalic (boolean)
+
 Puppy
   - id (UUID)
   - name
   - breed
-  - age_months (integer, at time of onboarding)
-  - age_weeks (integer, at time of onboarding)
+  - date_of_birth (date, required for new puppies — replaces age_months/age_weeks, D69)
+  - age_months (integer, legacy — retained for backward compatibility with existing puppies)
+  - age_weeks (integer, legacy — retained for backward compatibility with existing puppies)
+  - breed_size (text — copied from BreedProfile at creation, D72)
+  - energy_level (text — copied from BreedProfile at creation, D72)
+  - is_brachycephalic (boolean — copied from BreedProfile at creation, D72)
   - weight_kg
   - onboarding_date
   - owner_id (FK -> User) [primary owner]
@@ -1163,7 +1192,7 @@ ORDER BY routine_items.scheduled_time ASC
 | Styling | **Tailwind CSS v4** with `@theme` CSS variables for design tokens. **shadcn/ui** components written inline (not via CLI). |
 | Routing | **State-based routing** (simple screen enum in App.tsx). No react-router to minimize dependencies. |
 | Backend | **Supabase** (Postgres + Auth + Realtime + Edge Functions + Storage) for user/puppy data. **Firebase Firestore** for real-time task sync (task editing feature only). Hybrid approach: Supabase for structured data, Firestore for real-time collaboration. |
-| AI Integration | **Client-side breed/age rules in v1** (mock AI). Future: Anthropic Claude API (claude-sonnet-4-5) server-side via Supabase Edge Function. |
+| AI Integration | **Two-layer system (D70, D71):** (1) Deterministic parameter computation from breed profile + age bracket (server-side, no LLM). (2) Anthropic Claude API (claude-sonnet-4-5) via Supabase Edge Function for schedule assembly only. Client-side fallback generation if Edge Function fails. |
 | Auth | **Google OAuth only** via Supabase Auth. Captures `email`, `name`, `picture` from OAuth response. Single auth method simplifies flow and works universally. Firebase uses same Google auth token for security rules. |
 | Deep Linking | URL-based invite flow with query parameters. Web-native, no app store deferred deep linking required. |
 | Image Storage | **Firebase Storage** (`users/{userId}/profile_photo.jpg`) for custom profile pictures. Google profile pictures stored as URLs only (Google hosts). |

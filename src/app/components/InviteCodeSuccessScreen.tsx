@@ -7,9 +7,18 @@ interface InviteCodeSuccessScreenProps {
 }
 
 export function InviteCodeSuccessScreen({ puppyData, onViewRoutine }: InviteCodeSuccessScreenProps) {
-  const ageDisplay = puppyData.ageWeeks >= 8
-    ? `${Math.floor(puppyData.ageWeeks / 4)} months`
-    : `${puppyData.ageWeeks} weeks`;
+  let ageDisplay: string;
+  if (puppyData.dateOfBirth) {
+    const dob = new Date(puppyData.dateOfBirth + "T00:00:00");
+    const totalWeeks = Math.floor((Date.now() - dob.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    const months = Math.floor(totalWeeks / 4);
+    const weeks = totalWeeks % 4;
+    ageDisplay = `${months} months, ${weeks} weeks`;
+  } else {
+    ageDisplay = puppyData.ageWeeks >= 8
+      ? `${Math.floor(puppyData.ageWeeks / 4)} months`
+      : `${puppyData.ageWeeks} weeks`;
+  }
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">

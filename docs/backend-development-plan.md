@@ -1,8 +1,9 @@
 # PupPlan Backend Development Plan
 
-**Document Version:** 1.0
+**Document Version:** 1.1
 **Created:** 2026-02-11
-**Status:** Draft
+**Last Updated:** 2026-05-25
+**Status:** Active
 **Stage:** 0→1 (Launch MVP)
 
 ---
@@ -19,7 +20,9 @@ This document outlines the backend architecture and implementation plan for **Pu
 
 **Target State:**
 - Production-ready backend with Supabase Edge Functions
-- Real AI routine generation via Claude Sonnet 4.5
+- Two-layer AI routine generation: deterministic parameter computation + Claude schedule assembly (D70, D71)
+- `breed_profiles` table as single source of truth for breed characteristics (D68)
+- DOB-based age computation for automatic schedule adaptation (D69)
 - Robust API layer for all frontend operations
 - Scalable architecture ready for 1→100 growth
 
@@ -76,12 +79,24 @@ profiles
   - avatar_url (text, nullable)
   - created_at (timestamp)
 
+breed_profiles (NEW — D68, single source of truth for breed characteristics)
+  - id (UUID, PK)
+  - breed_name (TEXT, UNIQUE — display name used in onboarding dropdown)
+  - breed_size (TEXT: toy | small | medium | large | giant)
+  - energy_level (TEXT: high | moderate | low)
+  - is_brachycephalic (BOOLEAN, default false)
+  - created_at (TIMESTAMPTZ)
+
 puppies
   - id (UUID, PK)
   - name (text)
   - breed (text)
-  - age_months (integer)
-  - age_weeks (integer)
+  - date_of_birth (date, nullable — NEW D69, replaces age_months/age_weeks for new puppies)
+  - age_months (integer — LEGACY, retained for backward compatibility)
+  - age_weeks (integer — LEGACY, retained for backward compatibility)
+  - breed_size (text, nullable — NEW D72, copied from breed_profiles at creation)
+  - energy_level (text, nullable — NEW D72, copied from breed_profiles at creation)
+  - is_brachycephalic (boolean, default false — NEW D72)
   - weight_value (numeric, nullable)
   - weight_unit (text)
   - photo_url (text, nullable)
@@ -262,8 +277,7 @@ CREATE INDEX idx_weight_logs_onboarding
   questionnaireData: {
     puppyName: string;
     breed: string;
-    ageMonths: number;
-    ageWeeks: number;
+    dateOfBirth: string;     // YYYY-MM-DD (D69 — replaces ageMonths/ageWeeks)
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
     wakeUpTime: string;      // HH:MM
@@ -297,13 +311,18 @@ CREATE INDEX idx_weight_logs_onboarding
 }
 ```
 
-**Implementation Flow:**
+**Implementation Flow (Two-Layer System — D70, D71):**
 1. Validate request (auth check, puppy ownership)
-2. Build Claude prompt from questionnaire data
-3. Call Claude API with structured output schema
-4. Parse and validate Claude response
-5. Save routine + items to database (transaction)
-6. Return complete routine
+2. Read puppy record from Supabase (gets breed_size, energy_level, is_brachycephalic)
+3. Compute age bracket from date_of_birth (D69)
+4. Call `computeScheduleParams()` — deterministic parameter computation (D70)
+5. Build slim Claude prompt from pre-computed params (~50 lines, not ~330)
+6. Call Claude API — schedule assembly only (D71)
+7. Parse and validate Claude response
+8. Save routine + items to database (transaction)
+9. Return complete routine
+
+See **Section 16** for full details on the two-layer system.
 
 **Claude Prompt Strategy:**
 ```typescript
@@ -466,21 +485,23 @@ const response = await anthropic.messages.create({
   model: 'claude-sonnet-4-5-20250929',
   max_tokens: 4096,
   temperature: 0.7,
-  system: 'You are a certified dog trainer...',
   messages: [
-    { role: 'user', content: prompt }
+    { role: 'user', content: slimPrompt }  // ~50 lines (D71)
   ]
 });
 
 const routine = JSON.parse(response.content[0].text);
 ```
 
+**Note:** The prompt is now a slim ~50-line template built from pre-computed scheduling parameters (D70, D71). All breed classification, age bracket computation, and parameter table lookups happen in `computeScheduleParams()` before the LLM is called. See Section 16 for full details.
+
 **Validation:**
 After parsing, validate:
 - All activities have required fields (time, activity, category, description)
 - Times are chronological and within wake/bed window
 - Categories match allowed values
-- Age-appropriate recommendations (e.g., no 60-min runs for 8-week puppy)
+- Meal times are within 15 min of pre-computed times (new — D70)
+- Activity durations don't exceed pre-computed maximums
 
 **Fallback Strategy:**
 If Claude call fails (rate limit, network error):
@@ -986,7 +1007,565 @@ wrk -t10 -c100 -d10s --timeout 30s \
 
 ---
 
-## 16. Success Metrics
+## 16. Pre-Computed Dog Profile Layer (D68-D72)
+
+**Added:** 2026-05-25
+**Priority:** P0 (Launch Blocker — required before AI routine generation goes live)
+**References:** Decisions D68-D72, Product Spec F1/F3, User Flows 1/4/8A
+
+### 16.1 Overview
+
+The current routine generation system sends the full LLM a ~330-line prompt containing breed classification tables, age bracket definitions, and 15+ parameter lookup tables. The LLM is expected to do breed → size/energy mapping, age → bracket calculation, and cross-reference parameter tables — all of which are deterministic math with exactly one correct answer.
+
+This overhaul moves all deterministic computation out of the LLM prompt and into server-side TypeScript code. The LLM receives only pre-computed scheduling parameters (~50 lines) and focuses on what it's good at: assembling a natural daily schedule.
+
+**What changes:**
+1. New `breed_profiles` Supabase table replaces the hardcoded breed dropdown array
+2. Puppy records gain `date_of_birth`, `breed_size`, `energy_level`, `is_brachycephalic` fields
+3. A `computeScheduleParams()` function encodes all parameter tables from the system prompt
+4. The Edge Function computes age bracket from DOB, looks up breed fields from the puppy record, calls `computeScheduleParams()`, and builds a slim prompt
+5. The onboarding questionnaire uses a DOB date picker (replaces month/week inputs) and populates breed fields from `breed_profiles` at puppy creation time
+
+---
+
+### 16.2 Database Changes
+
+#### Migration 1: `breed_profiles` table (D68)
+
+```sql
+-- New reference table: single source of truth for breed → characteristics
+CREATE TABLE breed_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  breed_name TEXT NOT NULL UNIQUE,
+  breed_size TEXT NOT NULL CHECK (breed_size IN ('toy', 'small', 'medium', 'large', 'giant')),
+  energy_level TEXT NOT NULL CHECK (energy_level IN ('high', 'moderate', 'low')),
+  is_brachycephalic BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- RLS: all authenticated users can read (needed for onboarding dropdown)
+ALTER TABLE breed_profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Authenticated users can read breed profiles"
+  ON breed_profiles FOR SELECT
+  USING (auth.uid() IS NOT NULL);
+
+-- No insert/update/delete policies — data is seed-only, managed via migrations
+
+-- Seed data: 30 breeds matching the current onboarding dropdown
+INSERT INTO breed_profiles (breed_name, breed_size, energy_level, is_brachycephalic) VALUES
+  ('Mixed/Unknown',              'medium', 'moderate', false),
+  ('Australian Shepherd',        'medium', 'high',     false),
+  ('Beagle',                     'small',  'moderate', false),
+  ('Bernese Mountain Dog',       'giant',  'moderate', false),
+  ('Border Collie',              'medium', 'high',     false),
+  ('Boston Terrier',             'small',  'moderate', true),
+  ('Boxer',                      'large',  'moderate', true),
+  ('Bulldog (English)',          'medium', 'low',      true),
+  ('Cavalier King Charles',      'small',  'low',      true),
+  ('Chihuahua',                  'toy',    'low',      false),
+  ('Cocker Spaniel',             'small',  'moderate', false),
+  ('Corgi (Pembroke Welsh)',     'small',  'moderate', false),
+  ('Dachshund',                  'small',  'moderate', false),
+  ('Dalmatian',                  'large',  'high',     false),
+  ('Doberman Pinscher',          'large',  'high',     false),
+  ('French Bulldog',             'small',  'low',      true),
+  ('German Shepherd',            'large',  'high',     false),
+  ('Golden Retriever',           'large',  'high',     false),
+  ('Great Dane',                 'giant',  'low',      false),
+  ('Havanese',                   'toy',    'moderate', false),
+  ('Husky (Siberian)',           'large',  'high',     false),
+  ('Labrador Retriever',         'large',  'high',     false),
+  ('Maltese',                    'toy',    'low',      false),
+  ('Miniature Schnauzer',        'small',  'moderate', false),
+  ('Pomeranian',                 'toy',    'moderate', false),
+  ('Poodle (Standard)',          'medium', 'moderate', false),
+  ('Pug',                        'small',  'low',      true),
+  ('Rottweiler',                 'large',  'moderate', false),
+  ('Shih Tzu',                   'small',  'low',      true),
+  ('Yorkshire Terrier',          'toy',    'moderate', false);
+```
+
+#### Migration 2: Puppy table additions (D69, D72)
+
+```sql
+-- Add new fields to puppies table
+ALTER TABLE puppies
+  ADD COLUMN date_of_birth DATE,
+  ADD COLUMN breed_size TEXT,
+  ADD COLUMN energy_level TEXT,
+  ADD COLUMN is_brachycephalic BOOLEAN DEFAULT false;
+
+-- NOTE: date_of_birth, breed_size, energy_level are nullable
+-- because existing puppies won't have them until migration runs.
+-- New puppies created after this migration will always have these fields.
+
+-- age_months and age_weeks columns are retained for backward compatibility
+-- but will no longer be used for new routine generation.
+```
+
+#### Migration 3: Backfill existing puppies
+
+```sql
+-- Synthesize date_of_birth from existing age data
+-- Formula: DOB = created_at - (age_months * 4 + age_weeks) weeks
+UPDATE puppies
+SET date_of_birth = (
+  created_at::date - ((age_months * 4 + age_weeks) * INTERVAL '1 week')
+)::date
+WHERE date_of_birth IS NULL
+  AND age_months IS NOT NULL;
+
+-- Backfill breed fields from breed_profiles (exact breed name match)
+UPDATE puppies p
+SET
+  breed_size = bp.breed_size,
+  energy_level = bp.energy_level,
+  is_brachycephalic = bp.is_brachycephalic
+FROM breed_profiles bp
+WHERE p.breed = bp.breed_name
+  AND p.breed_size IS NULL;
+
+-- For puppies whose breed doesn't match breed_profiles (edge case),
+-- default to medium/moderate/false
+UPDATE puppies
+SET
+  breed_size = COALESCE(breed_size, 'medium'),
+  energy_level = COALESCE(energy_level, 'moderate'),
+  is_brachycephalic = COALESCE(is_brachycephalic, false)
+WHERE breed_size IS NULL;
+```
+
+#### Updated database.types.ts additions
+
+```typescript
+// New table type
+breed_profiles: {
+  Row: {
+    id: string;
+    breed_name: string;
+    breed_size: 'toy' | 'small' | 'medium' | 'large' | 'giant';
+    energy_level: 'high' | 'moderate' | 'low';
+    is_brachycephalic: boolean;
+    created_at: string;
+  };
+  Insert: { /* seed-only, no client inserts */ };
+  Update: { /* seed-only, no client updates */ };
+};
+
+// Updated puppies table type (new fields)
+puppies: {
+  Row: {
+    // ... existing fields ...
+    date_of_birth: string | null;       // ISO date string, YYYY-MM-DD
+    breed_size: string | null;          // toy | small | medium | large | giant
+    energy_level: string | null;        // high | moderate | low
+    is_brachycephalic: boolean;         // default false
+  };
+  Insert: {
+    // ... existing fields ...
+    date_of_birth?: string | null;
+    breed_size?: string | null;
+    energy_level?: string | null;
+    is_brachycephalic?: boolean;
+  };
+  Update: {
+    // ... existing fields ...
+    date_of_birth?: string | null;
+    breed_size?: string | null;
+    energy_level?: string | null;
+    is_brachycephalic?: boolean;
+  };
+};
+```
+
+---
+
+### 16.3 `computeScheduleParams()` — Deterministic Parameter Engine
+
+This is a pure TypeScript function that lives in the Edge Function. It takes breed characteristics + current age and returns every scheduling parameter the LLM needs. No network calls, no LLM — pure math.
+
+**File location:** `supabase/functions/generate-routine/schedule-params.ts`
+
+#### Type definitions
+
+```typescript
+// --- Age Brackets ---
+type AgeBracket =
+  | 'newborn'           // 8-10 weeks
+  | 'early_puppy'       // 10-12 weeks
+  | 'puppy'             // 12-16 weeks
+  | 'junior'            // 16-22 weeks (4-5 months)
+  | 'pre_adolescent'    // 22-26 weeks (5-6 months)
+  | 'adolescent_early'  // 26-35 weeks (6-8 months)
+  | 'adolescent_mid'    // 35-44 weeks (8-10 months)
+  | 'adolescent_late'   // 44-52 weeks (10-12 months)
+  | 'young_adult';      // 52+ weeks (12+ months)
+
+type BreedSize = 'toy' | 'small' | 'medium' | 'large' | 'giant';
+type EnergyLevel = 'high' | 'moderate' | 'low';
+
+// --- Input ---
+interface DogProfile {
+  dateOfBirth: string;       // ISO date (YYYY-MM-DD)
+  breedSize: BreedSize;
+  energyLevel: EnergyLevel;
+  isBrachycephalic: boolean;
+  wakeUpTime: string;        // HH:MM (24h)
+  bedTime: string;           // HH:MM (24h)
+}
+
+// --- Output: all scheduling parameters for the LLM ---
+interface ScheduleParams {
+  ageBracket: AgeBracket;
+  ageWeeks: number;
+
+  // Potty
+  pottyModel: 'event_based' | 'time_based';
+  pottyMaxDaytimeGapHours: number | null;   // time-based only
+  pottyOvernightBreaks: number;
+
+  // Meals
+  mealsPerDay: number;
+  mealTimes: string[];        // Pre-computed HH:MM times
+
+  // Walks
+  walkDurationMinutes: number;
+  walkSessionsPerDay: number;
+
+  // Training
+  trainingSessionMinutes: number;
+  trainingSessionsPerDay: number;
+
+  // Naps
+  awakeWindowMinutes: number;
+  napDurationMinutes: number;
+  napsPerDay: number;
+
+  // Play
+  playSessionMinutes: number;
+  playSessionsPerDay: number;
+
+  // Calm Bonding
+  calmBondingMinutes: number;
+  calmBondingSessions: number;
+
+  // Schedule boundaries
+  wakeUpTime: string;
+  bedTime: string;
+  wakingHours: number;
+}
+```
+
+#### Core functions
+
+```typescript
+// Compute age bracket from date of birth
+function getAgeBracket(dateOfBirth: string): { bracket: AgeBracket; ageWeeks: number } {
+  const dob = new Date(dateOfBirth);
+  const now = new Date();
+  const ageMs = now.getTime() - dob.getTime();
+  const ageWeeks = Math.floor(ageMs / (7 * 24 * 60 * 60 * 1000));
+
+  if (ageWeeks < 10) return { bracket: 'newborn', ageWeeks };
+  if (ageWeeks < 12) return { bracket: 'early_puppy', ageWeeks };
+  if (ageWeeks < 16) return { bracket: 'puppy', ageWeeks };
+  if (ageWeeks < 22) return { bracket: 'junior', ageWeeks };
+  if (ageWeeks < 26) return { bracket: 'pre_adolescent', ageWeeks };
+  if (ageWeeks < 35) return { bracket: 'adolescent_early', ageWeeks };
+  if (ageWeeks < 44) return { bracket: 'adolescent_mid', ageWeeks };
+  if (ageWeeks < 52) return { bracket: 'adolescent_late', ageWeeks };
+  return { bracket: 'young_adult', ageWeeks };
+}
+
+// Pre-compute meal times using the 12-hour gap rule
+function computeMealTimes(
+  mealsPerDay: number,
+  wakeUpTime: string,
+  bedTime: string
+): string[] {
+  // First meal = wake + 15 min
+  // Last meal = first + 12h, adjusted if <2h before bed
+  // Remaining meals evenly spaced between first and last
+  // ... (full implementation)
+}
+
+// Main entry point
+function computeScheduleParams(profile: DogProfile): ScheduleParams {
+  const { bracket, ageWeeks } = getAgeBracket(profile.dateOfBirth);
+  // Look up all parameter tables by bracket + breed characteristics
+  // Apply modifiers (brachycephalic walk cap, energy play adjustment, etc.)
+  // Compute meal times
+  // Return complete ScheduleParams object
+}
+```
+
+#### Parameter lookup tables (encoded as TypeScript objects)
+
+Each parameter table from the system prompt becomes a constant object keyed by `AgeBracket`. Example structure:
+
+```typescript
+const WALK_PARAMS: Record<AgeBracket, { durationMin: number; sessions: number }> = {
+  newborn:           { durationMin: 10, sessions: 1 },
+  early_puppy:       { durationMin: 12, sessions: 1 },
+  puppy:             { durationMin: 15, sessions: 2 },
+  junior:            { durationMin: 20, sessions: 2 },
+  pre_adolescent:    { durationMin: 25, sessions: 2 },
+  adolescent_early:  { durationMin: 30, sessions: 2 },
+  adolescent_mid:    { durationMin: 37, sessions: 2 },
+  adolescent_late:   { durationMin: 45, sessions: 2 },
+  young_adult:       { durationMin: 0, sessions: 2 },  // resolved by energy level
+};
+
+// Similar tables for: POTTY_PARAMS, MEAL_PARAMS, TRAINING_PARAMS,
+// NAP_PARAMS, PLAY_PARAMS, CALM_BONDING_PARAMS
+```
+
+**Modifiers applied inside `computeScheduleParams()`:**
+- Walk duration capped at 15 min if `isBrachycephalic === true`
+- Young adult walk duration resolved by energy level (high: 52 min, moderate: 37 min, low: 20 min)
+- Play duration adjusted: `high` energy gets +25%, `low` energy gets -17%
+- Potty daytime gap reduced ~25% for `toy`/`small` breeds (time-based model)
+- Toy breeds get +1 meal per day in brackets 1-4 (hypoglycemia risk)
+- Giant breeds stay at 3 meals in bracket 6+ (bloat risk)
+
+---
+
+### 16.4 Updated Edge Function — Slim LLM Prompt
+
+The `generate-routine` Edge Function is rewritten to use the two-layer system.
+
+**File location:** `supabase/functions/generate-routine/index.ts`
+
+#### Updated request shape
+
+```typescript
+// The Edge Function reads breed fields directly from the puppy record
+// No need to pass breed characteristics in the request — they're already stored
+{
+  puppyId: string;
+  questionnaireData: {
+    puppyName: string;
+    breed: string;
+    dateOfBirth: string;      // YYYY-MM-DD (replaces ageMonths/ageWeeks)
+    weight: number | null;
+    weightUnit: 'lbs' | 'kg';
+    wakeUpTime: string;
+    bedTime: string;
+  }
+}
+```
+
+#### Updated flow
+
+```
+1. Validate request (auth, puppy ownership)
+2. Read puppy record from Supabase
+   → Gets: date_of_birth, breed_size, energy_level, is_brachycephalic
+3. Call computeScheduleParams({
+     dateOfBirth, breedSize, energyLevel,
+     isBrachycephalic, wakeUpTime, bedTime
+   })
+   → Returns: all scheduling parameters (ScheduleParams object)
+4. Build SLIM prompt (~50 lines) with pre-computed params
+5. Call Claude API
+6. Parse + validate response
+7. Save routine + items to database
+8. Return complete routine
+```
+
+#### Slim prompt template (replaces the current ~330-line prompt)
+
+```typescript
+function buildSlimPrompt(
+  puppyName: string,
+  params: ScheduleParams
+): string {
+  return `You are a puppy care schedule assembler. Your job is to arrange
+pre-computed activities into a natural daily timeline.
+
+PUPPY: ${puppyName}
+SCHEDULE: ${params.wakeUpTime} wake → ${params.bedTime} bed
+  (${params.wakingHours} waking hours)
+
+PRE-COMPUTED PARAMETERS (use these exact values):
+- Potty model: ${params.pottyModel}
+${params.pottyModel === 'event_based'
+  ? '  Wake-up potty + pre-nap potty each awake window. Post-meal potty only if 45+ min from adjacent potties.'
+  : `  Max daytime gap: ${params.pottyMaxDaytimeGapHours}h. Wake-up + final potty always. Post-meal potty if 45+ min from previous.`}
+- Overnight potty breaks: ${params.pottyOvernightBreaks}
+- Meals: ${params.mealsPerDay}/day at [${params.mealTimes.join(', ')}]
+- Walks: ${params.walkDurationMinutes} min × ${params.walkSessionsPerDay}/day
+- Training: ${params.trainingSessionMinutes} min × ${params.trainingSessionsPerDay}/day
+- Naps: ${params.napDurationMinutes} min × ${params.napsPerDay}/day
+  (max awake window: ${params.awakeWindowMinutes} min)
+- Play: ${params.playSessionMinutes} min × ${params.playSessionsPerDay}/day
+- Calm bonding: ${params.calmBondingMinutes} min × ${params.calmBondingSessions}/day
+
+ASSEMBLY RULES:
+1. Place meals at the exact pre-computed times.
+2. Distribute walks, training, play, and calm bonding evenly across waking hours.
+3. Never place two of the same activity back-to-back. Min 2h gap between walks, training, or play.
+4. Enforce awake window maximums — insert nap when window is reached.
+5. Morning walk after first meal. Evening walk in second half of day.
+6. Training after naps (when alert). Calm bonding as evening wind-down.
+7. Final 2 hours before bed: at least one activity (calm bonding + final potty).
+
+OUTPUT: JSON array of activities. Each: { "time": "HH:MM", "activity": "title", "category": "type", "description": "1-2 sentence guidance" }
+Categories: feeding, potty, exercise, training, rest, play, bonding
+Return ONLY the JSON array.`;
+}
+```
+
+---
+
+### 16.5 Onboarding Flow Changes
+
+#### Frontend: OnboardingQuestionnaire.tsx
+
+**Change 1: Breed dropdown from `breed_profiles` table (D68)**
+```typescript
+// Replace static DOG_BREEDS array with Supabase fetch
+const [breedProfiles, setBreedProfiles] = useState<BreedProfile[]>([]);
+
+useEffect(() => {
+  async function fetchBreeds() {
+    const { data } = await supabase
+      .from('breed_profiles')
+      .select('breed_name, breed_size, energy_level, is_brachycephalic')
+      .order('breed_name');
+    if (data) setBreedProfiles(data);
+  }
+  fetchBreeds();
+}, []);
+
+// Dropdown renders breed_name from fetched data
+// Fallback: if fetch fails, use cached static list
+```
+
+**Change 2: DOB date picker replaces month/week inputs (D69)**
+```typescript
+// Step 2/3: "When was your puppy born?"
+// Replace:
+//   - age_months number input
+//   - age_weeks number input
+// With:
+//   - date_of_birth date picker (required)
+//   - Validation: not in future, puppy must be ≥ 8 weeks old
+```
+
+**Change 3: On submit — copy breed characteristics to puppy record (D72)**
+```typescript
+// When creating the puppy:
+const selectedBreed = breedProfiles.find(b => b.breed_name === breed);
+
+await supabase.from('puppies').insert({
+  name: puppyName,
+  breed: breed,
+  date_of_birth: dateOfBirth,        // NEW: store DOB
+  breed_size: selectedBreed?.breed_size ?? 'medium',
+  energy_level: selectedBreed?.energy_level ?? 'moderate',
+  is_brachycephalic: selectedBreed?.is_brachycephalic ?? false,
+  weight_value: weight,
+  weight_unit: weightUnit,
+  questionnaire_data: { wakeUpTime, bedTime },
+  // age_months and age_weeks are no longer set for new puppies
+});
+```
+
+---
+
+### 16.6 Implementation Plan — Ordered Steps
+
+```
+Step 1: Database migrations
+  - Create breed_profiles table + seed 30 breeds
+  - Add date_of_birth, breed_size, energy_level, is_brachycephalic to puppies
+  - Backfill existing puppies (synthesize DOB, copy breed fields)
+  - Add RLS policy for breed_profiles (authenticated read)
+  → Unblocks: Steps 2, 3, and 4
+
+Step 2: computeScheduleParams() function
+  - Create supabase/functions/generate-routine/schedule-params.ts
+  - Implement getAgeBracket() with all 9 bracket boundaries
+  - Encode all parameter tables (potty, meals, walks, training, naps, play, bonding)
+  - Implement computeMealTimes() with 12-hour gap algorithm
+  - Implement potty model logic (event-based vs time-based)
+  - Apply breed modifiers (brachycephalic cap, energy adjustments, size adjustments)
+  - Write unit tests for each parameter table and edge cases
+  → Unblocks: Step 3
+
+Step 3: Rewrite generate-routine Edge Function
+  - Update request shape (dateOfBirth replaces ageMonths/ageWeeks)
+  - Read breed fields from puppy record (no join needed — denormalized)
+  - Call computeScheduleParams() with puppy data
+  - Build slim LLM prompt (~50 lines) from ScheduleParams
+  - Keep existing response validation (10-25 activities, valid categories, HH:MM format)
+  - Add validation: meal times in response should be within 15 min of pre-computed times
+  - Update fallback generation to also use computeScheduleParams()
+  → Unblocks: Step 5
+
+Step 4: Update onboarding questionnaire (frontend)
+  - Fetch breed_profiles from Supabase for dropdown (with static fallback)
+  - Replace age month/week inputs with DOB date picker
+  - Add DOB validation (not future, ≥ 8 weeks old)
+  - On submit: look up selected breed's characteristics from fetched data
+  - Store date_of_birth + breed fields on puppy record
+  - Update AIRoutineGenerator to pass dateOfBirth instead of ageMonths/ageWeeks
+  → Unblocks: Step 5
+
+Step 5: Update database.types.ts + frontend services
+  - Add BreedProfile type to database.types.ts
+  - Add new puppy fields to database.types.ts
+  - Update any age display logic (Puppy Profile, Accept Invite screen)
+    to compute age from DOB instead of reading static months/weeks
+  - Update services/puppies.ts for new fields
+  → Unblocks: End-to-end testing
+
+Step 6: End-to-end testing + deploy
+  - Test new onboarding flow (DOB picker, breed dropdown from DB)
+  - Test routine generation with various breed/age combinations
+  - Verify existing puppies work with backfilled data
+  - Verify deterministic consistency (same dog = same params every time)
+  - Deploy migrations, Edge Function, frontend
+  → Unblocks: Launch
+```
+
+---
+
+### 16.7 File Locations (New + Modified)
+
+```
+NEW FILES:
+  supabase/migrations/XXXXXXXX_breed_profiles.sql       — breed_profiles table + seed
+  supabase/migrations/XXXXXXXX_puppy_dob_fields.sql     — puppies table additions
+  supabase/migrations/XXXXXXXX_backfill_existing.sql    — existing puppy backfill
+  supabase/functions/generate-routine/schedule-params.ts — computeScheduleParams()
+  supabase/functions/generate-routine/schedule-params.test.ts — unit tests
+
+MODIFIED FILES:
+  supabase/functions/generate-routine/index.ts    — two-layer generation system
+  src/lib/database.types.ts                       — BreedProfile type, updated Puppy type
+  src/app/components/OnboardingQuestionnaire.tsx   — DOB picker, breed_profiles dropdown
+  src/app/components/AIRoutineGenerator.tsx        — pass dateOfBirth to Edge Function
+  src/lib/services/puppies.ts                     — updated create/read for new fields
+```
+
+---
+
+### 16.8 Risks and Mitigations
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| Existing puppies' synthesized DOB is inaccurate | Medium | Low | DOB = created_at minus stored age in weeks. Approximate but sufficient. Owners can correct via profile edit (P1). |
+| Breed name mismatch during backfill | Low | Low | Use exact string match against breed_profiles. Unmatched breeds default to medium/moderate/false. |
+| computeScheduleParams() has a bug in one parameter table | Medium | High | Unit test every bracket × parameter combination. Edge cases: boundary weeks (exactly 10, 12, 16, etc.), toy breed meal count, brachycephalic walk cap. |
+| LLM ignores pre-computed meal times | Medium | Medium | Add validation: response meal times must be within 15 min of computed times. Reject and retry if not. |
+| breed_profiles fetch fails during onboarding | Low | Medium | Static fallback list cached in the frontend (same 30 breeds). Breed fields default to medium/moderate/false if lookup fails. |
+
+---
+
+## 17. Success Metrics
 
 ### Technical Metrics (Week 1)
 - [ ] Edge Function p99 latency <10s
@@ -1124,13 +1703,13 @@ Return ONLY the JSON array. No additional text, explanations, or markdown format
 
 ---
 
-## 17. Flow 6: Task Management Implementation Plan
+## 18. Flow 6: Task Management Implementation Plan
 
 **Added:** 2026-02-12
 **Priority:** P0 (Launch Blocker)
 **Complexity:** High (Hybrid backend architecture)
 
-### 17.1 Overview
+### 18.1 Overview
 
 Flow 6 introduces real-time collaborative task editing with Firebase Firestore, adding a second backend alongside Supabase. This hybrid approach leverages Firestore's superior real-time sync capabilities for the task editing feature while maintaining Supabase for all other data.
 
@@ -1144,7 +1723,7 @@ Flow 6 introduces real-time collaborative task editing with Firebase Firestore, 
 
 ---
 
-### 17.2 Architecture: Hybrid Backend Strategy
+### 18.2 Architecture: Hybrid Backend Strategy
 
 **Why Hybrid?**
 - **Firestore:** Built-in real-time listeners, automatic offline persistence (IndexedDB), optimistic updates out-of-the-box. Building equivalent functionality with Supabase Realtime would take 3-4x longer.
@@ -1168,7 +1747,7 @@ Authentication:
 
 ---
 
-### 17.3 Firebase Setup
+### 18.3 Firebase Setup
 
 #### Step 1: Firebase Project Creation
 **Duration:** 15 minutes
@@ -1390,7 +1969,7 @@ export async function signInToFirebase() {
 
 ---
 
-### 17.4 Frontend Implementation
+### 18.4 Frontend Implementation
 
 #### Step 4: TasksService (Firestore CRUD)
 **Duration:** 3 hours

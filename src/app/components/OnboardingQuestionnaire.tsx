@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -10,57 +10,38 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { fetchBreedProfiles } from "../../lib/services/puppies";
+import type { BreedProfile } from "../../lib/database.types";
 
-interface QuestionnaireData {
+export interface QuestionnaireData {
   puppyName: string;
   breed: string;
   photoUrl: string;
   photoFile: File | null;
-  ageMonths: string;
-  ageWeeks: string;
+  dateOfBirth: string;
   weight: string;
   weightUnit: "lbs" | "kg";
   wakeUpTime: string;
   bedTime: string;
+  breedSize: string;
+  energyLevel: string;
+  isBrachycephalic: boolean;
 }
 
 interface OnboardingQuestionnaireProps {
   onComplete: (data: QuestionnaireData) => void;
-  /** Called when user taps back on step 1 (exits onboarding) */
   onBack?: () => void;
 }
 
-const DOG_BREEDS = [
-  "Mixed/Unknown",
-  "Labrador Retriever",
-  "German Shepherd",
-  "Golden Retriever",
-  "French Bulldog",
-  "Bulldog",
-  "Poodle",
-  "Beagle",
-  "Rottweiler",
-  "German Shorthaired Pointer",
-  "Dachshund",
-  "Pembroke Welsh Corgi",
-  "Australian Shepherd",
+const FALLBACK_BREEDS = [
+  "Australian Shepherd", "Beagle", "Bernese Mountain Dog", "Border Collie",
+  "Boston Terrier", "Boxer", "Bulldog (English)", "Cavalier King Charles",
+  "Chihuahua", "Cocker Spaniel", "Corgi (Pembroke Welsh)", "Dachshund",
+  "Dalmatian", "Doberman Pinscher", "French Bulldog", "German Shepherd",
+  "Golden Retriever", "Great Dane", "Havanese", "Husky (Siberian)",
+  "Labrador Retriever", "Maltese", "Miniature Schnauzer", "Mixed/Unknown",
+  "Pomeranian", "Poodle (Standard)", "Pug", "Rottweiler", "Shih Tzu",
   "Yorkshire Terrier",
-  "Boxer",
-  "Cavalier King Charles Spaniel",
-  "Doberman Pinscher",
-  "Great Dane",
-  "Miniature Schnauzer",
-  "Siberian Husky",
-  "Bernese Mountain Dog",
-  "Pomeranian",
-  "Boston Terrier",
-  "Havanese",
-  "Shetland Sheepdog",
-  "Brittany",
-  "Shih Tzu",
-  "Border Collie",
-  "Cocker Spaniel",
-  "Chihuahua"
 ].sort();
 
 export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuestionnaireProps) {
@@ -68,29 +49,67 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
   const totalSteps = 3;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [breedProfiles, setBreedProfiles] = useState<BreedProfile[]>([]);
+  const [breedsLoaded, setBreedsLoaded] = useState(false);
+
+  useEffect(() => {
+    fetchBreedProfiles().then((profiles) => {
+      if (profiles.length > 0) {
+        setBreedProfiles(profiles);
+      }
+      setBreedsLoaded(true);
+    });
+  }, []);
+
+  const breedNames = breedProfiles.length > 0
+    ? breedProfiles.map((b) => b.breed_name).sort()
+    : FALLBACK_BREEDS;
+
   const [formData, setFormData] = useState<QuestionnaireData>({
     puppyName: "",
     breed: "",
     photoUrl: "",
     photoFile: null,
-    ageMonths: "",
-    ageWeeks: "",
+    dateOfBirth: "",
     weight: "",
     weightUnit: "lbs",
     wakeUpTime: "07:00",
     bedTime: "22:00",
+    breedSize: "medium",
+    energyLevel: "moderate",
+    isBrachycephalic: false,
   });
 
-  const updateField = (field: keyof QuestionnaireData, value: string) => {
+  const updateField = (field: keyof QuestionnaireData, value: string | boolean | File | null) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleBreedChange = (breed: string) => {
+    updateField("breed", breed);
+    const profile = breedProfiles.find((b) => b.breed_name === breed);
+    if (profile) {
+      setFormData((prev) => ({
+        ...prev,
+        breed,
+        breedSize: profile.breed_size,
+        energyLevel: profile.energy_level,
+        isBrachycephalic: profile.is_brachycephalic,
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        breed,
+        breedSize: "medium",
+        energyLevel: "moderate",
+        isBrachycephalic: false,
+      }));
+    }
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Store the File object for Supabase upload
       setFormData((prev) => ({ ...prev, photoFile: file }));
-      // Also create a preview URL
       const reader = new FileReader();
       reader.onloadend = () => {
         updateField("photoUrl", reader.result as string);
@@ -99,14 +118,22 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
     }
   };
 
+  const isDobValid = () => {
+    if (!formData.dateOfBirth) return false;
+    const dob = new Date(formData.dateOfBirth + "T00:00:00");
+    const now = new Date();
+    if (dob > now) return false;
+    const ageMs = now.getTime() - dob.getTime();
+    const ageWeeks = ageMs / (7 * 24 * 60 * 60 * 1000);
+    return ageWeeks >= 8;
+  };
+
   const canProceed = () => {
     switch (step) {
       case 1:
         return formData.puppyName && formData.breed;
       case 2:
-        const totalAge = parseInt(formData.ageMonths || "0") * 4 + parseInt(formData.ageWeeks || "0");
-        return formData.ageMonths && formData.ageWeeks && parseInt(formData.ageMonths) >= 0 &&
-               parseInt(formData.ageWeeks) >= 0 && totalAge > 0 && formData.weight;
+        return isDobValid() && formData.weight;
       case 3:
         return formData.wakeUpTime && formData.bedTime;
       default:
@@ -130,12 +157,18 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
     }
   };
 
+  // Compute max date (today) and min date (2 years ago) for the date picker
+  const today = new Date().toISOString().split("T")[0];
+  const twoYearsAgo = new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .split("T")[0];
+
   const progressSegments = Array.from({ length: totalSteps }, (_, i) => i < step);
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-0">
       <div className="w-[390px] h-screen bg-background flex flex-col" style={{ paddingTop: '48px', paddingBottom: '34px' }}>
-        {/* Back Button — above progress bar on every step */}
+        {/* Back Button */}
         <div className="px-5 mb-3">
           <button
             onClick={handleBack}
@@ -163,7 +196,7 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
         <div className="px-5 mb-8">
           <h1 className="text-2xl font-bold text-foreground">
             {step === 1 && "Tell us about your puppy"}
-            {step === 2 && "How old is your puppy?"}
+            {step === 2 && "When was your puppy born?"}
             {step === 3 && "Tell us about your schedule"}
           </h1>
         </div>
@@ -191,13 +224,13 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
                   </Label>
                   <Select
                     value={formData.breed}
-                    onValueChange={(value) => updateField("breed", value)}
+                    onValueChange={handleBreedChange}
                   >
                     <SelectTrigger id="breed" className="h-12 rounded-2xl border-border bg-input-background">
-                      <SelectValue placeholder="Select a breed" />
+                      <SelectValue placeholder={breedsLoaded ? "Select a breed" : "Loading breeds..."} />
                     </SelectTrigger>
                     <SelectContent>
-                      {DOG_BREEDS.map((breed) => (
+                      {breedNames.map((breed) => (
                         <SelectItem key={breed} value={breed}>
                           {breed}
                         </SelectItem>
@@ -249,40 +282,25 @@ export function OnboardingQuestionnaire({ onComplete, onBack }: OnboardingQuesti
 
             {step === 2 && (
               <>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="ageMonths" className="text-sm text-muted-foreground mb-2 block font-normal">
-                      Months *
-                    </Label>
-                    <Input
-                      id="ageMonths"
-                      type="number"
-                      min="0"
-                      placeholder="e.g., 3"
-                      value={formData.ageMonths}
-                      onChange={(e) => updateField("ageMonths", e.target.value)}
-                      className="h-12 rounded-2xl border-border bg-input-background"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="ageWeeks" className="text-sm text-muted-foreground mb-2 block font-normal">
-                      Weeks *
-                    </Label>
-                    <Input
-                      id="ageWeeks"
-                      type="number"
-                      min="0"
-                      max="3"
-                      placeholder="e.g., 2"
-                      value={formData.ageWeeks}
-                      onChange={(e) => updateField("ageWeeks", e.target.value)}
-                      className="h-12 rounded-2xl border-border bg-input-background"
-                    />
-                  </div>
+                <div>
+                  <Label htmlFor="dateOfBirth" className="text-sm text-muted-foreground mb-2 block font-normal">
+                    Date of birth *
+                  </Label>
+                  <Input
+                    id="dateOfBirth"
+                    type="date"
+                    min={twoYearsAgo}
+                    max={today}
+                    value={formData.dateOfBirth}
+                    onChange={(e) => updateField("dateOfBirth", e.target.value)}
+                    className="h-12 rounded-2xl border-border bg-input-background"
+                  />
                 </div>
-                <p className="text-sm text-muted-foreground -mt-2">
-                  Enter total age (e.g., 3 months and 2 weeks)
-                </p>
+                {formData.dateOfBirth && !isDobValid() && (
+                  <p className="text-sm text-destructive -mt-2">
+                    Puppy must be at least 8 weeks old
+                  </p>
+                )}
                 <div>
                   <Label htmlFor="weight" className="text-sm text-muted-foreground mb-2 block font-normal">
                     Current weight *

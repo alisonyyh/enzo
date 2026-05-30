@@ -77,6 +77,12 @@ This is a greenfield product with a **web app prototype** as the initial platfor
 | D65 | Onboarding Entry Protection | **Can edit, cannot delete** | The `is_onboarding` weight entry (migrated from puppy creation data) can be edited (to correct mistakes) but cannot be deleted. The Delete button is hidden when `editingEntry?.is_onboarding === true` in `LogWeightSheet.tsx`. Rationale: (1) Preserves the historical baseline — the onboarding weight is a known anchor point for growth tracking. (2) Users might have entered wrong weight during onboarding and need to correct it (edit allowed). (3) Deleting the baseline could leave the chart with no starting reference. Product spec (Flow 8E) explicitly requires this behavior. |
 | D66 | Current Weight Sync | **Most recent log determines puppy's current weight** | When a weight log is added, edited, or deleted, `puppies.weight_value` and `puppies.weight_unit` update to reflect the most recent entry (by `logged_at` date). Client-side sync: `onWeightUpdate` callback in `App.tsx` updates the in-memory `currentPuppy` state. Product spec (Flow 8H) envisions a Postgres trigger for this, but the front-end implementation handles it optimistically — the Weight card reads from the latest `weight_logs` entry directly rather than waiting for a trigger to update the puppy row. Backend trigger to be added when the database migration is implemented. |
 | D67 | Header Layout | **Circular icon buttons (not text links)** | Weight History screen uses circular accent-colored buttons in the header: ArrowLeft (back) on the left, Plus (log new weight) on the right. Both are 40px circles with `bg-accent` background and `text-foreground` icons. This matches the Apple Health aesthetic and provides larger touch targets than text links. The centered "Weight" title uses `text-lg font-bold`. No FAB at bottom-right (product spec suggested a FAB, but the header + button is cleaner and avoids obscuring the history list on small screens). |
+| **PRE-COMPUTED DOG PROFILE LAYER (Schedule Generation Overhaul)** ||||
+| D68 | Breed Data Storage | **`breed_profiles` Supabase table (supersedes D15)** | Previously breed data was a static JSON array in the frontend (D15). Now it lives in a dedicated Supabase table that serves as the single source of truth — the onboarding dropdown is populated from this table, and breed characteristics (size, energy, brachycephalic) are looked up from it at puppy creation time. This guarantees the dropdown and the scheduling logic always agree on available breeds. The table is seeded via migration with 30 breeds matching the current dropdown. |
+| D69 | Age Computation | **Date-of-birth based, computed at routine generation time** | Previously the app stored static `age_months` and `age_weeks` values at onboarding time — these go stale immediately as the puppy ages. Now we store `date_of_birth` on the puppy record and compute age bracket dynamically whenever we generate a schedule. This means schedules automatically adapt as the puppy grows (e.g., a puppy crossing from 12 to 16 weeks moves from "puppy" to "junior" bracket with longer walks and fewer naps) without requiring the owner to update anything. |
+| D70 | Schedule Parameter Pre-Computation | **Deterministic code in Edge Function, not LLM inference** | The LLM system prompt previously required Claude to look up breed → size/energy mappings, compute age brackets, and cross-reference 15+ parameter tables to determine walk duration, meal count, potty intervals, etc. All of this is deterministic math — there is exactly one correct answer for "how long should a 14-week-old large-breed puppy walk." Moving this to a pure TypeScript function (`computeScheduleParams`) eliminates inconsistency (same dog = same parameters every time), reduces prompt tokens by ~40-50% (no lookup tables in the prompt), and makes the logic unit-testable. |
+| D71 | LLM Prompt Scope | **Schedule assembly and adaptive adjustments only** | With D70, the LLM no longer does breed classification or arithmetic. It receives pre-computed parameters (exact activity durations, frequencies, and meal times) and focuses on what it's good at: arranging activities into a natural daily flow, distributing them evenly across waking hours, and making adaptive adjustments based on 7-day history data. The prompt shrinks from ~330 lines to ~50 lines. |
+| D72 | Breed Classification on Puppy Record | **Denormalized from `breed_profiles` at creation time** | When a puppy is created during onboarding, the selected breed's `breed_size`, `energy_level`, and `is_brachycephalic` values are copied from `breed_profiles` onto the `puppies` row. This means the Edge Function can read everything it needs from the puppy record alone — no join to `breed_profiles` at generation time. If breed classifications are updated in the future, existing puppies keep their original classification (intentional — reclassifying could surprise users with sudden schedule changes). |
 
 ---
 
@@ -1043,3 +1049,155 @@ Both owner and caretaker have equal weight tracking permissions (D58). Permissio
 | Tappable data points with tooltips on chart | Not implemented in v1 | Requires touch event handling on SVG elements with tooltip positioning logic. Chart data points are visible; exact values are available in the history list below. P1 enhancement. |
 | Smooth/curved line connecting data points | Straight line segments | SVG `<polyline>` with straight segments. Bézier curves (smooth line) add complexity to the chart math. Visual difference is minimal with daily data. P1 enhancement. |
 | `logged_by` attribution in history list | Shows "From onboarding" label only | Full attribution requires a profiles join (like activity logs). Deferred to P1 when multi-user weight logging becomes a real use case. |
+
+---
+
+## Pre-Computed Dog Profile Layer (D68–D72) — Schedule Generation Overhaul
+
+### Summary
+
+Restructures how the app generates daily schedules. Previously, the LLM received the breed name and had to infer size/energy/brachycephalic characteristics, compute the age bracket, and cross-reference ~15 parameter tables — all deterministic work that doesn't benefit from AI reasoning. Now the app pre-computes all scheduling parameters in code and hands the LLM a concise set of constraints. The LLM focuses purely on assembling a natural daily timeline.
+
+### Problem Statement
+
+The schedule generation system prompt grew to ~330 lines. Most of it is lookup tables (breed → size, age → bracket, bracket × size → potty interval, etc.) that have exactly one correct answer. Using an LLM for table lookups is:
+- **Expensive** — paying per token for tables the LLM reads but doesn't reason about
+- **Inconsistent** — same dog may get different classifications on regeneration
+- **Untestable** — can't unit test breed classification without running the full LLM call
+- **Opaque** — can't show users "we classified your dog as large/high energy"
+
+Additionally, the app stored age as static `age_months`/`age_weeks` at onboarding time, which went stale immediately — a puppy registered at 10 weeks would still show 10 weeks two months later.
+
+### Architecture
+
+```
+breed_profiles table (Supabase)     puppy.date_of_birth
+        ↓                                  ↓
+    size, energy,                    age_bracket
+    brachycephalic                   (computed fresh each generation)
+    (copied to puppy at creation)          ↓
+        ↓                                  ↓
+        └──────── computeScheduleParams() ─┘
+                          ↓
+              { walkDuration, mealsPerDay, pottyModel,
+                napCount, trainingDuration, ... }
+                          ↓
+              slim LLM prompt (~50 lines, assembly only)
+                          ↓
+                    daily schedule JSON
+```
+
+### Data Model Changes
+
+**New table: `breed_profiles`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | UUID, PK | |
+| breed_name | TEXT, UNIQUE | Display name for dropdown |
+| breed_size | TEXT | toy, small, medium, large, giant |
+| energy_level | TEXT | high, moderate, low |
+| is_brachycephalic | BOOLEAN | Flat-faced breed flag |
+
+**New columns on `puppies`**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| date_of_birth | DATE, nullable | For age computation. Nullable for existing puppies. |
+| breed_size | TEXT | Copied from breed_profiles at creation |
+| energy_level | TEXT | Copied from breed_profiles at creation |
+| is_brachycephalic | BOOLEAN | Copied from breed_profiles at creation |
+
+### Breed Classifications (seed data)
+
+| Breed | Size | Energy | Brachycephalic |
+|-------|------|--------|----------------|
+| Mixed/Unknown | medium | moderate | false |
+| Australian Shepherd | medium | high | false |
+| Beagle | small | moderate | false |
+| Bernese Mountain Dog | giant | moderate | false |
+| Border Collie | medium | high | false |
+| Boston Terrier | small | low | true |
+| Boxer | large | moderate | true |
+| Brittany | medium | high | false |
+| Bulldog | medium | low | true |
+| Cavalier King Charles Spaniel | small | low | true |
+| Chihuahua | toy | low | false |
+| Cocker Spaniel | small | moderate | false |
+| Dachshund | small | moderate | false |
+| Doberman Pinscher | large | high | false |
+| French Bulldog | small | low | true |
+| German Shepherd | large | high | false |
+| German Shorthaired Pointer | large | high | false |
+| Golden Retriever | large | high | false |
+| Great Dane | giant | low | false |
+| Havanese | toy | moderate | false |
+| Labrador Retriever | large | high | false |
+| Miniature Schnauzer | small | moderate | false |
+| Pembroke Welsh Corgi | small | moderate | false |
+| Pomeranian | toy | moderate | false |
+| Poodle | medium | moderate | false |
+| Rottweiler | large | moderate | false |
+| Shetland Sheepdog | small | high | false |
+| Shih Tzu | small | low | true |
+| Siberian Husky | large | high | false |
+| Yorkshire Terrier | toy | moderate | false |
+
+### Age Brackets (computed from DOB)
+
+| Bracket | Age Range | Key Changes |
+|---------|-----------|-------------|
+| newborn | 8–10 weeks | 30–60 min awake, 4–6 naps, event-based potty |
+| early_puppy | 10–12 weeks | 45–75 min awake, 4–5 naps |
+| puppy | 12–16 weeks | 1–1.5 hr awake, 3–4 naps |
+| junior | 4–5 months | 1.5–2 hr awake, 2–3 naps |
+| pre_adolescent | 5–6 months | 2 meals/day, 25 min walks |
+| adolescent_early | 6–8 months | Switches to time-based potty model |
+| adolescent_mid | 8–10 months | 3–4 hr awake windows |
+| adolescent_late | 10–12 months | 40–50 min walks |
+| young_adult | 12+ months | Walk duration by energy level |
+
+### Onboarding Changes
+
+1. Breed dropdown populated from `breed_profiles` table (not hardcoded array)
+2. Age input replaced with date-of-birth date picker
+3. On puppy creation: breed's size/energy/brachycephalic copied to puppy record
+
+### Migration Strategy (existing puppies)
+
+- `date_of_birth`: synthesized as `created_at - (age_months × 4 + age_weeks) weeks`
+- `breed_size`, `energy_level`, `is_brachycephalic`: populated by matching `puppies.breed` against `breed_profiles.breed_name`
+
+### What the LLM Receives (after pre-computation)
+
+```
+Dog: Enzo | 14 weeks (puppy) | large | high energy | not brachycephalic
+Wake: 7:00 AM | Bed: 10:00 PM
+
+COMPUTED PARAMETERS:
+- Potty: event-based (wake + pre-nap; post-meal if 45min gap). 0-1 overnight breaks.
+- Meals: 3/day at 7:15 AM, 1:15 PM, 7:15 PM
+- Walks: 2× 15 min
+- Training: 3-4× 5-7 min
+- Play: 3-4× 12-19 min
+- Calm bonding: 2-3× 5-8 min
+- Naps: 3-4× 90-120 min. Max awake window: 90 min.
+
+TASK: Assemble a timeline distributing these activities across the waking day.
+[activity distribution rules + output format]
+```
+
+### File Locations
+
+| What | Path |
+|------|------|
+| Migration: breed_profiles + seed | `supabase/migrations/YYYYMMDD_breed_profiles.sql` |
+| Migration: puppies new columns | `supabase/migrations/YYYYMMDD_puppy_profile_fields.sql` |
+| Migration: backfill existing puppies | `supabase/migrations/YYYYMMDD_backfill_puppy_profiles.sql` |
+| Schedule params computation | `supabase/functions/generate-routine/schedule-params.ts` |
+| Age bracket computation | `supabase/functions/generate-routine/age-bracket.ts` |
+| Updated Edge Function | `supabase/functions/generate-routine/index.ts` |
+| Updated onboarding | `src/app/components/OnboardingQuestionnaire.tsx` |
+| Updated DB types | `src/lib/database.types.ts` |
+| Updated puppies service | `src/lib/services/puppies.ts` |
+| New breed profiles service | `src/lib/services/breed-profiles.ts` |
