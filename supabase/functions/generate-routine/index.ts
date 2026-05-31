@@ -21,7 +21,7 @@ interface RoutineActivity {
   time: string;
   activity: string;
   category: string;
-  description: string;
+  description?: string;
 }
 
 function buildSystemPrompt(): string {
@@ -67,12 +67,7 @@ RESPONSE RULES:
 2. Every potty trip and every nap must appear explicitly in the output with time and duration.
 3. Output exactly ONE timeline. Resolve all conflicts (meal-nap overlaps, potty consolidation, activity spacing) internally before producing output.
 4. Use only these activity types: Potty, Meal, Walk, Training, Play, Calm bonding, Nap, Overnight sleep. No "free time," "settle," "rest," or filler entries.
-5. Each activity gets a 1-2 sentence description with practical guidance for the owner.
-
-OUTPUT FORMAT:
-Return ONLY a JSON array. No markdown, no explanation, no preamble.
-Each element: { "time": "HH:MM", "activity": "Activity Name", "category": "type", "description": "1-2 sentence guidance" }
-Categories: feeding, potty, exercise, training, rest, play, bonding`;
+5. Use the generate_schedule tool to output the schedule. Categories: feeding, potty, exercise, training, rest, play, bonding.`;
 }
 
 function buildUserPrompt(puppyName: string, params: ScheduleParams): string {
@@ -95,18 +90,56 @@ ${pottyLine}
 - Play: ${params.playSessionMinutes} min x ${params.playSessionsPerDay}/day
 - Calm bonding: ${params.calmBondingMinutes} min x ${params.calmBondingSessions}/day
 
-Return ONLY the JSON array.`;
+Call generate_schedule with the optimal number of activities for this puppy's needs.`;
 }
 
+/** Tool schema — forces Claude to return structured output via tool_use */
+const SCHEDULE_TOOL = {
+  name: 'generate_schedule',
+  description: 'Output the daily puppy schedule as a structured list of activities.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      activities: {
+        type: 'array' as const,
+        description: 'The daily schedule activities, ordered chronologically.',
+        items: {
+          type: 'object' as const,
+          properties: {
+            time: {
+              type: 'string' as const,
+              description: 'Time in HH:MM 24-hour format',
+              pattern: '^\\d{2}:\\d{2}$',
+            },
+            activity: {
+              type: 'string' as const,
+              description: 'Short activity name (e.g., "Morning Potty", "Breakfast", "Nap")',
+            },
+            category: {
+              type: 'string' as const,
+              enum: ['feeding', 'potty', 'exercise', 'training', 'rest', 'play', 'bonding'],
+              description: 'Activity category',
+            },
+          },
+          required: ['time', 'activity', 'category'],
+        },
+        minItems: 12,
+        maxItems: 50,
+      },
+    },
+    required: ['activities'],
+  },
+};
+
 function validateRoutine(activities: RoutineActivity[]): boolean {
-  if (!Array.isArray(activities) || activities.length < 10 || activities.length > 25) {
+  if (!Array.isArray(activities) || activities.length < 10 || activities.length > 40) {
     return false;
   }
 
   const validCategories = ['feeding', 'potty', 'exercise', 'training', 'rest', 'play', 'bonding'];
 
   for (const activity of activities) {
-    if (!activity.time || !activity.activity || !activity.category || !activity.description) {
+    if (!activity.time || !activity.activity || !activity.category) {
       return false;
     }
     if (!validCategories.includes(activity.category)) {
@@ -207,7 +240,7 @@ serve(async (req) => {
     const systemPrompt = buildSystemPrompt();
     const userPrompt = buildUserPrompt(data.puppyName, params);
 
-    console.log('Calling Claude API with system + user prompt...');
+    console.log('Calling Claude API with tool_use...');
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -223,6 +256,8 @@ serve(async (req) => {
         messages: [
           { role: 'user', content: userPrompt }
         ],
+        tools: [SCHEDULE_TOOL],
+        tool_choice: { type: 'tool', name: 'generate_schedule' },
       }),
     });
 
@@ -233,26 +268,20 @@ serve(async (req) => {
     }
 
     const response = await claudeResponse.json();
-    const content = response.content[0];
-    if (content.type !== 'text') {
-      throw new Error('Unexpected response type from Claude');
+
+    // With tool_choice forced, the response contains a tool_use content block
+    const toolUseBlock = response.content.find((block: any) => block.type === 'tool_use');
+    if (!toolUseBlock || toolUseBlock.name !== 'generate_schedule') {
+      console.error('Unexpected response structure:', JSON.stringify(response.content));
+      throw new Error('Claude did not return a tool_use block');
     }
 
-    let activities: RoutineActivity[];
-    try {
-      let jsonText = content.text.trim();
-      if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-      }
-      activities = JSON.parse(jsonText);
-    } catch {
-      console.error('Failed to parse Claude response:', content.text);
-      throw new Error('Invalid JSON response from Claude');
-    }
+    const activities: RoutineActivity[] = toolUseBlock.input.activities;
+    console.log('Claude tool_use returned', activities.length, 'activities');
 
     if (!validateRoutine(activities)) {
-      console.error('Invalid routine structure:', activities);
-      throw new Error('Generated routine failed validation');
+      console.error('Validation failed. Count:', activities.length, 'First item:', JSON.stringify(activities[0]));
+      throw new Error('Generated routine failed validation. Count: ' + activities.length + ', first: ' + JSON.stringify(activities[0]?.category));
     }
 
     console.log('Generated', activities.length, 'activities');
@@ -283,7 +312,7 @@ serve(async (req) => {
       routine_id: routine.id,
       activity_type: activity.category,
       title: activity.activity,
-      description: activity.description,
+      description: null,
       scheduled_time: activity.time + ':00',
       sort_order: index,
       is_enabled: true,

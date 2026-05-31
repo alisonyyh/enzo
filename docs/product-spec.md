@@ -90,17 +90,20 @@
   - Calm bonding sessions
   - Evening wind-down and bedtime
 - Routine is displayed as a timeline/schedule view for the current day
-- Each routine item shows: time, activity name, duration, and brief guidance note
+- Each routine item shows: time, activity name, and duration only — **no LLM-generated explanations, coaching advice, or commentary**. Task descriptions must be clean and actionable (e.g., "Potty", "Meal", "Walk — 37 min"). The LLM must not inject tips, reasoning, or training guidance into the task description or any visible field.
 
 **Acceptance Criteria:**
 - Routine generates within 10 seconds
 - Routine is medically/behaviorally sound for the puppy's age and breed
 - Same dog with same inputs produces consistent scheduling parameters across regenerations (breed classification and parameter values are deterministic, not LLM-inferred)
+- **AI-generated task descriptions contain NO LLM explanations or coaching commentary.** Descriptions must be empty or contain only factual, minimal details (e.g., duration, quantity). No tips, cues, praise instructions, or behavioral advice.
 - Routine items are displayed in chronological order
 - If generation fails, user sees a retry option with a clear error message
 - Routine automatically uses age-appropriate parameters when regenerated as the puppy grows (no manual age update needed)
 
 **Decision (D4):** Users can edit the AI-generated routine minimally in v1 — adjust activity times (tap to change) and toggle activities on/off. Custom activity creation is P1.
+
+**LLM Output Constraint:** The LLM must output **only structured schedule data** (activity name, time, duration, activity type). It must NOT generate explanatory text, coaching advice, training tips, behavioral guidance, or any commentary in task descriptions. Task descriptions must be empty or contain only minimal factual details (e.g., "37 min" for walk duration). Any LLM reasoning or advice must be stripped before tasks are displayed to the user.
 
 **Technical Note:** Schedule parameters are computed server-side in the Edge Function. The LLM (Claude Sonnet via Supabase Edge Function) handles schedule assembly only. Client-side fallback generation is available if the Edge Function fails.
 
@@ -394,7 +397,7 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
   - Multiline text area positioned below the Activity Type grid (or below the Details field when activity type = Potty)
   - Label: "Notes"
   - Placeholder text: "Add a note..." (shown when field is empty)
-  - **AI-generated tasks:** Pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). User can edit, replace, or clear this text.
+  - **AI-generated tasks:** Empty by default. AI routine generation does not produce descriptions or commentary — tasks are title + time + duration only. User can add their own notes if desired.
   - **Custom tasks:** Empty unless the user previously saved a note on this task.
   - Auto-grows up to 3 lines, then scrolls internally
   - Max length: 200 characters
@@ -450,7 +453,7 @@ Replacing the checkbox with a profile picture creates a stronger social signal t
 - **Details field (conditional) appears between Activity Type grid and Notes when activity type = Potty; contains 💩 and 💦 toggles (see F11 for full criteria)**
 - **Activity type grid label for potty_break reads "Potty" (not "Potty Break")**
 - **Notes field is visible below the Activity Type grid (or below Details field for Potty tasks) in both Add and Edit modes**
-- **For AI-generated tasks: Notes field is pre-populated with the AI description text**
+- **For AI-generated tasks: Notes field is empty by default (AI does not generate descriptions or commentary)**
 - **For custom tasks: Notes field is empty unless user previously saved a note**
 - **Notes field placeholder reads "Add a note..." when empty**
 - **Notes field auto-grows up to 3 lines, then scrolls; max 200 characters**
@@ -824,17 +827,16 @@ Scenario A: AI-generated breakfast task needs time and note adjustment
 User opens app
   -> Sees Daily Routine with:
      7:00 AM  [ ] Breakfast
-                   1/2 cup kibble — wait 30 min before play
   -> Biscuit didn't eat until 7:30 AM
   -> Taps on "Breakfast" task card (NOT the status icon)
   -> Bottom sheet slides up:
      - Title: "Edit Task"
      - Time picker pre-populated with 7:00 AM
      - Activity grid shows "Meal" pre-selected
-     - Notes field pre-populated: "1/2 cup kibble — wait 30 min before play"
+     - Notes field empty (AI tasks have no pre-populated description)
      - Buttons: [Cancel] [Save Changes]
   -> Changes time from 7:00 AM to 7:30 AM
-  -> Edits notes to: "1/2 cup kibble + a spoon of pumpkin"
+  -> Adds note: "1/2 cup kibble + a spoon of pumpkin"
   -> Taps "Save Changes"
   -> Bottom sheet dismisses, task now shows:
      7:30 AM  [ ] Breakfast  ✏️

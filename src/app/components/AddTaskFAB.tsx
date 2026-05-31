@@ -40,7 +40,7 @@ export interface EditingRoutineItem {
   time: string;          // HH:mm
   category: string;      // Supabase category (feeding, potty, etc.)
   activity: string;      // Title (e.g., "Breakfast")
-  description: string;   // AI description (e.g., "Take outside 15-30 min after eating")
+  description: string;   // Always empty for AI tasks (D73); user-authored notes only
   pottyDetails?: { poop: boolean; pee: boolean };
 }
 
