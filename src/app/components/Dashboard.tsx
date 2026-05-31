@@ -33,6 +33,15 @@ interface DashboardProps {
   puppyCreatedAt?: string;
 }
 
+function formatDuration(minutes: number): string {
+  if (minutes >= 60) {
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return mins > 0 ? `${hrs} hr ${mins} min` : `${hrs} hr`;
+  }
+  return `${minutes} min`;
+}
+
 // Category color mapping (matches original Figma design)
 const CATEGORY_COLORS: Record<string, string> = {
   feeding: "#E8722A",
@@ -400,7 +409,7 @@ export function Dashboard({
   routineItems.forEach((item: any) => {
     const edit = editedRoutineItems.get(item.id);
     const effectiveItem = edit
-      ? { ...item, time: edit.time, activity: edit.title, description: edit.description, category: edit.activityType, pottyDetails: edit.pottyDetails }
+      ? { ...item, time: edit.time, activity: edit.title, description: edit.description, category: edit.activityType, pottyDetails: edit.pottyDetails, durationMinutes: edit.durationMinutes ?? item.durationMinutes }
       : item;
     const [hours, minutes] = (effectiveItem.time || '00:00').split(':').map(Number);
     timelineItems.push({
@@ -587,10 +596,15 @@ export function Dashboard({
                     `}
                     style={{ boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)' }}
                   >
-                    <div className="flex-shrink-0 pt-0.5">
-                      <div className="text-sm font-bold text-foreground w-14 text-left">
+                    <div className="flex-shrink-0 pt-0.5 w-[4.5rem]">
+                      <div className="text-sm font-bold text-foreground text-left whitespace-nowrap">
                         {formatDisplayTime(taskTime)}
                       </div>
+                      {task.durationMinutes != null && task.durationMinutes > 0 && (
+                        <div className="text-xs text-muted-foreground text-left mt-0.5 whitespace-nowrap">
+                          {formatDuration(task.durationMinutes)}
+                        </div>
+                      )}
                     </div>
                     <div className="flex-1">
                       <div className="flex items-start justify-between gap-2">
@@ -635,7 +649,6 @@ export function Dashboard({
               <div
                 onClick={() => {
                   if (isViewingToday) {
-                    // Open edit bottom sheet for routine item
                     setEditingItem({
                       type: 'routine',
                       routineItemId: item.id,
@@ -645,6 +658,7 @@ export function Dashboard({
                       activity: item.activity,
                       description: item.description || '',
                       pottyDetails: item.pottyDetails,
+                      durationMinutes: item.durationMinutes ?? null,
                     });
                   } else {
                     // Non-today: open view-only detail (D67)
@@ -670,10 +684,15 @@ export function Dashboard({
                 }}
               >
                 {/* Time on LEFT */}
-                <div className="flex-shrink-0 pt-0.5">
-                  <div className="text-sm font-bold text-foreground w-14 text-left">
+                <div className="flex-shrink-0 pt-0.5 w-[4.5rem]">
+                  <div className="text-sm font-bold text-foreground text-left whitespace-nowrap">
                     {formatDisplayTime(item.time)}
                   </div>
+                  {item.durationMinutes != null && item.durationMinutes > 0 && (
+                    <div className="text-xs text-muted-foreground text-left mt-0.5 whitespace-nowrap">
+                      {formatDuration(item.durationMinutes)}
+                    </div>
+                  )}
                 </div>
 
                 {/* Activity Content in MIDDLE */}

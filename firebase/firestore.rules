@@ -21,7 +21,8 @@ service cloud.firestore {
       && data.date is string  // YYYY-MM-DD
       && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
       && data.lastEditedBy == request.auth.uid
-      && data.lastEditedAt == request.time;
+      && data.lastEditedAt == request.time
+      && (!data.keys().hasAny(['durationMinutes']) || data.durationMinutes is int && data.durationMinutes > 0 && data.durationMinutes <= 480);
     }
 
     // Deleted routine items collection

@@ -706,6 +706,80 @@ interface WeightLog {
 
 ---
 
+#### F13: Activity Duration Tracking
+**Priority: P0 (Launch Blocker)**
+
+**Description:** Adds duration tracking to the five activity types where "how long" matters: sleeps/naps, walks, play time, calm bonding time, and training. Users input duration when creating or editing these tasks. Duration is displayed on the dashboard timeline cards alongside start time. Point-in-time activities (feeding, potty) are unaffected.
+
+**Context:** The app currently tracks only start times for all activities. But for duration-based activities, knowing *how long* is the most important metric — "Did my puppy nap long enough?" and "Was that walk the right length for his age?" are unanswerable without duration data. The deep research confirms that minimum session lengths vary significantly by activity type and puppy age: training sessions start at 2 minutes for 8-week-old puppies, bonding sessions at 2–5 minutes, play at 5–10 minutes, walks at 10 minutes, and naps at 30 minutes. Duration presets must accommodate these short sessions.
+
+**Storage model:** Store `durationMinutes` (integer, optional) — not end time. Duration is how owners naturally think ("the walk was 30 minutes"), it survives rescheduling without becoming invalid, can't produce negative values, and the database already has `duration_minutes` on `routine_items`. End time can always be derived for display: `start + duration`.
+
+**Applicable activity types:**
+- `nap` / `sleep` (sleeps and naps)
+- `walk` / `exercise` (walks)
+- `play_time` / `play` (play time)
+- `calm_time` / `bonding` (calm bonding time)
+- `training` (training)
+
+**Non-applicable activity types (no duration input shown):**
+- `meal` / `feeding`
+- `potty_break` / `potty`
+- `bedtime`
+
+**Behavior:**
+
+**Duration Input — Bottom Sheet (Add/Edit Task):**
+- When the user selects an applicable activity type in the Add Custom Task or Edit Task bottom sheet, a "Duration" section appears between the Activity Type grid and the Notes field (or between Activity Type and Details for Potty — but Potty is non-applicable, so no conflict)
+- Duration section contains a row of flat preset chips: **5 min · 10 min · 15 min · 30 min · 1 hr · 2 hr**
+- Tapping a chip selects it (highlighted state); tapping again deselects
+- A "Custom" chip at the end opens a numeric input where the user types minutes (validation: 1–480 min)
+- Duration is optional — users can save a task without selecting a duration
+- If user switches to a non-applicable activity type, the Duration section hides and any selected duration is cleared on save
+
+**Dashboard Timeline Display:**
+- Duration-based tasks show duration inline after the start time:
+  - `9:00 AM · 45 min  Morning Nap`
+  - `3:00 PM · 30 min  Walk`
+- Tasks without duration set continue to show start time only:
+  - `7:00 AM  Breakfast`
+  - `8:30 AM  Potty Break 💩💦`
+- Duration badge uses a subtle secondary style (not competing with the time for visual prominence)
+
+**AI-Generated Routine Tasks:**
+- The AI routine generation already computes `duration_minutes` for applicable activities via the deterministic parameter layer. These values are now surfaced on the dashboard instead of being discarded in the legacy format transformation.
+- When editing an AI-generated task with a pre-computed duration, the corresponding preset chip (or custom value) is pre-selected in the bottom sheet.
+
+**Acceptance Criteria:**
+- Duration section appears in bottom sheet only for the five applicable activity types
+- Duration section hides immediately when user switches to a non-applicable activity type
+- All six preset chips are tappable: 5, 10, 15, 30, 60, 120 minutes
+- Custom input accepts values 1–480 with validation error for out-of-range
+- Duration is optional — saving without a duration is valid
+- Duration displays inline on dashboard timeline cards for applicable tasks that have a value set
+- AI-generated tasks with pre-computed `duration_minutes` display duration on the dashboard without user action
+- Editing an AI-generated task pre-selects the correct duration chip or shows the custom value
+- `durationMinutes` persists to Firebase Firestore for custom tasks and syncs within 3 seconds
+- `duration_minutes` from Supabase `routine_items` is no longer discarded in the legacy format transformation
+- Duration data survives task editing (changing start time does not clear duration)
+- Switching activity type to a non-applicable type clears duration on save
+- Both primary owner and caretaker can set and view duration (equal permissions)
+- Offline support: duration changes queue locally and sync on reconnection
+
+**Data Model Changes:**
+- **Firebase `tasks` collection:** Add optional `durationMinutes: number` field
+- **Supabase `routine_items`:** No schema change — `duration_minutes INT` already exists
+- **Display layer:** Stop discarding `duration_minutes` in the legacy format transformation (`App.tsx` routine-to-timeline conversion)
+
+**Out of Scope (this feature, v1):**
+- Timer/stopwatch for real-time duration tracking ("start now, stop when done") — P2
+- Duration-based analytics or averages ("average nap length this week") — P2
+- Context-aware duration presets based on activity type and puppy age — P1, may layer in if data shows users frequently use "Custom" for specific activity types
+- Notifications when a duration-based event should be ending — P2
+- Timeline bar/block visualization (rendering duration as a spanning bar instead of a dot) — P2
+
+---
+
 ### Out of Scope (v1)
 
 | Feature | Rationale |
@@ -728,7 +802,10 @@ interface WeightLog {
 | Multi-day task editing | Only today's tasks are editable in v1. Editing past/future days is P1. |
 | Custom activity types | Pre-defined activity list only (Potty, Meal, Training, etc.). Custom activities are P1. |
 | Rich text notes / markdown in Notes field | Notes field supports plain text only (max 200 chars). Rich text, markdown, or link rendering is P2. |
-| Task duration tracking | Tracking how long an activity actually took (vs. scheduled duration) is P2. |
+| Real-time duration timer/stopwatch | "Start now, stop when done" live tracking is P2. Duration is entered manually in v1 (F13). |
+| Duration-based analytics | Average nap length, weekly walk time, etc. are P2. V1 captures duration data; analytics come later. |
+| Context-aware duration presets | Activity-type and age-aware preset chips (e.g., showing 2/5/10 min for puppy training vs. 30/60/120 min for naps) are P1. V1 uses a flat set of chips across all activity types. |
+| Timeline bar/block visualization | Rendering duration-based events as spanning bars instead of point markers on the timeline is P2. |
 | Undo/redo for task edits | Once saved, edits are permanent. Undo is P1. |
 | Bulk task operations | Select multiple tasks to delete/edit at once is P2. |
 | Granular task edit conflict resolution | Last-write-wins is sufficient for v1. UI showing "Mike edited this after you" is P1. |
@@ -1033,6 +1110,61 @@ User on Weight History screen
   -> Taps [Save Changes] or [Cancel]
 ```
 
+#### Flow 10: User Logs or Views Activity Duration
+```
+Scenario A: Adding a new Walk task with duration
+
+User taps "+" FAB
+  -> Bottom sheet opens: "Add Custom Task"
+  -> Selects "Walk" from activity type grid
+  -> "Duration" section appears (between Activity Type and Notes):
+     [5 min] [10 min] [15 min] [30 min] [1 hr] [2 hr] [Custom]
+     (all chips unselected)
+  -> Taps [30 min] chip → it highlights
+  -> Sets time to 3:00 PM
+  -> Taps "Add Task"
+  -> Task appears in timeline:
+     3:00 PM · 30 min  Walk  ✏️
+  -> Partner sees same task with duration on their device within 3 seconds
+
+Scenario B: Editing an AI-generated Nap task that already has duration
+
+User sees in timeline:
+  9:00 AM · 45 min  Morning Nap
+  -> Puppy actually slept for 90 minutes
+  -> Taps on task card
+  -> Bottom sheet opens: "Edit Task"
+  -> Activity type "Nap" is pre-selected
+  -> Duration section visible with [45 min] showing as custom value (pre-populated)
+  -> Taps [Custom], types "90"
+  -> Taps "Save Changes"
+  -> Timeline updates:
+     9:00 AM · 1 hr 30 min  Morning Nap  ✏️
+
+Scenario C: Duration section hides for non-applicable activity types
+
+User taps "+" FAB
+  -> Selects "Walk" → Duration section appears
+  -> Changes mind, selects "Potty" instead
+  -> Duration section hides immediately
+  -> Details section (💩/💦) appears instead
+  -> Saves → no duration stored on the Potty task
+
+Scenario D: Viewing dashboard with mixed task types
+
+User opens app → sees Daily Routine:
+  7:00 AM              Breakfast
+  7:30 AM · 15 min     Walk  ✏️
+  8:00 AM              Potty Break 💩💦
+  8:15 AM · 5 min      Training
+  8:30 AM · 45 min     Morning Nap
+  10:00 AM             Potty Break
+  10:15 AM · 10 min    Play Time
+  -> Duration-based tasks clearly show "how long" inline
+  -> Point-in-time tasks show start time only
+  -> At a glance: puppy napped 45 min, walked 15 min, trained 5 min
+```
+
 ---
 
 ### Data Model (High-Level)
@@ -1119,6 +1251,7 @@ Task (daily instance of RoutineItem, supports editing)
   - activity_type (potty_break | meal | training | nap | calm_time | play_time | walk)
   - title
   - description
+  - duration_minutes (integer, nullable) ← only for nap/sleep, walk/exercise, play_time/play, calm_time/bonding, training
   - potty_details (JSON, nullable) ← only present when activity_type = potty_break
     - poop (boolean) ← true if 💩 was selected
     - pee (boolean) ← true if 💦 was selected

@@ -14,6 +14,17 @@ const ACTIVITY_OPTIONS = [
   { value: 'walk', label: 'Walk', emoji: '🚶' },
 ];
 
+const DURATION_APPLICABLE_TYPES = new Set(['nap', 'walk', 'training', 'calm_time', 'play_time']);
+
+const DURATION_PRESETS = [
+  { label: '5 min', value: 5 },
+  { label: '10 min', value: 10 },
+  { label: '15 min', value: 15 },
+  { label: '30 min', value: 30 },
+  { label: '1 hr', value: 60 },
+  { label: '2 hr', value: 120 },
+];
+
 // Map routine item categories (Supabase) to activity option values (Firebase)
 const CATEGORY_TO_ACTIVITY: Record<string, string> = {
   feeding: 'meal',
@@ -42,6 +53,7 @@ export interface EditingRoutineItem {
   activity: string;      // Title (e.g., "Breakfast")
   description: string;   // Always empty for AI tasks (D73); user-authored notes only
   pottyDetails?: { poop: boolean; pee: boolean };
+  durationMinutes?: number | null;
 }
 
 /** Represents a custom (Firebase) task being edited */
@@ -72,8 +84,13 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
   const [notes, setNotes] = useState('');
   const [pottyPoop, setPottyPoop] = useState(false);
   const [pottyPee, setPottyPee] = useState(false);
+  const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
+  const [isCustomDuration, setIsCustomDuration] = useState(false);
+  const [customDurationInput, setCustomDurationInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const notesRef = useRef<HTMLTextAreaElement>(null);
+
+  const showDuration = DURATION_APPLICABLE_TYPES.has(selectedActivity);
 
   const isEditMode = !!editingItem;
 
@@ -87,14 +104,23 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
         setNotes(task.description || '');
         setPottyPoop(task.pottyDetails?.poop ?? false);
         setPottyPee(task.pottyDetails?.pee ?? false);
+        const dur = task.durationMinutes ?? null;
+        setDurationMinutes(dur);
+        const isPreset = dur != null && DURATION_PRESETS.some(p => p.value === dur);
+        setIsCustomDuration(dur != null && !isPreset);
+        setCustomDurationInput(dur != null && !isPreset ? String(dur) : '');
       } else {
-        // Routine item
         const mappedActivity = CATEGORY_TO_ACTIVITY[editingItem.category] || 'nap';
         setSelectedActivity(mappedActivity);
         setSelectedTime(editingItem.time);
         setNotes(editingItem.description || '');
         setPottyPoop(editingItem.pottyDetails?.poop ?? false);
         setPottyPee(editingItem.pottyDetails?.pee ?? false);
+        const dur = editingItem.durationMinutes ?? null;
+        setDurationMinutes(dur);
+        const isPreset = dur != null && DURATION_PRESETS.some(p => p.value === dur);
+        setIsCustomDuration(dur != null && !isPreset);
+        setCustomDurationInput(dur != null && !isPreset ? String(dur) : '');
       }
       setShowModal(true);
     }
@@ -114,6 +140,9 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
     setNotes('');
     setPottyPoop(false);
     setPottyPee(false);
+    setDurationMinutes(null);
+    setIsCustomDuration(false);
+    setCustomDurationInput('');
     setShowModal(false);
     onEditDone?.();
   };
@@ -132,34 +161,34 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
         ? 'Potty Break'
         : (ACTIVITY_OPTIONS.find((opt) => opt.value === selectedActivity)?.label || selectedActivity);
 
-      // Only include pottyDetails when activity type is potty_break
       const pottyDetailsPayload = selectedActivity === 'potty_break'
         ? { poop: pottyPoop, pee: pottyPee }
         : undefined;
 
+      const durationPayload = showDuration ? durationMinutes : null;
+
       if (isEditMode && editingItem) {
         if (editingItem.type === 'custom') {
-          // Edit custom task in Firebase
           await editTask(editingItem.task.id, {
             actualTime: time,
             activityType: selectedActivity as Task['activityType'],
             title: activityLabel,
             description: notes,
             pottyDetails: pottyDetailsPayload,
+            durationMinutes: durationPayload,
           });
         } else {
-          // Edit routine item — save override in Firebase editedRoutineItems collection
           await saveRoutineItemEdit(puppyId, editingItem.routineItemId, {
             time: selectedTime,
             activityType: selectedActivity,
             title: activityLabel,
             description: notes,
             pottyDetails: pottyDetailsPayload,
+            durationMinutes: durationPayload,
           }, date);
         }
       } else {
-        // Add mode: create new custom task
-        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined, pottyDetailsPayload, date);
+        await addTask(puppyId, selectedActivity as any, time, activityLabel, notes || undefined, pottyDetailsPayload, date, durationPayload);
       }
 
       resetAndClose();
@@ -182,6 +211,9 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
     setNotes('');
     setPottyPoop(false);
     setPottyPee(false);
+    setDurationMinutes(null);
+    setIsCustomDuration(false);
+    setCustomDurationInput('');
     setShowModal(true);
   };
 
@@ -235,10 +267,14 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
                       key={option.value}
                       onClick={() => {
                         setSelectedActivity(option.value);
-                        // Clear potty details when switching away from potty
                         if (option.value !== 'potty_break') {
                           setPottyPoop(false);
                           setPottyPee(false);
+                        }
+                        if (!DURATION_APPLICABLE_TYPES.has(option.value)) {
+                          setDurationMinutes(null);
+                          setIsCustomDuration(false);
+                          setCustomDurationInput('');
                         }
                       }}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
@@ -284,6 +320,88 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
                       <span>Pee</span>
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* Duration — conditional, only for duration-applicable activity types */}
+              {showDuration && (
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1.5">Duration</label>
+                  <div className="flex flex-wrap gap-2">
+                    {DURATION_PRESETS.map((preset) => (
+                      <button
+                        key={preset.value}
+                        type="button"
+                        onClick={() => {
+                          if (durationMinutes === preset.value && !isCustomDuration) {
+                            setDurationMinutes(null);
+                          } else {
+                            setDurationMinutes(preset.value);
+                            setIsCustomDuration(false);
+                            setCustomDurationInput('');
+                          }
+                        }}
+                        className={`px-3 py-2 rounded-full text-sm transition-all ${
+                          durationMinutes === preset.value && !isCustomDuration
+                            ? 'border-2 border-primary bg-primary/10 text-primary font-medium'
+                            : 'border border-border bg-background text-foreground'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isCustomDuration) {
+                          setIsCustomDuration(false);
+                          setDurationMinutes(null);
+                          setCustomDurationInput('');
+                        } else {
+                          setIsCustomDuration(true);
+                          setDurationMinutes(null);
+                        }
+                      }}
+                      className={`px-3 py-2 rounded-full text-sm transition-all ${
+                        isCustomDuration
+                          ? 'border-2 border-primary bg-primary/10 text-primary font-medium'
+                          : 'border border-border bg-background text-foreground'
+                      }`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+                  {isCustomDuration && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={480}
+                        value={customDurationInput}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setCustomDurationInput(val);
+                          const num = parseInt(val, 10);
+                          if (!isNaN(num) && num >= 1 && num <= 480) {
+                            const matchingPreset = DURATION_PRESETS.find(p => p.value === num);
+                            if (matchingPreset) {
+                              setDurationMinutes(num);
+                              setIsCustomDuration(false);
+                              setCustomDurationInput('');
+                            } else {
+                              setDurationMinutes(num);
+                            }
+                          } else {
+                            setDurationMinutes(null);
+                          }
+                        }}
+                        placeholder="45"
+                        className="w-20 px-3 py-2 bg-accent border border-border rounded-xl text-foreground text-sm"
+                      />
+                      <span className="text-sm text-muted-foreground">minutes</span>
+                    </div>
+                  )}
                 </div>
               )}
 
