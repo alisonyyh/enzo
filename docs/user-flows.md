@@ -336,7 +336,7 @@ Screen: Access Removed
 
 **Context:** All tasks — both custom (user-added) and AI-generated routine tasks — are edited using the same bottom sheet modal. Tapping any task card in the timeline opens the "Edit Task" bottom sheet pre-populated with the task's current data. This provides a consistent, spacious editing experience regardless of task origin.
 
-The bottom sheet includes three fields: Time, Activity Type, and Notes. For AI-generated tasks, the Notes field is pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). For custom tasks, Notes is empty unless the user has previously saved a note.
+The bottom sheet includes three core fields: Time, Activity Type, and Notes, plus two conditional fields: Details (for Potty tasks only — see Flow 6H) and Duration (for duration-based activities only — see Flow 6I). For AI-generated tasks, the Notes field is pre-populated with the AI description (e.g., "Take outside 15-30 minutes after eating"). For custom tasks, Notes is empty unless the user has previously saved a note.
 
 **Potty-specific behavior:** When the selected activity type is "Potty," a conditional "Details" section appears between the Activity Type grid and the Notes field. This section contains two tappable emoji toggles (💩 for poop and 💦 for pee) that allow users to record what type of potty break occurred. Both can be selected simultaneously. The selected emoji(s) are displayed next to the task title in the timeline. See Flow 6H for full details.
 
@@ -577,7 +577,29 @@ The bottom sheet reuses the same AddTaskFAB component with an
      hides and pottyDetails values are cleared on save
    - Optional — user can save a Potty task without selecting either
 
-4. Notes (multiline text input)
+4. Duration (conditional — duration-based activities only)
+   - Label: "Duration"
+   - Only visible when activity type is one of: Nap, Walk, Training,
+     Calm Time, Play Time
+   - NOT visible for: Potty, Meal
+   - Contains a row of flat preset chips:
+     [5 min] [10 min] [15 min] [30 min] [1 hr] [2 hr] [Custom]
+   - Tapping a chip selects it (highlighted state); tapping again
+     deselects
+   - "Custom" chip opens a numeric input (validation: 1–480 min)
+   - Optional — user can save without selecting a duration
+   - Pre-populated with existing durationMinutes when editing:
+     • If value matches a preset (5, 10, 15, 30, 60, 120),
+       that chip is pre-selected
+     • If value doesn't match a preset, "Custom" is selected and
+       the value is shown in the numeric input
+   - If user switches to a non-applicable activity type (Potty, Meal),
+     the Duration section hides and durationMinutes is cleared on save
+   - Position: Between Activity Type grid and Notes field (same slot
+     as Details for Potty, but they never appear simultaneously since
+     Potty is not a duration-applicable type)
+
+5. Notes (multiline text input)
    - Label: "Notes"
    - Placeholder: "Add a note..." (shown when empty)
    - For AI-generated tasks: pre-populated with the task's
@@ -587,7 +609,7 @@ The bottom sheet reuses the same AddTaskFAB component with an
    - Max length: 200 characters
    - Optional — can be left empty or cleared entirely
 
-5. Buttons
+6. Buttons
    - Cancel: Dismisses sheet, no changes saved
    - Save Changes: Updates existing task (time, activity type,
      and notes), syncs to all users, dismisses sheet
@@ -852,16 +874,34 @@ Task cards show multiple states through visual indicators:
    (No emojis = Potty task with no details selected)
    Emojis appear inline after the task title, before the ✏️ indicator.
 
+5. Duration (for duration-based activities only):
+   · 30 min = Duration badge shown inline after start time
+   (No badge = point-in-time activity or no duration set)
+   Duration appears between the start time and the task title.
+   Only shown for: Nap, Walk, Training, Calm Time, Play Time.
+
 Example task states:
 
-Original AI task, uncompleted:
+Original AI task, uncompleted (no duration):
   7:00 AM  [ ] Breakfast
+
+Original AI task with duration, uncompleted:
+  8:15 AM · 5 min  [ ] Training
 
 Original AI task, completed by Sarah:
   7:00 AM  [👤+🟢] Breakfast
 
+AI task with duration, completed by Sarah:
+  9:00 AM · 45 min  [👤+🟢] Morning Nap
+
 Edited AI task (time changed), completed:
   7:15 AM  [👤+🟢] Breakfast  ✏️
+
+Edited AI task with duration changed, completed:
+  3:00 PM · 30 min  [👤+🟢] Walk  ✏️
+
+User-added Walk task with duration, uncompleted:
+  3:00 PM · 30 min  [ ] Walk  ✏️
 
 User-added Potty task with details, uncompleted:
   11:30 AM  [ ] Potty Break 💩💦  ✏️
@@ -1214,6 +1254,7 @@ interface Task {
   activityType: ActivityType; // Enum: PottyBreak | Meal | Training | etc.
   title: string;              // Display name (e.g., "Breakfast", "Potty Break")
   description?: string;       // Notes field (AI description or user-entered notes)
+  durationMinutes?: number;    // Only for nap, walk, training, calm_time, play_time
   pottyDetails?: {             // Only present when activityType = "potty_break"
     poop: boolean;             // True if poop emoji (💩) was selected
     pee: boolean;              // True if pee emoji (💦) was selected
@@ -1441,6 +1482,319 @@ Mike's device (3 seconds later):
 Offline handling:
 - Same offline-first behavior as other task fields
 - pottyDetails changes queue locally and sync on reconnection
+- Last-write-wins for conflicts (same as other task fields)
+```
+
+---
+
+## Flow 6I: Activity Duration Tracking
+
+**Context:** Five activity types in PupPlan are duration-based — sleeps/naps, walks, play time, calm bonding time, and training. Knowing "how long" is the most important metric for these activities ("Did my puppy nap long enough?", "Was that walk the right length for his age?"). The app now lets users set and view durations for these activities via preset chips in the task bottom sheet and a duration badge on the dashboard timeline.
+
+Duration does NOT apply to point-in-time activities (Potty, Meal) — those show start time only.
+
+### Duration UI — "Duration" Field
+
+```
+The "Duration" field is a conditional section that appears in the
+"Edit Task" and "Add Custom Task" bottom sheets ONLY when the
+selected activity type is one of: Nap, Walk, Training, Calm Time,
+or Play Time.
+
+Position: Between the Activity Type grid and the Notes field.
+(Same position as the Potty "Details" field, but they never appear
+simultaneously since Potty is not a duration-applicable type.)
+
+Layout:
+  ┌─────────────────────────────────────────────┐
+  │ ...                                         │
+  │ Activity Type                               │
+  │ [🚶 Walk is selected]                      │
+  │                                             │
+  │ Duration                                    │
+  │ ┌───────┐ ┌────────┐ ┌────────┐ ┌────────┐ │
+  │ │ 5 min │ │ 10 min │ │ 15 min │ │ 30 min │ │
+  │ └───────┘ └────────┘ └────────┘ └────────┘ │
+  │ ┌───────┐ ┌────────┐ ┌─────────┐           │
+  │ │  1 hr │ │  2 hr  │ │ Custom  │           │
+  │ └───────┘ └────────┘ └─────────┘           │
+  │                                             │
+  │ Notes                                       │
+  │ ...                                         │
+  └─────────────────────────────────────────────┘
+
+Chip behavior:
+- Each chip is a toggle — tap to select, tap again to deselect
+- Only one chip can be selected at a time
+- Unselected state: subtle border, no fill
+- Selected state: primary color border + light fill
+- Chips map to minutes: 5, 10, 15, 30, 60, 120
+
+"Custom" chip behavior:
+- Tapping "Custom" reveals a numeric input field below the chips:
+
+  ┌─────────────────────────────────────────────┐
+  │ Duration                                    │
+  │ [5] [10] [15] [30] [1 hr] [2 hr] [Custom]  │
+  │                                 ↑ selected  │
+  │ ┌──────────────────┐                        │
+  │ │  45              │ minutes                │
+  │ └──────────────────┘                        │
+  └─────────────────────────────────────────────┘
+
+- Numeric input accepts integers only
+- Validation: 1–480 minutes (8 hours max)
+- If user enters a value that matches a preset (e.g., 30),
+  the "30 min" chip auto-selects and the custom input hides
+
+Conditional visibility:
+- Duration section appears when user selects Nap, Walk,
+  Training, Calm Time, or Play Time
+- Duration section hides when user selects Potty or Meal
+- When Duration section hides, any selected duration is
+  cleared (not persisted if activity type is non-applicable)
+```
+
+### Duration Pre-Population (Edit Mode)
+
+```
+When opening "Edit Task" for a task that has durationMinutes set:
+
+AI-generated tasks:
+- The AI routine generation computes duration_minutes for all
+  duration-based activities (e.g., "Walk — 20 min", "Nap — 45 min")
+- These values are pre-populated in the Duration section:
+  • If the value matches a preset chip (5, 10, 15, 30, 60, 120),
+    that chip is pre-selected
+  • If the value doesn't match a preset (e.g., 20, 45, 90),
+    the "Custom" chip is selected and the numeric input shows
+    the value
+
+Custom tasks:
+- Duration is empty by default (no chip selected) when adding
+- If user previously saved a duration, it is pre-populated
+  when editing (same preset/custom logic as AI tasks)
+
+Tasks without duration:
+- All chips are unselected
+- No custom input visible
+- This is the default state for new custom tasks
+```
+
+### Duration on Dashboard Timeline Cards
+
+```
+Duration-based tasks display their duration inline on the
+dashboard timeline card, positioned between the start time
+and the task title:
+
+  Format: [TIME] · [DURATION]  [STATUS] [TITLE] [INDICATORS]
+
+Examples with duration:
+  9:00 AM · 45 min   [ ] Morning Nap
+  3:00 PM · 30 min   [👤+🟢] Walk  ✏️
+  8:15 AM · 5 min    [ ] Training
+
+Examples without duration (point-in-time or no duration set):
+  7:00 AM             [ ] Breakfast
+  8:30 AM             [ ] Potty Break 💩💦
+  10:00 AM            [ ] Potty Break
+
+Duration display rules:
+- Duration badge uses a subtle secondary text style (lighter
+  color or smaller weight) so it doesn't compete with the
+  start time for visual prominence
+- Separator between time and duration is a middle dot (·)
+- Values ≥ 60 min display as hours and minutes:
+  • 60 min → "1 hr"
+  • 90 min → "1 hr 30 min"
+  • 120 min → "2 hr"
+  • 45 min → "45 min" (stays in minutes)
+- Only shown for applicable activity types that have a
+  durationMinutes value set
+- Tasks with no durationMinutes show start time only
+  (no dot separator, no empty space)
+
+Mixed dashboard example:
+  7:00 AM              [ ] Breakfast
+  7:30 AM · 15 min     [👤+🟢] Walk  ✏️
+  8:00 AM              [ ] Potty Break 💩💦
+  8:15 AM · 5 min      [ ] Training
+  8:30 AM · 45 min     [ ] Morning Nap
+  10:00 AM             [ ] Potty Break
+  10:15 AM · 10 min    [ ] Play Time
+  10:30 AM · 5 min     [👤+🟢] Calm Time
+```
+
+### Duration — Scenario: Adding a Walk with Duration
+
+```
+User taps "+" FAB
+
+-> Bottom sheet opens: "Add Custom Task"
+
+  ┌─────────────────────────────────────────────┐
+  │           Add Custom Task                   │
+  │                                             │
+  │ Time                                        │
+  │ [🕐 3:00 PM ▼]  (defaults to current time) │
+  │                                             │
+  │ Activity Type                               │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🚽 Potty     │  │ 🍽️ Meal      │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🎓 Training  │  │ 😴 Nap       │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐  ┌──────────────┐         │
+  │ │ 🧘 Calm Time │  │ 🎾 Play Time │         │
+  │ └──────────────┘  └──────────────┘         │
+  │ ┌──────────────┐                           │
+  │ │ 🚶 Walk      │                           │
+  │ └──────────────┘                           │
+  │                                             │
+  │ Notes                                       │
+  │ ┌───────────────────────────────────────┐   │
+  │ │ Add a note...  (placeholder)          │   │
+  │ └───────────────────────────────────────┘   │
+  │                                             │
+  │ [Cancel]              [Add Task]           │
+  │                        ↑ Disabled          │
+  └─────────────────────────────────────────────┘
+
+User selects "Walk" from emoji grid
+-> [Add Task] enables
+-> "Duration" section appears between Activity Type and Notes:
+
+  ┌─────────────────────────────────────────────┐
+  │ ...                                         │
+  │ │ 🚶 Walk  [SEL]│                           │
+  │ └──────────────┘                           │
+  │                                             │
+  │ Duration                                    │
+  │ [5 min] [10 min] [15 min] [30 min]         │
+  │ [1 hr]  [2 hr]   [Custom]                  │
+  │   ↑ All chips unselected                   │
+  │                                             │
+  │ Notes                                       │
+  │ ...                                         │
+  └─────────────────────────────────────────────┘
+
+User taps [30 min] chip → it highlights
+User taps "Add Task"
+
+-> Bottom sheet dismisses
+-> New task appears in timeline:
+  3:00 PM · 30 min  [ ] Walk  ✏️
+
+-> Duration badge visible inline
+-> Syncs to all users within 3 seconds
+```
+
+### Duration — Scenario: Editing an AI-Generated Nap Duration
+
+```
+User sees in timeline:
+  9:00 AM · 45 min  [ ] Morning Nap
+
+Puppy actually slept for 90 minutes instead of the scheduled 45.
+
+User taps on the "Morning Nap" task card
+
+-> Bottom sheet slides up: "Edit Task"
+-> Activity type "Nap" is pre-selected
+-> Duration section visible with "Custom" chip selected and
+   "45" shown in the numeric input (since 45 doesn't match
+   a preset):
+
+  ┌─────────────────────────────────────────────┐
+  │ Duration                                    │
+  │ [5 min] [10 min] [15 min] [30 min]         │
+  │ [1 hr]  [2 hr]   [Custom ✓]               │
+  │ ┌──────────────────┐                        │
+  │ │  45              │ minutes                │
+  │ └──────────────────┘                        │
+  └─────────────────────────────────────────────┘
+
+User changes custom value from 45 to 90
+User taps "Save Changes"
+
+-> Bottom sheet dismisses
+-> Timeline updates:
+  9:00 AM · 1 hr 30 min  [ ] Morning Nap  ✏️
+
+-> ✏️ appears (task has been edited from original)
+-> Changes sync to all users within 3 seconds
+```
+
+### Duration — Scenario: Activity Type Switch Clears Duration
+
+```
+User taps "+" FAB
+-> Selects "Walk" → Duration section appears
+-> Taps [30 min] chip → it highlights
+
+-> Changes mind, selects "Potty" instead
+-> Duration section hides immediately
+-> Details section (💩/💦) appears instead
+-> The 30 min duration value is cleared
+
+-> Taps 💩, taps "Add Task"
+-> Saves as Potty task with NO duration (as expected)
+-> Timeline shows:
+  11:30 AM  [ ] Potty Break 💩  ✏️
+
+The reverse also applies: if user starts with Potty (Details
+visible), then switches to Walk, the Details section hides,
+pottyDetails clears, and the Duration section appears.
+```
+
+### Duration — Data Persistence
+
+```
+When saving a duration-applicable task (add or edit), the
+durationMinutes field is included in the task data sent to
+Firebase:
+
+  durationMinutes: 30   // integer, minutes
+
+Persistence rules:
+- durationMinutes is only saved when activityType is one of:
+  nap, walk, training, calm_time, play_time
+- If activityType is changed to a non-applicable type during
+  edit, durationMinutes is set to null/removed from the document
+- durationMinutes is optional — a Walk task without a duration
+  selected saves with durationMinutes = null (or omits the field)
+- durationMinutes syncs to all users via real-time Firestore
+  listeners (same 3-second sync as other task fields)
+- For AI-generated routine tasks, duration_minutes from Supabase
+  routine_items is carried through to the dashboard display
+  (no longer discarded in the legacy format transformation)
+
+Loading behavior:
+- When opening "Edit Task" for a duration-applicable task, the
+  Duration chips are pre-populated from saved durationMinutes
+- If durationMinutes is missing/null, all chips default to
+  unselected
+- Changing the start time does NOT clear the duration (duration
+  is independent of start time)
+```
+
+### Duration — Multi-User Sync
+
+```
+Sarah adds a Walk task with 30 min duration at 3:00 PM
+
+Mike's device (3 seconds later):
+-> New "3:00 PM · 30 min Walk" task appears with duration badge
+-> Mike taps the task card to edit
+-> "Edit Task" sheet shows [30 min] chip pre-selected
+-> Mike changes duration to [1 hr] and taps "Save Changes"
+-> Task updates to "3:00 PM · 1 hr Walk" on both devices
+
+Offline handling:
+- Same offline-first behavior as other task fields
+- durationMinutes changes queue locally and sync on reconnection
 - Last-write-wins for conflicts (same as other task fields)
 ```
 

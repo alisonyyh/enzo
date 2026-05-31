@@ -30,6 +30,7 @@ export interface RoutineItemEdit {
   activityType: string;
   title: string;
   description: string;   // Notes field (can be empty string)
+  durationMinutes?: number | null;
   pottyDetails?: {       // Only present when activityType = potty_break (D52)
     poop: boolean;
     pee: boolean;
@@ -87,6 +88,7 @@ export async function saveRoutineItemEdit(
     title: string;
     description: string;
     pottyDetails?: { poop: boolean; pee: boolean };
+    durationMinutes?: number | null;
   },
   date?: string
 ): Promise<void> {
@@ -106,6 +108,7 @@ export async function saveRoutineItemEdit(
     title: updates.title,
     description: updates.description,
     ...(updates.pottyDetails !== undefined && { pottyDetails: updates.pottyDetails }),
+    ...(updates.durationMinutes !== undefined && { durationMinutes: updates.durationMinutes }),
     editedBy: userId,
     editedAt: serverTimestamp(),
   });

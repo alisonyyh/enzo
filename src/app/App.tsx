@@ -416,6 +416,7 @@ export default function App() {
             activity: item.title,
             description: item.description || "",
             category: item.activity_type,
+            durationMinutes: item.duration_minutes ?? null,
           })),
       }
     : null;

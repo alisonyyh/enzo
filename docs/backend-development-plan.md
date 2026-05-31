@@ -4317,6 +4317,607 @@ This is safe because the column is nullable and no business logic depends on `de
 
 ---
 
+## 23. F13: Activity Duration Tracking — Backend Plan
+
+**Added:** 2026-05-31
+**Feature Reference:** F13 (product-spec.md), Flow 6I (user-flows.md)
+**Priority:** P0 (Launch Blocker)
+**Complexity:** Medium (Edge Function update + Firebase service layer + Firestore rules + App.tsx pipeline fix)
+
+---
+
+### 23.1 Overview
+
+F13 adds duration tracking to the five activity types where "how long" matters: sleeps/naps, walks, play time, calm bonding time, and training. Users input duration via preset chips (5, 10, 15, 30, 60, 120 min) or a custom numeric input. Duration is displayed inline on dashboard timeline cards as a badge between start time and task title (e.g., `9:00 AM · 45 min  Morning Nap`). Point-in-time activities (feeding, potty) are unaffected.
+
+**Duration-applicable activity types:** `nap`, `walk`, `training`, `calm_time`, `play_time`
+**Non-applicable activity types:** `potty_break`, `meal`
+
+**Storage model:** `durationMinutes` (integer, optional) — not end time. Duration is how owners naturally think, survives rescheduling, and can't produce negative values.
+
+---
+
+### 23.2 Current State Analysis
+
+The codebase has partial duration infrastructure that was never completed:
+
+| Layer | Has duration? | Details |
+|---|---|---|
+| Supabase `routine_items` table | **Yes** — `duration_minutes INT` column exists | Schema ready, no migration needed |
+| Supabase `database.types.ts` | **Yes** — `duration_minutes: number \| null` typed | Types ready |
+| `routines.ts` service (`saveRoutine`) | **Yes** — passes `duration_minutes` to Supabase | Persistence works |
+| Edge Function `generate-routine` | **No** — Claude tool schema outputs `{ time, activity, category }` only; routine item insertion omits `duration_minutes` | **Must update** |
+| `computeScheduleParams()` | **Yes** — computes `walkDurationMinutes`, `trainingSessionMinutes`, `napDurationMinutes`, `playSessionMinutes`, `calmBondingMinutes` | Params ready but unused at item level |
+| App.tsx legacy format conversion | **No** — maps routine items to `{ id, time, activity, description, category }`, drops `duration_minutes` | **Must fix** |
+| Dashboard.tsx timeline merge | **No** — duration not referenced when merging routine items with edited overlays | **Must update** |
+| Firebase `Task` interface | **No** — no `durationMinutes` field | **Must add** |
+| `addTask()` | **No** — doesn't accept duration | **Must update** |
+| `editTask()` | **No** — doesn't accept duration | **Must update** |
+| `RoutineItemEdit` interface | **No** — no `durationMinutes` field | **Must add** |
+| `saveRoutineItemEdit()` | **No** — doesn't accept duration | **Must update** |
+| `AddTaskFAB.tsx` | **No** — no duration input UI | **Must add** (frontend) |
+| `TaskCard.tsx` / dashboard cards | **No** — no duration display | **Must add** (frontend) |
+| Firestore security rules | **No** — no `durationMinutes` validation | **Should add** (optional) |
+
+**Key insight:** The pre-computed schedule params (`ScheduleParams`) already contain all duration values — `walkDurationMinutes`, `trainingSessionMinutes`, `napDurationMinutes`, `playSessionMinutes`, `calmBondingMinutes`. These are passed to Claude in the slim prompt as constraints (e.g., `Walks: 20 min × 2/day`), but the Claude output doesn't return them per-item, and the Edge Function doesn't populate `duration_minutes` when inserting `routine_items`. The fix is to map the pre-computed duration to each item's `activity_type` during post-processing — no LLM change needed.
+
+---
+
+### 23.3 Backend Changes Required
+
+#### 23.3.1 Edge Function: Populate `duration_minutes` on routine items
+
+**File:** `supabase/functions/generate-routine/index.ts`
+
+**Current code (routine item insertion, ~line 311):**
+```typescript
+const routineItems = activities.map((activity, index) => ({
+  routine_id: routine.id,
+  activity_type: activity.category,
+  title: activity.activity,
+  description: null,
+  scheduled_time: activity.time + ':00',
+  sort_order: index,
+  is_enabled: true,
+}));
+```
+
+**Updated code:**
+```typescript
+// Map activity category to its pre-computed duration from ScheduleParams
+function getDurationForActivity(
+  category: string,
+  params: ScheduleParams
+): number | null {
+  switch (category) {
+    case 'exercise': return params.walkDurationMinutes;
+    case 'training': return params.trainingSessionMinutes;
+    case 'rest':     return params.napDurationMinutes;
+    case 'play':     return params.playSessionMinutes;
+    case 'bonding':  return params.calmBondingMinutes;
+    default:         return null;  // feeding, potty — no duration
+  }
+}
+
+const routineItems = activities.map((activity, index) => ({
+  routine_id: routine.id,
+  activity_type: activity.category,
+  title: activity.activity,
+  description: null,
+  scheduled_time: activity.time + ':00',
+  duration_minutes: getDurationForActivity(activity.category, params),
+  sort_order: index,
+  is_enabled: true,
+}));
+```
+
+**Why this works:** The `ScheduleParams` object is already computed before the Claude API call. Each activity's category maps 1:1 to a duration parameter. No LLM output change needed — the LLM assembles the timeline, and we attach the pre-computed duration to each item based on its category. This is deterministic and cannot hallucinate wrong durations.
+
+**Edge case — bedtime/wake-up items:** Activities like "Final potty & bedtime" with category `rest` would get `napDurationMinutes`. This is acceptable because bedtime items are typically the last item and duration is less meaningful. If needed, a title-based check can exclude items containing "bedtime" or "wake up".
+
+**No Claude prompt change needed.** The slim prompt already tells Claude the duration values (e.g., `Walks: 20 min × 2/day`). Claude uses these to space activities correctly. We just need to persist those same values back to the database when inserting routine items.
+
+**No Claude tool schema change needed.** The tool output remains `{ time, activity, category }`. Duration is derived post-hoc from the deterministic params, not from LLM output.
+
+---
+
+#### 23.3.2 Client-side fallback: Populate duration in `AIRoutineGenerator.tsx`
+
+**File:** `src/app/components/AIRoutineGenerator.tsx`
+
+The client-side fallback routine generator creates hardcoded activities. These must include `duration_minutes` for applicable types. The fallback should compute params the same way the Edge Function does (using the same `computeScheduleParams` logic or simplified inline values) and attach duration to each applicable activity.
+
+**Approach:** Add `duration_minutes` to each fallback activity entry based on the puppy's age bracket. Since the fallback is hardcoded, use the same lookup tables that `computeScheduleParams()` uses, or inline the values per age bracket.
+
+---
+
+#### 23.3.3 Firebase Task interface: Add `durationMinutes`
+
+**File:** `src/lib/services/tasks.ts`
+
+**Current interface:**
+```typescript
+export interface Task {
+  // ... existing fields
+  description?: string;
+  pottyDetails?: { poop: boolean; pee: boolean };
+  // ...
+}
+```
+
+**Updated interface:**
+```typescript
+export interface Task {
+  // ... existing fields
+  description?: string;
+  durationMinutes?: number;  // F13: Only for nap, walk, training, calm_time, play_time
+  pottyDetails?: { poop: boolean; pee: boolean };
+  // ...
+}
+```
+
+**`addTask()` update:**
+```typescript
+export async function addTask(
+  puppyId: string,
+  activityType: Task['activityType'],
+  time: Date,
+  title: string,
+  description?: string,
+  pottyDetails?: { poop: boolean; pee: boolean },
+  durationMinutes?: number,  // NEW
+  date?: string
+): Promise<string> {
+  const taskData: any = {
+    // ... existing fields
+    ...(durationMinutes != null && { durationMinutes }),
+    // ... rest
+  };
+  // ...
+}
+```
+
+**`editTask()` update:**
+```typescript
+export async function editTask(
+  taskId: string,
+  updates: {
+    actualTime?: Timestamp;
+    activityType?: Task['activityType'];
+    title?: string;
+    description?: string;
+    pottyDetails?: { poop: boolean; pee: boolean } | null;
+    durationMinutes?: number | null;  // NEW — null clears it
+  }
+): Promise<void> {
+  const updateData: any = { /* ... */ };
+
+  if ('durationMinutes' in updates) {
+    if (updates.durationMinutes != null) {
+      updateData.durationMinutes = updates.durationMinutes;
+    } else {
+      updateData.durationMinutes = deleteField();
+    }
+  }
+  // ...
+}
+```
+
+**Clearing behavior:** When the user switches from a duration-applicable activity type (e.g., Walk) to a non-applicable type (e.g., Potty), the frontend passes `durationMinutes: null` to `editTask()`, which removes the field from the Firestore document using `deleteField()`. This mirrors the `pottyDetails` pattern.
+
+---
+
+#### 23.3.4 Firebase RoutineItemEdit interface: Add `durationMinutes`
+
+**File:** `src/lib/services/edited-routine-items.ts`
+
+**Updated interface:**
+```typescript
+export interface RoutineItemEdit {
+  routineItemId: string;
+  puppyId: string;
+  date: string;
+  time: string;
+  activityType: string;
+  title: string;
+  description: string | null;
+  durationMinutes?: number | null;  // NEW — overrides routine_items.duration_minutes
+  pottyDetails?: { poop: boolean; pee: boolean };
+  editedBy: string;
+  editedAt: Timestamp;
+}
+```
+
+**`saveRoutineItemEdit()` update:** Include `durationMinutes` in the `setDoc()` payload. When the user edits a routine item's duration (e.g., changing a 45 min nap to 90 min), the edit overlay stores the new duration. When the user switches to a non-applicable activity type, `durationMinutes` is set to `null` in the overlay.
+
+---
+
+#### 23.3.5 App.tsx: Preserve `duration_minutes` in legacy format conversion
+
+**File:** `src/app/App.tsx` (lines ~409-421)
+
+**Current code (drops duration):**
+```typescript
+const legacyRoutine = routine
+  ? {
+      dailySchedule: routine.routine_items
+        .filter((item) => item.is_enabled)
+        .map((item) => ({
+          id: item.id,
+          time: item.scheduled_time.slice(0, 5),
+          activity: item.title,
+          description: item.description || "",
+          category: item.activity_type,
+        })),
+    }
+  : null;
+```
+
+**Updated code (preserves duration):**
+```typescript
+const legacyRoutine = routine
+  ? {
+      dailySchedule: routine.routine_items
+        .filter((item) => item.is_enabled)
+        .map((item) => ({
+          id: item.id,
+          time: item.scheduled_time.slice(0, 5),
+          activity: item.title,
+          description: item.description || "",
+          category: item.activity_type,
+          durationMinutes: item.duration_minutes ?? null,
+        })),
+    }
+  : null;
+```
+
+**One-line fix.** The `duration_minutes` column already exists in the Supabase response — we just need to stop throwing it away.
+
+---
+
+#### 23.3.6 Dashboard.tsx: Merge duration from edit overlays
+
+**File:** `src/app/components/Dashboard.tsx` (lines ~400-410)
+
+**Current merge code:**
+```typescript
+const effectiveItem = edit
+  ? { ...item, time: edit.time, activity: edit.title,
+      description: edit.description, category: edit.activityType,
+      pottyDetails: edit.pottyDetails }
+  : item;
+```
+
+**Updated merge code:**
+```typescript
+const effectiveItem = edit
+  ? { ...item, time: edit.time, activity: edit.title,
+      description: edit.description, category: edit.activityType,
+      pottyDetails: edit.pottyDetails,
+      durationMinutes: edit.durationMinutes ?? item.durationMinutes }
+  : item;
+```
+
+When a routine item has been edited, the overlay's `durationMinutes` takes precedence. If the overlay doesn't have a `durationMinutes` value (e.g., the user only edited the time, not the duration), the original value from Supabase is preserved via `?? item.durationMinutes`.
+
+---
+
+#### 23.3.7 Firestore Security Rules: Optional `durationMinutes` validation
+
+**File:** `firebase/firestore.rules`
+
+**Updated `validTaskData()` function:**
+```javascript
+function validTaskData() {
+  let data = request.resource.data;
+  return data.keys().hasAll([
+    'puppyId', 'date', 'scheduledTime', 'actualTime',
+    'activityType', 'title', 'isCompleted', 'isEdited',
+    'isUserAdded', 'lastEditedBy', 'createdAt'
+  ])
+  && data.puppyId is string
+  && data.date is string
+  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
+  && data.lastEditedBy == request.auth.uid
+  && data.lastEditedAt == request.time
+  // Potty details: optional, but if present must be valid (D52)
+  && (!('pottyDetails' in data.keys()) || (
+    data.pottyDetails is map
+    && data.pottyDetails.keys().hasAll(['poop', 'pee'])
+    && data.pottyDetails.poop is bool
+    && data.pottyDetails.pee is bool
+  ))
+  // Duration: optional, but if present must be a positive integer (F13)
+  && (!('durationMinutes' in data.keys()) || (
+    data.durationMinutes is int
+    && data.durationMinutes > 0
+    && data.durationMinutes <= 480
+  ));
+}
+```
+
+**Why 480 max?** 8 hours is the maximum reasonable activity duration (very long nap for a young puppy). Matches the custom input validation range in the frontend (1–480 min).
+
+**Impact:** Same as pottyDetails — `hasAll()` checks required keys, does NOT reject extra keys. Existing tasks without `durationMinutes` continue to pass. The validation only applies to `create` operations. Recommended but not blocking.
+
+---
+
+### 23.4 Supabase Database: No Changes Needed
+
+| Component | Change Required | Reason |
+|---|---|---|
+| `routine_items` table | None | `duration_minutes INT` column already exists |
+| `routine_items` RLS policies | None | Duration is just another column in existing rows |
+| `database.types.ts` | None | `duration_minutes: number \| null` already typed |
+| `routines.ts` service | None | `saveRoutine()` already passes `duration_minutes` |
+| `generate-routine` Edge Function schema | None | No new columns needed |
+| `accept-invite` Edge Function | None | Not involved in routine/task CRUD |
+| `get-firebase-token` Edge Function | None | Claims unchanged |
+
+---
+
+### 23.5 Implementation Steps
+
+```
+Step 1: Update Edge Function to populate duration_minutes
+  File: supabase/functions/generate-routine/index.ts
+  Change: Add getDurationForActivity() helper. Include duration_minutes
+          in the routineItems mapping using pre-computed ScheduleParams.
+  Deploy: supabase functions deploy generate-routine
+  Verify: Generate routine → routine_items rows have correct
+          duration_minutes values (e.g., walk = 20, nap = 45)
+  Duration: 30 minutes
+  → Unblocks: AI-generated routines now have duration data in DB
+
+Step 2: Update client-side fallback to include duration
+  File: src/app/components/AIRoutineGenerator.tsx
+  Change: Add duration_minutes to each hardcoded fallback activity
+          based on activity type (rest = nap duration, exercise = walk
+          duration, etc.). Values can be simplified constants per
+          age bracket.
+  Verify: Trigger fallback generation → items have correct duration
+  Duration: 20 minutes
+  → Unblocks: Fallback routine also has duration data
+
+Step 3: Fix App.tsx legacy format conversion
+  File: src/app/App.tsx (~line 409)
+  Change: Add `durationMinutes: item.duration_minutes ?? null` to
+          the routine item mapping
+  Verify: Console.log legacyRoutine → items now include durationMinutes
+  Duration: 5 minutes
+  → Unblocks: Duration data flows from Supabase through to Dashboard
+
+Step 4: Add durationMinutes to Firebase Task interface and service layer
+  File: src/lib/services/tasks.ts
+  Change: Add durationMinutes to Task interface, addTask(), editTask()
+  Verify: addTask() with durationMinutes → field persists in Firestore
+          editTask() with durationMinutes: null → field removed
+  Duration: 20 minutes
+  → Unblocks: Custom tasks can store duration
+
+Step 5: Add durationMinutes to RoutineItemEdit interface and service
+  File: src/lib/services/edited-routine-items.ts
+  Change: Add durationMinutes to RoutineItemEdit interface and
+          saveRoutineItemEdit()
+  Verify: Edit a routine nap → durationMinutes appears in
+          editedRoutineItems document
+  Duration: 15 minutes
+  → Unblocks: Edited routine items can override duration
+
+Step 6: Update Dashboard.tsx timeline merge
+  File: src/app/components/Dashboard.tsx (~line 400)
+  Change: Include durationMinutes in the edit overlay merge:
+          durationMinutes: edit.durationMinutes ?? item.durationMinutes
+  Verify: Edit a routine item's duration → dashboard shows updated value
+          Edit only the time (not duration) → original duration preserved
+  Duration: 10 minutes
+  → Unblocks: Dashboard correctly displays duration from all sources
+
+Step 7: Update Firestore security rules (recommended)
+  File: firebase/firestore.rules
+  Change: Add optional durationMinutes validation to validTaskData():
+          must be int, > 0, <= 480
+  Deploy: firebase deploy --only firestore:rules
+  Verify: Create task with durationMinutes: 30 → succeeds
+          Create task with durationMinutes: "invalid" → rejected
+          Create task without durationMinutes → succeeds
+  Duration: 15 minutes
+  → Unblocks: Secure duration field validation
+
+Step 8: End-to-end verification
+  Test A: Generate new routine → routine_items have duration_minutes in DB
+  Test B: Dashboard displays "9:00 AM · 45 min  Morning Nap" for AI tasks
+  Test C: Add custom Walk with 30 min → "3:00 PM · 30 min  Walk" in timeline
+  Test D: Edit routine Nap from 45 min to 90 min → "9:00 AM · 1 hr 30 min" displayed
+  Test E: Switch activity type Walk → Potty → duration cleared, potty details appear
+  Test F: Switch activity type Potty → Nap → potty details cleared, duration section appears
+  Test G: Add Meal task → no duration section in bottom sheet, no badge on timeline
+  Test H: Multi-user sync: User A sets Walk to 30 min → User B sees badge within 3s
+  Test I: Offline: set duration offline → syncs when reconnected
+  Test J: Fallback routine generation → items have correct duration_minutes
+  Duration: 30 minutes
+  → Unblocks: Production confidence
+```
+
+**Total backend effort: ~2.5 hours** (mostly Edge Function + service layer + verification)
+
+---
+
+### 23.6 Data Flow Diagram
+
+```
+AI Routine Generation Path:
+  computeScheduleParams()           ← pre-computes walkDurationMinutes, etc.
+    → buildSlimPrompt()             ← passes durations to Claude as constraints
+    → Claude API                    ← outputs { time, activity, category }
+    → getDurationForActivity()      ← maps category back to pre-computed duration  [NEW]
+    → INSERT routine_items          ← duration_minutes populated                   [NEW]
+    → App.tsx legacy conversion     ← durationMinutes preserved                    [FIX]
+    → Dashboard.tsx                 ← durationMinutes displayed as badge           [NEW]
+
+Custom Task Path:
+  AddTaskFAB                        ← user selects duration chip                   [NEW]
+    → addTask(durationMinutes)      ← persists to Firestore                        [NEW]
+    → TaskCard                      ← displays duration badge                      [NEW]
+
+Routine Item Edit Path:
+  AddTaskFAB (edit mode)            ← user changes duration chip                   [NEW]
+    → saveRoutineItemEdit(durMins)  ← persists to editedRoutineItems in Firestore  [NEW]
+    → Dashboard.tsx merge           ← overlay durationMinutes overrides original   [NEW]
+    → Dashboard card                ← displays updated duration badge              [NEW]
+```
+
+---
+
+### 23.7 Duration Display Formatting (Frontend Reference)
+
+The backend stores raw integer minutes. The frontend formats for display:
+
+| Stored value | Display format |
+|---|---|
+| `5` | `5 min` |
+| `10` | `10 min` |
+| `15` | `15 min` |
+| `30` | `30 min` |
+| `45` | `45 min` |
+| `60` | `1 hr` |
+| `90` | `1 hr 30 min` |
+| `120` | `2 hr` |
+| `null` / missing | No badge shown |
+
+Formatting function (frontend utility):
+```typescript
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  if (remaining === 0) return `${hours} hr`;
+  return `${hours} hr ${remaining} min`;
+}
+```
+
+---
+
+### 23.8 Impact on Related Features
+
+| Feature | Impact | Action Required |
+|---|---|---|
+| **F10 — Edit Task (bottom sheet)** | Duration section appears between Activity Type and Notes for applicable types. Same slot as Potty Details, but never simultaneously. | Frontend: Add duration chips to AddTaskFAB |
+| **F10 — Add Custom Task** | Duration section appears when user selects a duration-applicable activity type. | Frontend: Same AddTaskFAB changes |
+| **F11 — Potty Details** | No conflict. Potty is not a duration-applicable type. Duration and Details sections never appear simultaneously. | None |
+| **F3 — AI Routine Generation** | Routines now populate `duration_minutes` on applicable items. | Edge Function update (Step 1) |
+| **F4 — Daily Routine View** | Timeline cards show duration badge for applicable items. | Frontend: TaskCard/Dashboard updates |
+| **F5 — Progress Tracking** | No change. Progress tracks completion %, not duration. | None |
+| **D73 — Strip descriptions** | No conflict. Duration and description are independent fields. | None |
+
+---
+
+### 23.9 Existing Routine Items (Data Migration)
+
+**Existing `routine_items` rows** in the database have `duration_minutes = NULL` because the Edge Function never populated the field. Two options:
+
+**Option A (Recommended): No backfill — duration appears on next regeneration**
+When users regenerate their routine (or a new routine is generated as the puppy ages), the updated Edge Function populates `duration_minutes`. Existing routines show no duration badge until regenerated. This is acceptable because:
+1. Few existing routines in production (0→1 stage)
+2. Regeneration replaces all routine items
+3. A backfill requires knowing the puppy's current `ScheduleParams`, which means re-running `computeScheduleParams()` for each puppy — possible but unnecessary churn
+
+**Option B (If needed): Backfill existing routine items**
+```sql
+-- Backfill walk duration (most visible activity)
+-- Would need to run computeScheduleParams per puppy to get correct values
+-- Not recommended for 0→1 stage
+```
+
+**Decision: Option A.** No backfill. New routine generations populate `duration_minutes`. Existing routines age out when users regenerate.
+
+---
+
+### 23.10 Cost Impact
+
+**Zero additional cost.**
+- `durationMinutes` is a field within existing Firestore documents. Firestore charges per document read/write, not per field. Adding 1 integer to a document has no measurable cost impact.
+- `duration_minutes` in Supabase `routine_items` already exists as a column — populating it doesn't change storage or query costs.
+- No additional Claude API tokens needed — the LLM output format is unchanged. Duration is derived from pre-computed params, not LLM output.
+
+---
+
+### 23.11 Summary
+
+| Component | Change Required | Status |
+|---|---|---|
+| Edge Function (`generate-routine`) | Add `getDurationForActivity()` helper, populate `duration_minutes` in routine item insertion | **Required** |
+| Client-side fallback (`AIRoutineGenerator.tsx`) | Add `duration_minutes` to hardcoded fallback activities | **Required** |
+| App.tsx legacy format conversion | Add `durationMinutes: item.duration_minutes ?? null` to mapping | **Required** (one-line fix) |
+| Dashboard.tsx timeline merge | Include `durationMinutes` in edit overlay merge | **Required** |
+| Firebase `Task` interface | Add `durationMinutes?: number` | **Required** |
+| `addTask()` function | Accept and persist `durationMinutes` | **Required** |
+| `editTask()` function | Accept `durationMinutes`, support `null` to clear | **Required** |
+| `RoutineItemEdit` interface | Add `durationMinutes?: number \| null` | **Required** |
+| `saveRoutineItemEdit()` function | Include `durationMinutes` in `setDoc()` payload | **Required** |
+| Firestore security rules (`validTaskData()`) | Add optional `durationMinutes` validation (int, > 0, <= 480) | **Recommended** |
+| Firestore security rules (`editedRoutineItems`) | None — no field-level validation on this collection | None |
+| Firestore indexes | None — `durationMinutes` not used in queries | None |
+| Supabase `routine_items` table | None — `duration_minutes INT` column already exists | None |
+| Supabase `database.types.ts` | None — `duration_minutes: number \| null` already typed | None |
+| Supabase RLS policies | None — duration is just another column | None |
+| Firebase Custom Token Edge Function | None — claims unchanged | None |
+| Frontend components (AddTaskFAB, TaskCard, Dashboard cards) | Duration chip input + duration badge display | **Required** (frontend) |
+
+---
+
+### 23.12 Deployment Checklist
+
+**Edge Function:**
+- [ ] `getDurationForActivity()` helper added to `generate-routine/index.ts`
+- [ ] Routine item insertion includes `duration_minutes` field
+- [ ] Deployed: `supabase functions deploy generate-routine`
+- [ ] Verified: new routine generation produces `duration_minutes` values in `routine_items`
+- [ ] Verified: potty and feeding items have `duration_minutes = NULL`
+
+**Client-side fallback:**
+- [ ] `AIRoutineGenerator.tsx` fallback activities include `duration_minutes`
+- [ ] Verified: fallback generation produces correct duration values
+
+**App.tsx pipeline:**
+- [ ] Legacy format conversion preserves `durationMinutes`
+- [ ] Verified: `legacyRoutine.dailySchedule` items include `durationMinutes`
+
+**Firebase service layer:**
+- [ ] `Task` interface includes `durationMinutes?: number`
+- [ ] `RoutineItemEdit` interface includes `durationMinutes?: number | null`
+- [ ] `addTask()` accepts and persists `durationMinutes`
+- [ ] `editTask()` accepts `durationMinutes`, clears with `deleteField()` when `null`
+- [ ] `saveRoutineItemEdit()` includes `durationMinutes` in payload
+
+**Dashboard merge:**
+- [ ] `Dashboard.tsx` overlay merge includes `durationMinutes`
+- [ ] Verified: edited duration overrides original; unedited duration preserved
+
+**Firestore rules (optional):**
+- [ ] `validTaskData()` validates `durationMinutes` if present (int, > 0, <= 480)
+- [ ] Deployed: `firebase deploy --only firestore:rules`
+- [ ] Verified: task with valid `durationMinutes` creates successfully
+- [ ] Verified: task with invalid `durationMinutes` (string, negative, > 480) rejected
+- [ ] Verified: task without `durationMinutes` still creates successfully
+
+**Frontend (separate from backend plan):**
+- [ ] AddTaskFAB: Duration chip section for applicable activity types
+- [ ] TaskCard / Dashboard: Duration badge display (`9:00 AM · 45 min`)
+- [ ] Duration formatting utility (`formatDuration()`)
+
+**Testing:**
+- [ ] AI-generated routine: nap shows `· 45 min`, walk shows `· 20 min`, meal shows no badge
+- [ ] Custom task: add Walk with 30 min → `· 30 min` badge appears
+- [ ] Edit routine item duration: change 45 → 90 → `· 1 hr 30 min` displayed
+- [ ] Activity type switch: Walk (30 min) → Potty → duration cleared, details appear
+- [ ] Activity type switch: Potty (💩) → Nap → potty cleared, duration section appears
+- [ ] Multi-user sync: duration changes appear on co-user's device within 3s
+- [ ] Offline: set duration offline → syncs when reconnected
+- [ ] Build succeeds: `npx vite build` with no errors in modified files
+
+---
+
 **End of Backend Development Plan**
 
 *This document will be updated as implementation progresses. All technical decisions are subject to revision based on real-world testing and user feedback.*

@@ -1,6 +1,15 @@
 import { CheckCircle2, Circle } from 'lucide-react';
 import { Task } from '../../lib/services/tasks';
 
+function formatDuration(minutes: number): string {
+  if (minutes >= 60) {
+    const hrs = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return mins > 0 ? `${hrs} hr ${mins} min` : `${hrs} hr`;
+  }
+  return `${minutes} min`;
+}
+
 // Category dot colors matching the Dashboard's CATEGORY_COLORS
 function getCategoryColor(activityType: string): string {
   const colors: Record<string, string> = {
@@ -26,13 +35,16 @@ function formatDisplayTime(date: Date): string {
 
 interface TaskCardProps {
   task: Task;
+  /** Override duration from routine item (AI-generated tasks carry duration via the legacy format). */
+  durationMinutes?: number | null;
   /** Called when the user taps the card (opens edit bottom sheet). */
   onEdit?: (task: Task) => void;
 }
 
-export function TaskCard({ task, onEdit }: TaskCardProps) {
+export function TaskCard({ task, durationMinutes: durationProp, onEdit }: TaskCardProps) {
   const categoryColor = getCategoryColor(task.activityType);
   const taskDate = task.actualTime.toDate();
+  const duration = task.durationMinutes ?? durationProp ?? null;
 
   return (
     <div
@@ -47,10 +59,15 @@ export function TaskCard({ task, onEdit }: TaskCardProps) {
       }}
     >
       {/* Time on LEFT */}
-      <div className="flex-shrink-0 pt-0.5">
-        <div className="text-sm font-bold text-foreground w-14 text-left">
+      <div className="flex-shrink-0 pt-0.5 w-[4.5rem]">
+        <div className="text-sm font-bold text-foreground text-left whitespace-nowrap">
           {formatDisplayTime(taskDate)}
         </div>
+        {duration != null && duration > 0 && (
+          <div className="text-xs text-muted-foreground text-left mt-0.5 whitespace-nowrap">
+            {formatDuration(duration)}
+          </div>
+        )}
       </div>
 
       {/* Activity Content in MIDDLE */}

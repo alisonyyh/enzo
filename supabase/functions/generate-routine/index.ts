@@ -308,12 +308,24 @@ serve(async (req) => {
       throw routineError;
     }
 
+    const getDurationForActivity = (category: string): number | null => {
+      switch (category) {
+        case 'exercise': return params.walkDurationMinutes;
+        case 'training': return params.trainingSessionMinutes;
+        case 'rest':     return params.napDurationMinutes;
+        case 'play':     return params.playSessionMinutes;
+        case 'bonding':  return params.calmBondingMinutes;
+        default:         return null;
+      }
+    };
+
     const routineItems = activities.map((activity, index) => ({
       routine_id: routine.id,
       activity_type: activity.category,
       title: activity.activity,
       description: null,
       scheduled_time: activity.time + ':00',
+      duration_minutes: getDurationForActivity(activity.category),
       sort_order: index,
       is_enabled: true,
     }));

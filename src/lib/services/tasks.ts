@@ -23,6 +23,7 @@ export interface Task {
   activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
   title: string;
   description?: string;
+  durationMinutes?: number | null;
   pottyDetails?: {
     poop: boolean;
     pee: boolean;
@@ -84,7 +85,8 @@ export async function addTask(
   title: string,
   description?: string,
   pottyDetails?: { poop: boolean; pee: boolean },
-  date?: string
+  date?: string,
+  durationMinutes?: number | null
 ): Promise<string> {
   const userId = firebaseAuth.currentUser?.uid;
   if (!userId) throw new Error('Not authenticated');
@@ -98,8 +100,9 @@ export async function addTask(
     title,
     ...(description !== undefined && { description }),
     ...(pottyDetails !== undefined && { pottyDetails }),
+    ...(durationMinutes != null && { durationMinutes }),
     isCompleted: false,
-    isEdited: true, // User-added tasks are always marked as edited
+    isEdited: true,
     isUserAdded: true,
     lastEditedBy: userId,
     lastEditedAt: serverTimestamp(),
@@ -118,6 +121,7 @@ export async function editTask(
     title?: string;
     description?: string;
     pottyDetails?: { poop: boolean; pee: boolean };
+    durationMinutes?: number | null;
   }
 ): Promise<void> {
   const userId = firebaseAuth.currentUser?.uid;
@@ -129,10 +133,9 @@ export async function editTask(
     ...(updates.actualTime && { actualTime: Timestamp.fromDate(updates.actualTime) }),
     ...(updates.activityType && { activityType: updates.activityType }),
     ...(updates.title && { title: updates.title }),
-    // description can be set to empty string (clearing notes), so check for undefined specifically
     ...(updates.description !== undefined && { description: updates.description }),
-    // pottyDetails uses !== undefined so it can be explicitly set (or cleared when switching away from potty)
     ...(updates.pottyDetails !== undefined && { pottyDetails: updates.pottyDetails }),
+    ...(updates.durationMinutes !== undefined && { durationMinutes: updates.durationMinutes }),
     isEdited: true,
     lastEditedBy: userId,
     lastEditedAt: serverTimestamp(),
