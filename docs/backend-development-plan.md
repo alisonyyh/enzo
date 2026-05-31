@@ -2,7 +2,7 @@
 
 **Document Version:** 1.1
 **Created:** 2026-02-11
-**Last Updated:** 2026-05-25
+**Last Updated:** 2026-05-30
 **Status:** Active
 **Stage:** 0→1 (Launch MVP)
 
@@ -300,7 +300,7 @@ CREATE INDEX idx_weight_logs_onboarding
         id: string;
         activity_type: string;
         title: string;
-        description: string;
+        description: null;       // D73: always null — no LLM commentary
         scheduled_time: string;  // HH:MM:SS
         duration_minutes: number | null;
         sort_order: number;
@@ -497,7 +497,7 @@ const routine = JSON.parse(response.content[0].text);
 
 **Validation:**
 After parsing, validate:
-- All activities have required fields (time, activity, category, description)
+- All activities have required fields (time, activity, category). Description is NOT required (D73 — stripped before saving).
 - Times are chronological and within wake/bed window
 - Categories match allowed values
 - Meal times are within 15 min of pre-computed times (new — D70)
@@ -1411,7 +1411,8 @@ ASSEMBLY RULES:
 6. Training after naps (when alert). Calm bonding as evening wind-down.
 7. Final 2 hours before bed: at least one activity (calm bonding + final potty).
 
-OUTPUT: JSON array of activities. Each: { "time": "HH:MM", "activity": "title", "category": "type", "description": "1-2 sentence guidance" }
+OUTPUT: JSON array of activities. Each: { "time": "HH:MM", "activity": "title", "category": "type" }
+Do NOT include a "description" field. The user wants a clean checklist, not coaching advice. (D73)
 Categories: feeding, potty, exercise, training, rest, play, bonding
 Return ONLY the JSON array.`;
 }
@@ -1680,11 +1681,12 @@ OUTPUT FORMAT (JSON array):
   {
     "time": "07:00",
     "activity": "Morning Potty Break",
-    "category": "potty",
-    "description": "Take puppy outside immediately after waking. Praise enthusiastically when they go. Young puppies have small bladders—don't delay!"
+    "category": "potty"
   },
   ...
 ]
+
+Do NOT include a "description" field. Return only time, activity, and category. (D73)
 
 CATEGORIES (use exactly these):
 - feeding
@@ -4007,6 +4009,311 @@ supabase gen types typescript --project-id <project-id> > src/lib/database.types
 | No vet integration | Weight data lives only in PupPlan | P2: Export to CSV/PDF for vet visits |
 | `ensureOnboardingWeight()` runs client-side | First-access latency, relies on client to trigger | P2: Migrate to server-side trigger or batch backfill script |
 | No Supabase Realtime subscription | Co-user doesn't see new weight entry until next screen load | P2: Add if multi-user weight logging becomes common usage pattern |
+
+---
+
+## 22. D73: LLM Output Constraint — Strip Descriptions from AI Routine Generation
+
+**Added:** 2026-05-30
+**Decision References:** D73, D47 (updated), D70, D71 (decisions-log.md)
+**Product Spec References:** F3 (AI Routine Generation — LLM Output Constraint), F10 (Notes field — empty by default for AI tasks)
+**Priority:** P0 (Launch Blocker — current behavior produces cluttered task cards)
+**Complexity:** Low (prompt change + post-processing + validation update)
+
+---
+
+### 22.1 Overview
+
+The LLM currently generates a `description` field for every routine item containing coaching advice, training tips, and behavioral guidance (e.g., *"Take Fat Boy outside immediately upon waking for his morning potty break. Give him a calm cue like 'go potty' and reward with praise when he finishes."*). These descriptions are stored in `routine_items.description` and rendered as subtitle text on every task card in the daily timeline.
+
+**Problem:** Users see a wall of AI-generated coaching text on every single task card, making the timeline feel like a training manual instead of a clean, scannable checklist. The descriptions are repetitive (every potty task says "praise when done"), add visual noise, and were not requested by the user.
+
+**Solution:** Remove the `description` field from the LLM's output contract entirely. Task cards display only the activity name, time, and duration. The Notes field (D47) remains available for users to add their own context, but it starts empty — not pre-populated with AI text.
+
+---
+
+### 22.2 What Changes
+
+#### Layer affected: Edge Function (`supabase/functions/generate-routine/index.ts`)
+
+| Component | Current Behavior | New Behavior |
+|-----------|-----------------|--------------|
+| System prompt (`buildSystemPrompt()`) | Line 70: "Each activity gets a 1-2 sentence description with practical guidance for the owner." | Remove this instruction entirely. |
+| System prompt output format | Line 74: `{ "time": "HH:MM", "activity": "Activity Name", "category": "type", "description": "1-2 sentence guidance" }` | `{ "time": "HH:MM", "activity": "Activity Name", "category": "type" }` — no `description` field. |
+| User prompt (`buildUserPrompt()`) | No explicit description instruction (inherits from system prompt). | Add explicit instruction: "Do NOT include a description field. Return only time, activity, and category." |
+| `RoutineActivity` interface | `description: string` (required) | `description?: string` (optional — tolerate if LLM includes it, but strip before saving) |
+| `validateRoutine()` | Line 109: fails if `!activity.description` | Remove description from required field check. |
+| Routine items mapping | Line 286: `description: activity.description` | `description: null` — always set to null regardless of what the LLM returns. |
+
+#### Layer affected: Client-side fallback (`src/app/components/AIRoutineGenerator.tsx`)
+
+| Component | Current Behavior | New Behavior |
+|-----------|-----------------|--------------|
+| Fallback routine activities | Each activity has a hardcoded description (e.g., `"First thing in the morning, take outside for potty break"`) | Set all descriptions to `null` or empty string. |
+
+#### Layer affected: Frontend display (no code change needed)
+
+| Component | Current Behavior | New Behavior (automatic) |
+|-----------|-----------------|--------------------------|
+| `TaskCard.tsx` line 76 | `{task.description ? (<p>...</p>) : null}` | Condition is already falsy when description is null — subtitle won't render. No change needed. |
+| `Dashboard.tsx` line 607 | `{task.description && (<p>...</p>)}` | Same — already handles null/empty correctly. No change needed. |
+| `AddTaskFAB.tsx` line 87 | Pre-populates Notes textarea with `task.description \|\| ''` for AI tasks | Will correctly show empty Notes since description is null. No change needed. |
+
+#### Layer affected: Backend development plan (this document)
+
+| Section | Current Content | Update |
+|---------|----------------|--------|
+| Section 3.1 — Response shape | `description: string` in response `routine_items` | Update to `description: null` |
+| Section 3.1 — Claude Prompt Strategy | Old prompt example with `description` field | Add note referencing Section 22 |
+| Section 5.1 — Validation | "All activities have required fields (time, activity, category, description)" | Remove description from required fields |
+| Section 16.4 — Slim prompt template | Output format includes `"description": "1-2 sentence guidance"` | Remove description from output format |
+| Appendix C — Full prompt example | Output format with `"description": "Take puppy outside..."` | Remove description from output format |
+
+---
+
+### 22.3 Implementation Details
+
+#### 22.3.1 Update `buildSystemPrompt()` in `index.ts`
+
+Remove the description requirement from two places:
+
+**Before (line 70):**
+```typescript
+5. Each activity gets a 1-2 sentence description with practical guidance for the owner.
+```
+
+**After:**
+```typescript
+5. Do NOT include a "description" field. Return only time, activity, and category for each entry.
+```
+
+**Before (line 74 — output format):**
+```typescript
+Each element: { "time": "HH:MM", "activity": "Activity Name", "category": "type", "description": "1-2 sentence guidance" }
+```
+
+**After:**
+```typescript
+Each element: { "time": "HH:MM", "activity": "Activity Name", "category": "type" }
+Do NOT include a "description" field. The user wants a clean checklist, not coaching advice.
+```
+
+#### 22.3.2 Update `buildUserPrompt()` in `index.ts`
+
+Add explicit no-description instruction at the end of the user prompt:
+
+**Before (line 98):**
+```typescript
+Return ONLY the JSON array.`;
+```
+
+**After:**
+```typescript
+Each item: { "time": "HH:MM", "activity": "Activity Name", "category": "type" }
+Do NOT include descriptions. Return ONLY the JSON array.`;
+```
+
+#### 22.3.3 Update `RoutineActivity` interface in `index.ts`
+
+**Before (line 24):**
+```typescript
+interface RoutineActivity {
+  time: string;
+  activity: string;
+  category: string;
+  description: string;
+}
+```
+
+**After:**
+```typescript
+interface RoutineActivity {
+  time: string;
+  activity: string;
+  category: string;
+  description?: string;  // Optional — stripped before saving even if LLM includes it
+}
+```
+
+#### 22.3.4 Update `validateRoutine()` in `index.ts`
+
+**Before (line 109):**
+```typescript
+if (!activity.time || !activity.activity || !activity.category || !activity.description) {
+  return false;
+}
+```
+
+**After:**
+```typescript
+if (!activity.time || !activity.activity || !activity.category) {
+  return false;
+}
+```
+
+#### 22.3.5 Update routine items mapping in `index.ts`
+
+**Before (line 282-289):**
+```typescript
+const routineItems = activities.map((activity, index) => ({
+  routine_id: routine.id,
+  activity_type: activity.category,
+  title: activity.activity,
+  description: activity.description,
+  scheduled_time: activity.time + ':00',
+  sort_order: index,
+  is_enabled: true,
+}));
+```
+
+**After:**
+```typescript
+const routineItems = activities.map((activity, index) => ({
+  routine_id: routine.id,
+  activity_type: activity.category,
+  title: activity.activity,
+  description: null,  // D73: no LLM commentary in task descriptions
+  scheduled_time: activity.time + ':00',
+  sort_order: index,
+  is_enabled: true,
+}));
+```
+
+This is the safety net — even if the LLM ignores the prompt instruction and returns descriptions, they are stripped at the persistence layer. The database column remains nullable, so `null` is valid.
+
+#### 22.3.6 Update client-side fallback in `AIRoutineGenerator.tsx`
+
+The fallback routine generator in `AIRoutineGenerator.tsx` (lines 174-182) creates hardcoded activities with descriptions. Update all entries to use `null` or empty string:
+
+**Before (example, line 174):**
+```typescript
+{ time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: "First thing in the morning, take outside for potty break", category: "potty" },
+```
+
+**After:**
+```typescript
+{ time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: null, category: "potty" },
+```
+
+Apply to all entries in the fallback routine array.
+
+---
+
+### 22.4 Implementation Plan — Ordered Steps
+
+```
+Step 1: Update Edge Function prompts (index.ts)
+  - Modify buildSystemPrompt(): remove description requirement, add explicit
+    "Do NOT include description" instruction
+  - Modify buildUserPrompt(): add no-description instruction, update output format
+  - Make RoutineActivity.description optional
+  → Unblocks: Step 2
+
+Step 2: Update validation and persistence (index.ts)
+  - Remove description from validateRoutine() required fields check
+  - Set description to null in routineItems mapping (post-processing strip)
+  → Unblocks: Step 3
+
+Step 3: Update client-side fallback (AIRoutineGenerator.tsx)
+  - Set description to null for all hardcoded fallback activities
+  → Unblocks: Step 4
+
+Step 4: Update backend development plan documentation
+  - Update Section 3.1 response shape (description: null)
+  - Update Section 5.1 validation (remove description from required fields)
+  - Update Section 16.4 slim prompt template (remove description from output format)
+  - Update Appendix C prompt example (remove description from output format)
+  → Unblocks: Step 5
+
+Step 5: Deploy and verify
+  - Deploy updated Edge Function: supabase functions deploy generate-routine
+  - Trigger a routine regeneration for a test puppy
+  - Verify: routine_items rows have description = null
+  - Verify: task cards render clean (title + time only, no subtitle text)
+  - Verify: Notes field in Edit Task bottom sheet opens empty for AI tasks
+  - Verify: fallback generation also produces null descriptions
+  → Unblocks: Done
+```
+
+---
+
+### 22.5 File Locations (Modified)
+
+```
+MODIFIED FILES:
+  supabase/functions/generate-routine/index.ts   — prompt, interface, validation, persistence
+  src/app/components/AIRoutineGenerator.tsx        — fallback routine descriptions → null
+  docs/backend-development-plan.md                — this section + Sections 3.1, 5.1, 16.4, Appendix C
+
+NO NEW FILES.
+NO DATABASE MIGRATIONS (routine_items.description is already nullable).
+NO FRONTEND COMPONENT CHANGES (conditional rendering already handles null).
+```
+
+---
+
+### 22.6 Existing Routine Items (Data Migration)
+
+**Existing `routine_items` rows** in the database still have LLM-generated descriptions from prior routine generations. Two options:
+
+**Option A (Recommended): No backfill — descriptions only appear via Notes field**
+The frontend already shows descriptions only when `task.description` is truthy (`TaskCard.tsx` line 76, `Dashboard.tsx` line 607). Existing routines will continue showing old descriptions until the user regenerates their routine. This is acceptable because:
+1. Most users are still in onboarding — few existing routines in production
+2. Regeneration replaces all routine items (old ones become `is_active = false`)
+3. A backfill migration adds complexity for a cosmetic improvement on stale data
+
+**Option B (If needed): Bulk nullify existing descriptions**
+```sql
+-- Only if we want to retroactively clean up existing routine items
+UPDATE routine_items SET description = NULL;
+```
+
+This is safe because the column is nullable and no business logic depends on `description` being non-null. But Option A is sufficient for 0→1 stage.
+
+**Decision: Option A.** No backfill. New routine generations produce null descriptions. Existing routines age out naturally when users regenerate.
+
+---
+
+### 22.7 Impact on Related Features
+
+| Feature | Impact | Action Required |
+|---------|--------|-----------------|
+| **F10 — Edit Task (Notes field)** | Notes field for AI tasks now opens empty instead of pre-populated with AI description. | None — `AddTaskFAB.tsx` already reads from `task.description \|\| ''`, which will be `''` when description is null. |
+| **F10 — Custom tasks** | No change. Custom tasks never had AI descriptions. | None. |
+| **F10 — Task card subtitle** | AI task cards no longer show subtitle text below the title. | None — conditional render already handles null. |
+| **Dashboard routine item rendering** | Routine items from Supabase render without description subtitle. | None — conditional render at line 607-608 already handles null. |
+| **Edited routine items (Firebase overlay, D48)** | `editedRoutineItems` collection stores user-edited descriptions in `description` field. User-authored descriptions continue to work. | None — the overlay pattern preserves user edits independently from the AI-generated source. |
+| **LLM token cost** | ~30-40% fewer output tokens per generation (descriptions were the bulk of per-item output). | Positive impact — lower cost and faster response. |
+
+---
+
+### 22.8 Risks and Mitigations
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| LLM ignores "no description" instruction and returns descriptions anyway | Medium | None | Post-processing safety net: `description: null` in the mapping (Step 2) strips any description before database write. The prompt instruction is defense-in-depth; the code enforces the constraint. |
+| Users miss the coaching tips that were in descriptions | Low | Low | If user feedback indicates demand for tips, add a dedicated "Tips" feature (P2) separate from the task timeline. Coaching advice belongs in its own UI, not embedded in every task card. |
+| Frontend displays stale descriptions from existing routine_items | Low | Low | Only affects existing routines that were generated before this change. Descriptions age out when user regenerates routine. No action needed (Section 22.6, Option A). |
+| Fallback generator descriptions not updated | Low | Medium | Step 3 explicitly addresses this. The fallback generator in `AIRoutineGenerator.tsx` is updated alongside the Edge Function. |
+
+---
+
+### 22.9 Verification Checklist
+
+- [ ] Edge Function `buildSystemPrompt()` has no description requirement
+- [ ] Edge Function `buildSystemPrompt()` output format has no description field
+- [ ] Edge Function `buildUserPrompt()` includes "Do NOT include descriptions"
+- [ ] `RoutineActivity.description` is optional (`description?: string`)
+- [ ] `validateRoutine()` does not check for description
+- [ ] Routine items mapping sets `description: null` (post-processing strip)
+- [ ] Client-side fallback activities in `AIRoutineGenerator.tsx` have `description: null`
+- [ ] Edge Function deploys successfully: `supabase functions deploy generate-routine`
+- [ ] Test routine generation: `routine_items` rows have `description = NULL` in database
+- [ ] Task cards render clean: title + time only, no subtitle text on AI-generated tasks
+- [ ] Notes field opens empty when tapping an AI-generated task card
+- [ ] User-added custom tasks with notes still display correctly (no regression)
+- [ ] Edited routine items with user-authored notes still display correctly (no regression)
+- [ ] Build succeeds: `npx vite build` with no errors in modified files
 
 ---
 
