@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { Capacitor } from "@capacitor/core";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { NewUserChoiceScreen } from "./components/NewUserChoiceScreen";
 import { InviteCodeEntryScreen } from "./components/InviteCodeEntryScreen";
@@ -23,6 +24,13 @@ import {
   createInviteCode,
   computeAgeDisplay,
 } from "../lib/services";
+import {
+  needsRegeneration,
+  isRegenerationInProgress,
+  clearStaleLock,
+  triggerRegeneration,
+  cleanupFirebaseOverlays,
+} from "../lib/services/routine-evolution";
 import type { User } from "@supabase/supabase-js";
 import type { Profile, Puppy, PuppyMembership } from "../lib/database.types";
 import type { RoutineWithItems } from "../lib/services/routines";
@@ -51,6 +59,7 @@ export default function App() {
   const [questionnaireData, setQuestionnaireData] = useState<QuestionnaireData | null>(null);
   const [isFirstTime, setIsFirstTime] = useState(false);
   const [joinedPuppyData, setJoinedPuppyData] = useState<PuppyJoinData | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   // Load user data when authenticated
   const loadUserData = useCallback(async (authUser: User) => {
@@ -102,6 +111,33 @@ export default function App() {
         return "choice";
       });
     }
+  }, []);
+
+  // Listen for OAuth deep link callbacks on iOS
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+
+    let cleanup: (() => void) | undefined;
+
+    (async () => {
+      const { App: CapApp } = await import("@capacitor/app");
+      const { handleOAuthDeepLink } = await import("../lib/services/auth");
+
+      const listener = await CapApp.addListener("appUrlOpen", async ({ url }) => {
+        console.log("[DeepLink] Received:", url);
+        if (url.includes("login-callback")) {
+          try {
+            await handleOAuthDeepLink(url);
+          } catch (err) {
+            console.error("[DeepLink] OAuth exchange error:", err);
+          }
+        }
+      });
+
+      cleanup = () => listener.remove();
+    })();
+
+    return () => cleanup?.();
   }, []);
 
   // Listen for auth state changes - runs ONCE on mount.
@@ -181,6 +217,54 @@ export default function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // F14: Check if routine needs weekly regeneration on dashboard load
+  useEffect(() => {
+    if (appState !== "dashboard" || !routine || !currentPuppy) return;
+
+    let cancelled = false;
+
+    async function checkRegeneration() {
+      if (!routine || !currentPuppy) return;
+
+      if (!needsRegeneration(routine)) return;
+
+      // Handle stale lock
+      if (isRegenerationInProgress(routine)) return;
+      if (routine.regeneration_status === 'in_progress') {
+        await clearStaleLock(routine.id);
+      }
+
+      setIsRegenerating(true);
+
+      const questionnaireInfo = {
+        puppyName: currentPuppy.name,
+        breed: currentPuppy.breed,
+        dateOfBirth: currentPuppy.date_of_birth || '',
+        weight: currentPuppy.weight_value,
+        weightUnit: (currentPuppy.weight_unit as 'lbs' | 'kg') || 'lbs',
+        wakeUpTime: (currentPuppy.questionnaire_data as any)?.wakeUpTime || '07:00',
+        bedTime: (currentPuppy.questionnaire_data as any)?.bedTime || '22:00',
+      };
+
+      const newRoutine = await triggerRegeneration(currentPuppy.id, questionnaireInfo);
+
+      if (cancelled) return;
+      setIsRegenerating(false);
+
+      if (newRoutine) {
+        const oldItems = routine.routine_items;
+        setRoutine(newRoutine);
+        cleanupFirebaseOverlays(currentPuppy.id, oldItems);
+      }
+    }
+
+    checkRegeneration();
+
+    return () => { cancelled = true; };
+  // Only run once when dashboard first renders with routine data
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appState, routine?.id, currentPuppy?.id]);
 
   // Handle sign in
   const handleSignIn = async () => {
@@ -488,6 +572,7 @@ export default function App() {
           isFirstTime={isFirstTime}
           onOpenSettings={() => setAppState("settings")}
           puppyCreatedAt={currentPuppy.created_at}
+          isRegenerating={isRegenerating}
         />
       )}
 
