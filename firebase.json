@@ -4,5 +4,10 @@
     "location": "nam5",
     "rules": "firebase/firestore.rules",
     "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "public",
+    "cleanUrls": true,
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
   }
 }

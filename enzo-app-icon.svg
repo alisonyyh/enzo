@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Orange background -->
+  <rect width="1024" height="1024" fill="#E8722A"/>
+
+  <!-- Left floppy ear - hangs down low on the side -->
+  <path d="M 280 450 Q 240 480 220 580 Q 210 680 240 750 Q 270 800 320 780 Q 370 760 380 680 Q 390 600 370 500 Q 360 450 320 430 Z" fill="#D4A84E"/>
+  <path d="M 300 480 Q 270 520 255 600 Q 245 680 270 730 Q 295 760 330 745 Q 355 730 360 660 Q 365 580 350 510 Q 340 470 320 460 Z" fill="#E8C170"/>
+
+  <!-- Right floppy ear - hangs down low on the side -->
+  <path d="M 744 450 Q 784 480 804 580 Q 814 680 784 750 Q 754 800 704 780 Q 654 760 644 680 Q 634 600 654 500 Q 664 450 704 430 Z" fill="#D4A84E"/>
+  <path d="M 724 480 Q 754 520 769 600 Q 779 680 754 730 Q 729 760 694 745 Q 669 730 664 660 Q 659 580 674 510 Q 684 470 704 460 Z" fill="#E8C170"/>
+
+  <!-- Main head shape - wider, rounder like a golden retriever -->
+  <ellipse cx="512" cy="480" rx="220" ry="230" fill="#F5D5A0"/>
+
+  <!-- Forehead / top of head (darker golden) -->
+  <ellipse cx="512" cy="390" rx="190" ry="130" fill="#E8C170"/>
+
+  <!-- Snout / muzzle area - prominent, wider, dog-like -->
+  <ellipse cx="512" cy="590" rx="110" ry="90" fill="#FFF9F5"/>
+
+  <!-- Left eye (big, round, cute) -->
+  <circle cx="420" cy="470" r="38" fill="#2D1B0E"/>
+  <circle cx="434" cy="456" r="13" fill="#FFFFFF"/>
+  <circle cx="416" cy="478" r="6" fill="#FFFFFF"/>
+
+  <!-- Right eye (big, round, cute) -->
+  <circle cx="604" cy="470" r="38" fill="#2D1B0E"/>
+  <circle cx="618" cy="456" r="13" fill="#FFFFFF"/>
+  <circle cx="600" cy="478" r="6" fill="#FFFFFF"/>
+
+  <!-- Nose - big, prominent dog nose -->
+  <path d="M 480 570 Q 480 545 512 545 Q 544 545 544 570 Q 544 592 512 598 Q 480 592 480 570 Z" fill="#2D1B0E"/>
+  <!-- Nose highlight -->
+  <ellipse cx="502" cy="560" rx="8" ry="6" fill="#4A3520"/>
+
+  <!-- Nose to mouth line -->
+  <line x1="512" y1="598" x2="512" y2="620" stroke="#2D1B0E" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- Smile - wide happy dog mouth -->
+  <path d="M 460 620 Q 486 650 512 645 Q 538 650 564 620" fill="none" stroke="#2D1B0E" stroke-width="7" stroke-linecap="round"/>
+
+  <!-- Tongue sticking out -->
+  <ellipse cx="512" cy="670" rx="25" ry="32" fill="#E8567A"/>
+  <line x1="512" y1="650" x2="512" y2="692" stroke="#D14568" stroke-width="3" stroke-linecap="round"/>
+  <!-- Cover tongue top with muzzle color -->
+  <path d="M 485 645 Q 512 640 539 645 L 539 635 Q 512 638 485 635 Z" fill="#FFF9F5"/>
+
+  <!-- Fur tuft on top of head -->
+  <path d="M 480 310 Q 496 285 512 295 Q 528 285 544 310" fill="#E8C170" stroke="#D4A84E" stroke-width="4"/>
+  <path d="M 495 300 Q 512 278 529 300" fill="#E8C170" stroke="#D4A84E" stroke-width="3"/>
+
+  <!-- Subtle cheek fur -->
+  <ellipse cx="380" cy="530" rx="30" ry="20" fill="#E8C170" opacity="0.5"/>
+  <ellipse cx="644" cy="530" rx="30" ry="20" fill="#E8C170" opacity="0.5"/>
+</svg>

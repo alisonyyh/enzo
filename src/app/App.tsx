@@ -172,8 +172,23 @@ export default function App() {
         if (!mounted) return;
         console.log("[Auth] onAuthStateChange:", event, "session:", !!session, "user:", !!session?.user, "hasLoaded:", hasLoadedInitially);
 
-        if ((event === "INITIAL_SESSION" || event === "SIGNED_IN") && session?.user) {
-          handleSession(`onAuthStateChange(${event})`, session.user);
+        if (event === "SIGNED_IN" && session?.user) {
+          // SIGNED_IN must always load user data — even if INITIAL_SESSION
+          // already ran (e.g. OAuth deep link on iOS where INITIAL_SESSION
+          // fires with no session, then SIGNED_IN fires after the token exchange).
+          hasLoadedInitially = true;
+          setUser(session.user);
+          loadUserData(session.user);
+        } else if (event === "INITIAL_SESSION" && session?.user) {
+          // Cached session — verify user still exists server-side
+          const { data: verified, error: verifyErr } = await supabase.auth.getUser();
+          if (verifyErr || !verified.user) {
+            console.warn("[Auth] Cached session is stale (user deleted server-side). Signing out.");
+            await supabase.auth.signOut();
+            handleNoSession(`onAuthStateChange(${event}) — stale`);
+            return;
+          }
+          handleSession(`onAuthStateChange(${event})`, verified.user);
         } else if (event === "INITIAL_SESSION") {
           // INITIAL_SESSION with no session (or no user) — unauthenticated
           handleNoSession(`onAuthStateChange(${event})`);
@@ -354,11 +369,15 @@ export default function App() {
     // Start creating the puppy immediately (runs in parallel with animation)
     const promise = (async (): Promise<Puppy | null> => {
       try {
-        // Ensure we have a valid Supabase session before making DB calls
-        const { data: sessionData } = await supabase.auth.getSession();
-        console.log("Creating puppy: session check:", sessionData.session ? "valid" : "NO SESSION");
-        if (!sessionData.session) {
-          console.error("Creating puppy: No active session! Cannot insert.");
+        // Validate user exists server-side (getUser() calls the auth API,
+        // unlike getSession() which only checks the local JWT)
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        console.log("Creating puppy: session check:", userData.user ? "valid" : "NO USER", userError ? `error: ${userError.message}` : "");
+        if (!userData.user || userError) {
+          console.error("Creating puppy: User not found server-side — stale session. Signing out.");
+          await supabase.auth.signOut();
+          setUser(null);
+          setAppState("welcome");
           return null;
         }
 

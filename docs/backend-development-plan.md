@@ -421,11 +421,15 @@ Return ONLY valid JSON, no other text.`;
 
 ---
 
-### 3.3 Future Endpoints (Post-MVP)
+### 3.3 Weekly Routine Regeneration (F14)
 
-**Routine Adjustment:**
-- `POST /functions/v1/adjust-routine` - AI-powered routine tweaks
-- Use Claude to suggest adjustments based on completion patterns
+**Endpoint:** `POST /functions/v1/generate-routine` (extended, not new — D81)
+
+**Purpose:** Same endpoint as onboarding, extended to handle weekly regeneration when `isRegeneration: true` is passed. Computes completion context server-side from `activity_logs`, includes it in the LLM prompt, and sets `valid_until` on the new routine.
+
+See **Section 24** for full implementation details (database changes, lock mechanism, prompt changes, client integration, deployment checklist).
+
+### 3.4 Future Endpoints (Post-MVP)
 
 **Progress Insights:**
 - `GET /functions/v1/insights/{puppyId}` - Weekly progress summary
@@ -821,10 +825,10 @@ Questionnaire Submit
 | Service | Usage | Cost |
 |---------|-------|------|
 | **Supabase** | Pro plan (8GB DB, 50GB storage, 2M Edge Function invocations) | $25/mo |
-| **Anthropic Claude API** | 1000 routine generations/mo (~2K tokens/gen) | $30/mo |
+| **Anthropic Claude API** | 1000 onboarding + ~4000 weekly regenerations/mo (~2K tokens/gen, F14) | $80/mo |
 | **Vercel** | Hobby plan (100GB bandwidth) | $0 (free tier) |
 | **Supabase Storage** | 10GB puppy photos (assuming 50% upload rate, 1MB avg) | Included in Pro |
-| **Total** | | **~$55/mo** |
+| **Total** | | **~$105/mo** |
 
 ### Scaling (10K Users)
 - Supabase: Upgrade to Team plan ($599/mo for dedicated resources)
@@ -967,10 +971,11 @@ wrk -t10 -c100 -d10s --timeout 30s \
    - Send notification via Expo Push API
    - "Good morning! Biscuit's routine is ready."
 
-2. **AI Routine Adjustments**
+2. **AI Routine Adjustments (Manual)**
    - User requests change (e.g., "Move dinner to 7pm")
    - POST /functions/v1/adjust-routine
    - Claude rewrites routine with constraint
+   - Note: automatic weekly regeneration is now in scope (F14, Section 24)
 
 3. **Progress Insights**
    - Weekly email summary (% completion, trends)
@@ -4915,6 +4920,772 @@ When users regenerate their routine (or a new routine is generated as the puppy 
 - [ ] Multi-user sync: duration changes appear on co-user's device within 3s
 - [ ] Offline: set duration offline → syncs when reconnected
 - [ ] Build succeeds: `npx vite build` with no errors in modified files
+
+---
+
+## 24. F14: Weekly Routine Evolution — Backend Plan
+
+**Added:** 2026-05-31
+**Priority:** P0 (Launch Blocker — core differentiator)
+**References:** Product Spec F14, Decisions D74-D82, User Flows 11A-11D
+
+---
+
+### 24.1 Overview
+
+The routine currently generates once at onboarding and never changes. F14 adds automatic weekly regeneration: every 7 days from the last generation, the routine is re-generated using the puppy's current age bracket and the owner's completion patterns from the past week. The trigger is lazy — it fires on dashboard load when the active routine has expired — so inactive users cost nothing.
+
+**What changes:**
+1. Three new columns on the `routines` table: `valid_until`, `regeneration_status`, `generation_context`
+2. The `generate-routine` Edge Function accepts an optional `completionContext` parameter and includes it in the prompt
+3. A new client-side service function checks routine validity on dashboard load and triggers regeneration
+4. Firebase overlay cleanup after successful regeneration
+
+**What stays the same:**
+- The onboarding flow calls `generate-routine` exactly as before (no `completionContext` = first-time generation)
+- `computeScheduleParams()` is unchanged — it already computes fresh params from DOB each time
+- The fallback logic (client-side generation if Edge Function fails) still works
+
+---
+
+### 24.2 Database Changes
+
+#### Migration: `routines` table additions (D76, D77, D80)
+
+```sql
+-- Add weekly evolution columns to routines table
+ALTER TABLE routines
+  ADD COLUMN valid_until TIMESTAMPTZ,
+  ADD COLUMN regeneration_status TEXT,
+  ADD COLUMN generation_context JSONB;
+
+-- Constraint: regeneration_status can only be 'in_progress' or NULL
+ALTER TABLE routines
+  ADD CONSTRAINT chk_regeneration_status
+  CHECK (regeneration_status IS NULL OR regeneration_status = 'in_progress');
+
+-- Backfill: set valid_until for existing active routines to NULL
+-- NULL is treated as expired, so existing routines will regenerate
+-- on next dashboard load post-deploy. This is intentional (D76).
+-- No backfill UPDATE needed — the column defaults to NULL.
+
+-- Index: find active routine with validity check efficiently
+-- (Extends existing idx_routines_puppy_active)
+CREATE INDEX idx_routines_valid_until
+  ON routines(puppy_id, valid_until)
+  WHERE is_active = true;
+```
+
+#### Updated `database.types.ts`
+
+```typescript
+// Updated routines table type (new fields)
+routines: {
+  Row: {
+    id: string;
+    puppy_id: string;
+    generated_at: string;
+    source: string;
+    is_active: boolean;
+    valid_until: string | null;            // ISO timestamp, generated_at + 7 days
+    regeneration_status: string | null;    // 'in_progress' or null
+    generation_context: GenerationContext | null;
+  };
+  Insert: {
+    id?: string;
+    puppy_id: string;
+    generated_at?: string;
+    source?: string;
+    is_active?: boolean;
+    valid_until?: string | null;
+    regeneration_status?: string | null;
+    generation_context?: GenerationContext | null;
+  };
+  Update: {
+    source?: string;
+    is_active?: boolean;
+    valid_until?: string | null;
+    regeneration_status?: string | null;
+    generation_context?: GenerationContext | null;
+  };
+};
+
+// New type for generation context snapshot
+interface GenerationContext {
+  age_bracket: string;
+  age_weeks: number;
+  completion_summary: Record<string, { completed: number; total: number }> | null;
+  schedule_params: Record<string, unknown>;
+}
+```
+
+---
+
+### 24.3 Edge Function Changes
+
+The existing `generate-routine` Edge Function (`supabase/functions/generate-routine/index.ts`) is extended — not replaced (D81).
+
+#### New request shape (backward-compatible)
+
+```typescript
+// Existing fields (onboarding flow)
+{
+  puppyId: string;
+  questionnaireData: {
+    puppyName: string;
+    breed: string;
+    dateOfBirth: string;
+    weight: number | null;
+    weightUnit: 'lbs' | 'kg';
+    wakeUpTime: string;
+    bedTime: string;
+  };
+  // NEW: optional field for weekly regeneration
+  completionContext?: {
+    summary: Record<string, { completed: number; total: number }>;
+    // e.g. { "exercise": { completed: 12, total: 14 }, "training": { completed: 3, total: 14 } }
+  };
+}
+```
+
+When `completionContext` is present, the Edge Function:
+1. Includes completion data in the user prompt (new prompt section)
+2. Sets `valid_until = now() + 7 days` on the new routine
+3. Stores `generation_context` JSONB with age bracket, params, and completion summary
+
+When `completionContext` is absent (onboarding), behavior is identical to current — except `valid_until` is now also set.
+
+#### New prompt section for completion context
+
+Added to `buildUserPrompt()` when completion data is available:
+
+```typescript
+function buildUserPrompt(
+  puppyName: string,
+  params: ScheduleParams,
+  completionContext?: { summary: Record<string, { completed: number; total: number }> }
+): string {
+  // ... existing prompt code ...
+
+  // NEW: append completion context if available
+  if (completionContext) {
+    const lines = Object.entries(completionContext.summary)
+      .map(([category, { completed, total }]) => {
+        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        return `  ${category}: ${completed}/${total} (${pct}%)`;
+      })
+      .join('\n');
+
+    prompt += `\n\nPAST WEEK COMPLETION DATA:\n${lines}\n`;
+    prompt += `\nAdjust the schedule based on completion patterns:
+- Categories with low completion (<50%): consider moving sessions to different times of day (the current timing may be inconvenient). Do not reduce below minimum thresholds.
+- Categories with high completion (>80%): maintain current frequency. If the puppy is progressing well, consider slightly increasing duration.
+- Categories at 100%: the owner is consistent here — keep this stable.`;
+  }
+
+  return prompt;
+}
+```
+
+#### Updated system prompt addition
+
+Add to `buildSystemPrompt()`:
+
+```typescript
+// Append to existing system prompt
+`
+WEEKLY EVOLUTION CONTEXT (if provided):
+When past week completion data is included, use it to inform activity placement:
+- Do not reduce meal count, potty breaks, or nap count below the pre-computed parameters — these are health-critical.
+- Training, play, walk, and bonding session timing and frequency can be adjusted based on completion patterns.
+- If training completion is consistently low, try placing sessions after naps (when the puppy is most alert) instead of reducing count.
+- The goal is to make the schedule more achievable, not to lower standards.`
+```
+
+#### Routine insert changes
+
+Update the routine insert block to include new columns:
+
+```typescript
+// In the Edge Function, after successful Claude call:
+const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+const { data: routine, error: routineError } = await supabase
+  .from('routines')
+  .insert({
+    puppy_id: puppyId,
+    source: 'ai_generated',
+    is_active: true,
+    valid_until: validUntil,
+    generation_context: {
+      age_bracket: params.ageBracket,
+      age_weeks: params.ageWeeks,
+      completion_summary: completionContext?.summary || null,
+      schedule_params: params,
+    },
+  })
+  .select()
+  .single();
+```
+
+---
+
+### 24.4 Completion Aggregation (Edge Function)
+
+When the Edge Function receives `completionContext`, it already has the summary from the client. But there's a more reliable approach: **compute it server-side** in the Edge Function from `activity_logs` + `routine_items`. This avoids trusting client-computed data and ensures the summary is always fresh.
+
+#### Server-side aggregation query
+
+```typescript
+// In the Edge Function, before calling Claude:
+async function getCompletionSummary(
+  supabase: SupabaseClient,
+  puppyId: string,
+  routineId: string
+): Promise<Record<string, { completed: number; total: number }>> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    .toISOString().split('T')[0];
+  const today = new Date().toISOString().split('T')[0];
+
+  // Get routine items for this routine (the categories and their count)
+  const { data: items } = await supabase
+    .from('routine_items')
+    .select('id, activity_type')
+    .eq('routine_id', routineId)
+    .eq('is_enabled', true);
+
+  if (!items || items.length === 0) return {};
+
+  // Get activity logs for the past 7 days
+  const { data: logs } = await supabase
+    .from('activity_logs')
+    .select('routine_item_id, status')
+    .eq('puppy_id', puppyId)
+    .gte('date', sevenDaysAgo)
+    .lte('date', today)
+    .eq('status', 'completed');
+
+  // Count completions per routine_item_id
+  const completedSet = new Set((logs || []).map(l => l.routine_item_id));
+
+  // Compute days in range (for total = items_per_category * days)
+  const startDate = new Date(sevenDaysAgo);
+  const endDate = new Date(today);
+  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+  // Group items by activity_type
+  const categoryItems: Record<string, string[]> = {};
+  for (const item of items) {
+    if (!categoryItems[item.activity_type]) {
+      categoryItems[item.activity_type] = [];
+    }
+    categoryItems[item.activity_type].push(item.id);
+  }
+
+  // Compute summary: total = items_in_category * days, completed = logs matching
+  const summary: Record<string, { completed: number; total: number }> = {};
+  for (const [category, itemIds] of Object.entries(categoryItems)) {
+    const total = itemIds.length * days;
+    let completed = 0;
+    // Count logs where routine_item_id is in this category's items
+    if (logs) {
+      completed = logs.filter(l => itemIds.includes(l.routine_item_id)).length;
+    }
+    summary[category] = { completed, total };
+  }
+
+  return summary;
+}
+```
+
+**Decision: compute server-side, not client-side.** The client passes a boolean `isRegeneration: true` flag (instead of the full summary). The Edge Function reads the data from Supabase directly. This is more trustworthy and avoids inflating the request payload.
+
+Updated request shape:
+
+```typescript
+{
+  puppyId: string;
+  questionnaireData: { ... };
+  isRegeneration?: boolean;   // If true, Edge Function computes completion context
+}
+```
+
+---
+
+### 24.5 Regeneration Lock Mechanism (D77)
+
+#### Acquiring the lock
+
+Before calling Claude, the Edge Function acquires a lock using a conditional update:
+
+```typescript
+// Attempt to acquire regeneration lock
+const { data: lockResult, error: lockError } = await supabase
+  .from('routines')
+  .update({ regeneration_status: 'in_progress' })
+  .eq('id', activeRoutineId)
+  .is('regeneration_status', null)
+  .select('id')
+  .single();
+
+if (lockError || !lockResult) {
+  // Lock already held by another caller — skip regeneration
+  return new Response(
+    JSON.stringify({ skipped: true, reason: 'regeneration_already_in_progress' }),
+    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+}
+```
+
+#### Releasing the lock
+
+On success or failure, clear the lock:
+
+```typescript
+// In finally block or after routine creation:
+await supabase
+  .from('routines')
+  .update({ regeneration_status: null })
+  .eq('id', activeRoutineId);
+```
+
+#### Stale lock recovery
+
+The client checks for stale locks before triggering:
+
+```typescript
+// Client-side: if regeneration_status is 'in_progress' but generated_at was
+// more than 5 minutes ago, treat the lock as stale
+function isLockStale(routine: Routine): boolean {
+  if (routine.regeneration_status !== 'in_progress') return false;
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+  // Use generated_at as proxy — if the routine was generated >5 min ago
+  // and still shows in_progress, the lock is stale
+  return new Date(routine.generated_at).getTime() < fiveMinutesAgo;
+}
+```
+
+If the lock is stale, the client first clears it, then retriggers:
+
+```typescript
+if (isLockStale(routine)) {
+  await supabase
+    .from('routines')
+    .update({ regeneration_status: null })
+    .eq('id', routine.id);
+  // Now proceed to trigger regeneration
+}
+```
+
+---
+
+### 24.6 Client-Side Service: `routineEvolution.ts`
+
+New file: `src/lib/services/routineEvolution.ts`
+
+This service handles the dashboard-load check and regeneration trigger.
+
+```typescript
+import { supabase } from '../supabase';
+import type { RoutineWithItems } from './routines';
+import type { Routine } from '../database.types';
+
+/**
+ * Check if the active routine needs regeneration (D74, D75, D76)
+ * Called on dashboard mount.
+ * Returns: { needsRegeneration: boolean, routine: Routine | null }
+ */
+export function needsRegeneration(routine: Routine | null): boolean {
+  if (!routine) return false;
+
+  // No valid_until = legacy routine = treat as expired (D76)
+  if (!routine.valid_until) return true;
+
+  // Check if past expiry
+  return new Date() > new Date(routine.valid_until);
+}
+
+/**
+ * Check if a regeneration is already in progress (D77)
+ */
+export function isRegenerationInProgress(routine: Routine | null): boolean {
+  if (!routine) return false;
+  if (routine.regeneration_status !== 'in_progress') return false;
+
+  // Stale lock check: if in_progress for >5 min, treat as stale
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+  return new Date(routine.generated_at).getTime() > fiveMinutesAgo;
+}
+
+/**
+ * Trigger routine regeneration via Edge Function (D75, D81)
+ * Returns the new routine, or null if skipped/failed.
+ */
+export async function triggerRegeneration(
+  puppyId: string,
+  questionnaireData: {
+    puppyName: string;
+    breed: string;
+    dateOfBirth: string;
+    weight: number | null;
+    weightUnit: 'lbs' | 'kg';
+    wakeUpTime: string;
+    bedTime: string;
+  }
+): Promise<RoutineWithItems | null> {
+  try {
+    const { data, error } = await supabase.functions.invoke('generate-routine', {
+      body: {
+        puppyId,
+        questionnaireData,
+        isRegeneration: true,
+      },
+    });
+
+    if (error) {
+      console.error('Regeneration failed:', error);
+      return null; // D82: silent failure, old routine stays
+    }
+
+    // Edge Function returned { skipped: true } — another caller beat us
+    if (data?.skipped) {
+      console.log('Regeneration skipped:', data.reason);
+      return null;
+    }
+
+    if (!data?.routine) {
+      console.error('Invalid regeneration response');
+      return null;
+    }
+
+    return data.routine;
+  } catch (err) {
+    console.error('Regeneration error:', err);
+    return null; // D82: silent failure
+  }
+}
+```
+
+---
+
+### 24.7 Dashboard Integration
+
+The Dashboard component adds a regeneration check on mount:
+
+```typescript
+// In Dashboard.tsx, inside useEffect on mount:
+
+const routine = await getActiveRoutine(puppyId);
+
+if (routine && needsRegeneration(routine) && !isRegenerationInProgress(routine)) {
+  setRegenerationBanner(true); // Show "Updating [name]'s routine..."
+
+  // Get questionnaire data from puppy record
+  const questionnaireData = {
+    puppyName: currentPuppy.name,
+    breed: currentPuppy.breed,
+    dateOfBirth: currentPuppy.date_of_birth!,
+    weight: currentPuppy.weight_value,
+    weightUnit: currentPuppy.weight_unit as 'lbs' | 'kg',
+    wakeUpTime: currentPuppy.questionnaire_data?.wakeUpTime || '07:00',
+    bedTime: currentPuppy.questionnaire_data?.bedTime || '21:00',
+  };
+
+  const newRoutine = await triggerRegeneration(puppyId, questionnaireData);
+  setRegenerationBanner(false);
+
+  if (newRoutine) {
+    // Replace current routine in state
+    setCurrentRoutine(newRoutine);
+    // Clean up Firebase overlays for old routine items
+    await cleanupFirebaseOverlays(puppyId, routine.routine_items, newRoutine.routine_items);
+  }
+  // If null (failed/skipped), old routine stays — user sees no change (D82)
+}
+```
+
+#### Regeneration banner UI
+
+```tsx
+{regenerationBanner && (
+  <div className="mx-4 mb-3 rounded-xl bg-accent/10 border border-accent/20 px-4 py-3
+                   flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+    <Loader2 className="h-4 w-4 animate-spin text-accent" />
+    <span className="text-sm text-foreground/70">
+      Updating {currentPuppy?.name}'s routine for this week...
+    </span>
+  </div>
+)}
+```
+
+---
+
+### 24.8 Firebase Overlay Cleanup (D79)
+
+After a successful regeneration, Firebase documents referencing old routine item IDs must be cleaned up.
+
+New utility in `src/lib/services/routineEvolution.ts`:
+
+```typescript
+import { collection, query, where, getDocs, writeBatch, doc } from 'firebase/firestore';
+import { db } from '../firebase';
+
+/**
+ * Clean up Firebase overlays that reference old routine items (D79)
+ * Called after successful regeneration.
+ */
+export async function cleanupFirebaseOverlays(
+  puppyId: string,
+  oldItems: RoutineItem[],
+  newItems: RoutineItem[]
+): Promise<void> {
+  const oldItemIds = new Set(oldItems.map(i => i.id));
+
+  try {
+    const batch = writeBatch(db);
+    let batchCount = 0;
+
+    // Clean editedRoutineItems
+    const editedQuery = query(
+      collection(db, 'editedRoutineItems'),
+      where('puppyId', '==', puppyId)
+    );
+    const editedSnap = await getDocs(editedQuery);
+    editedSnap.forEach(docSnap => {
+      const data = docSnap.data();
+      if (data.routineItemId && oldItemIds.has(data.routineItemId)) {
+        batch.delete(doc(db, 'editedRoutineItems', docSnap.id));
+        batchCount++;
+      }
+    });
+
+    // Clean deletedRoutineItems
+    const deletedQuery = query(
+      collection(db, 'deletedRoutineItems'),
+      where('puppyId', '==', puppyId)
+    );
+    const deletedSnap = await getDocs(deletedQuery);
+    deletedSnap.forEach(docSnap => {
+      const data = docSnap.data();
+      if (data.routineItemId && oldItemIds.has(data.routineItemId)) {
+        batch.delete(doc(db, 'deletedRoutineItems', docSnap.id));
+        batchCount++;
+      }
+    });
+
+    if (batchCount > 0) {
+      await batch.commit();
+      console.log(`Cleaned up ${batchCount} Firebase overlay documents`);
+    }
+  } catch (err) {
+    // Non-critical — stale overlays are harmless (they reference IDs that
+    // no longer match and are ignored by the dashboard merge logic)
+    console.warn('Firebase overlay cleanup failed (non-critical):', err);
+  }
+}
+```
+
+**Note:** Custom user-added tasks in the `tasks` collection are NOT deleted — they have no `routineItemId` reference and persist across routine generations.
+
+---
+
+### 24.9 Edge Function: Full Updated Flow
+
+```
+Client: POST /functions/v1/generate-routine
+  Body: { puppyId, questionnaireData, isRegeneration?: true }
+
+Edge Function:
+  1. Auth check (existing)
+  2. Membership check (existing)
+  3. Read puppy record (existing)
+
+  4. IF isRegeneration:
+     a. Find active routine for this puppy
+     b. Acquire regeneration lock (conditional UPDATE where status IS NULL)
+        → If lock fails: return { skipped: true, reason: 'regeneration_already_in_progress' }
+     c. Compute completion summary from activity_logs (past 7 days)
+
+  5. computeScheduleParams() (existing — now uses current DOB age)
+  6. buildSystemPrompt() (existing + weekly evolution addendum)
+  7. buildUserPrompt(params, completionSummary) (existing + completion section)
+  8. Call Claude API (existing)
+  9. Validate response (existing)
+
+  10. Deactivate old routine (existing)
+  11. Insert new routine WITH valid_until and generation_context (UPDATED)
+  12. Insert routine_items (existing)
+
+  13. IF isRegeneration:
+      a. Clear regeneration lock on old routine
+         (old routine is already deactivated in step 10)
+
+  14. Return new routine with items (existing response shape)
+```
+
+---
+
+### 24.10 Implementation Steps
+
+```
+Step 1: Database migration — add valid_until, regeneration_status,
+        generation_context columns to routines table
+        → unblocks: Edge Function changes, client-side check
+
+Step 2: Update database.types.ts — add new fields to Routine type
+        → unblocks: TypeScript compilation of client-side code
+
+Step 3: Extend Edge Function — accept isRegeneration flag, compute
+        completion summary, add completion context to prompt, set
+        valid_until on insert, acquire/release regeneration lock
+        → unblocks: client-side regeneration trigger
+
+Step 4: Create routineEvolution.ts service — needsRegeneration(),
+        isRegenerationInProgress(), triggerRegeneration(),
+        cleanupFirebaseOverlays()
+        → unblocks: Dashboard integration
+
+Step 5: Dashboard integration — add regeneration check on mount,
+        regeneration banner UI, state update on completion,
+        Firebase overlay cleanup call
+        → unblocks: end-to-end testing
+
+Step 6: Testing — verify all scenarios (weekly update, inactive
+        user return, deduplication, age bracket transition,
+        failure handling, overlay cleanup)
+        → unblocks: deployment
+```
+
+---
+
+### 24.11 Data Flow Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        DASHBOARD LOAD                            │
+│                                                                  │
+│  getActiveRoutine(puppyId)                                       │
+│       ↓                                                          │
+│  routine.valid_until < now?  ──no──→  Show routine (done)        │
+│       ↓ yes                                                      │
+│  routine.regeneration_status === 'in_progress'?                  │
+│       ↓ no                    ↓ yes (& not stale)                │
+│  Show banner                  Show routine (someone else          │
+│  "Updating..."                is regenerating — wait)             │
+│       ↓                                                          │
+│  triggerRegeneration(puppyId, questionnaireData)                  │
+│       ↓                                                          │
+│  ┌─────────────────────────────────────────────────────────┐     │
+│  │  EDGE FUNCTION: generate-routine                        │     │
+│  │                                                         │     │
+│  │  1. Acquire lock (UPDATE ... WHERE status IS NULL)      │     │
+│  │     → Lock failed? Return { skipped: true }             │     │
+│  │                                                         │     │
+│  │  2. Read activity_logs (past 7 days, grouped by type)   │     │
+│  │     → { exercise: 12/14, training: 3/14, ... }          │     │
+│  │                                                         │     │
+│  │  3. computeScheduleParams(puppy DOB → current bracket)  │     │
+│  │     → Age bracket may have changed since last gen!       │     │
+│  │                                                         │     │
+│  │  4. Build prompt (params + completion context)           │     │
+│  │  5. Call Claude API                                      │     │
+│  │  6. Validate response                                    │     │
+│  │                                                         │     │
+│  │  7. Deactivate old routine                               │     │
+│  │  8. Insert new routine (valid_until = now + 7d)          │     │
+│  │  9. Insert routine_items                                 │     │
+│  │  10. Clear lock on old routine                           │     │
+│  │                                                         │     │
+│  │  Return: { routine: { ...newRoutine, routine_items } }  │     │
+│  └─────────────────────────────────────────────────────────┘     │
+│       ↓                                                          │
+│  Hide banner                                                     │
+│  setCurrentRoutine(newRoutine)                                   │
+│  cleanupFirebaseOverlays(oldItems)                               │
+│       ↓                                                          │
+│  Dashboard renders new routine ✓                                 │
+│  All household members see it via Supabase Realtime              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 24.12 Cost Impact
+
+| Item | Before F14 | After F14 |
+|------|-----------|-----------|
+| Claude API calls per puppy | 1 (lifetime, at onboarding) | 1 + 1/week (while active) |
+| Cost per call (Sonnet) | ~$0.01-0.02 | ~$0.01-0.02 (slightly more tokens with completion context) |
+| Monthly cost (1,000 active puppies) | ~$15 one-time | ~$60-80/month |
+| Monthly cost (inactive puppies) | $0 | $0 (lazy trigger = no cost) |
+
+**Net impact:** ~$60-80/month for 1,000 weekly-active puppies. This is the feature's core value proposition — the cost is justified if it improves D7→D28 retention by the hypothesized 30%.
+
+---
+
+### 24.13 Risks and Mitigations
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| Duplicate regenerations from race condition | Medium | Low (extra API cost) | Conditional UPDATE lock (D77) — only one caller wins |
+| Stale lock blocks all regeneration | Low | High | 5-minute stale lock recovery (D77) |
+| Completion summary query is slow on large datasets | Low | Medium | Index on `activity_logs(puppy_id, date)` already exists; query spans only 7 days |
+| LLM produces worse routine with completion context | Low | Medium | Completion adjustments are advisory, not prescriptive; health-critical params (meals, potty) can't be reduced below minimums |
+| Legacy routines (null `valid_until`) regenerate on deploy | Expected | Low (one-time) | Intentional behavior — all active users get a fresh routine on first post-deploy load |
+| Firebase overlay cleanup fails | Low | None | Stale overlays are harmless — they reference IDs that don't match and are silently ignored |
+
+---
+
+### 24.14 Deployment Checklist
+
+**Database:**
+- [ ] Run migration: add `valid_until`, `regeneration_status`, `generation_context` columns to `routines`
+- [ ] Add constraint: `regeneration_status IN (NULL, 'in_progress')`
+- [ ] Add index: `idx_routines_valid_until` on `(puppy_id, valid_until) WHERE is_active = true`
+- [ ] Verify: existing active routines have `valid_until = NULL` (will trigger regeneration on next load)
+
+**Edge Function:**
+- [ ] Updated `generate-routine` accepts `isRegeneration` flag
+- [ ] Completion summary aggregation from `activity_logs` works correctly
+- [ ] Lock acquisition: conditional UPDATE returns 0 rows when lock already held
+- [ ] `valid_until` is set to `now + 7 days` on all new routines (including onboarding)
+- [ ] `generation_context` JSONB is populated with age bracket, params, completion summary
+- [ ] Prompt includes completion section when `isRegeneration = true`
+- [ ] Prompt omits completion section during onboarding (`isRegeneration` absent)
+- [ ] Deploy: `supabase functions deploy generate-routine`
+
+**Client — `database.types.ts`:**
+- [ ] `Routine` type includes `valid_until`, `regeneration_status`, `generation_context`
+- [ ] `GenerationContext` interface defined
+
+**Client — `routineEvolution.ts`:**
+- [ ] `needsRegeneration()` returns true when `valid_until` is null or past
+- [ ] `isRegenerationInProgress()` checks status + stale lock (5 min)
+- [ ] `triggerRegeneration()` calls Edge Function with `isRegeneration: true`
+- [ ] `cleanupFirebaseOverlays()` batch-deletes `editedRoutineItems` and `deletedRoutineItems` for old routine item IDs
+- [ ] Custom tasks in `tasks` collection are NOT deleted
+
+**Client — Dashboard:**
+- [ ] Regeneration check runs on dashboard mount (after `getActiveRoutine`)
+- [ ] Banner "Updating [name]'s routine for this week..." shows during regeneration
+- [ ] Banner hides on completion (success or failure)
+- [ ] New routine replaces old in state on success
+- [ ] Firebase overlay cleanup fires after successful regeneration
+- [ ] Silent failure: no error shown to user if regeneration fails (D82)
+
+**Testing:**
+- [ ] Onboarding flow still works (no `isRegeneration` flag, `valid_until` set)
+- [ ] Dashboard with fresh routine (< 7 days): no regeneration triggered
+- [ ] Dashboard with expired routine (> 7 days): regeneration triggers, banner shows, new routine appears
+- [ ] Dashboard with null `valid_until` (legacy): regeneration triggers
+- [ ] Deduplication: two simultaneous calls → only one succeeds, other returns `{ skipped: true }`
+- [ ] Stale lock: lock older than 5 min is cleared and regeneration proceeds
+- [ ] Age bracket transition: puppy crosses bracket boundary → new params used
+- [ ] Completion context: low-completion categories appear in prompt
+- [ ] Claude failure: old routine stays, no error banner, lock cleared
+- [ ] Firebase overlays: old edits/deletes cleaned up, custom tasks preserved
+- [ ] Inactive user return (3+ weeks): exactly one regeneration, not multiple
+- [ ] Build succeeds: `npx vite build` with no errors
 
 ---
 

@@ -780,6 +780,87 @@ interface WeightLog {
 
 ---
 
+#### F14: Weekly Routine Evolution
+**Priority: P0 (Launch Blocker)**
+
+**Description:** Automatically regenerate the puppy's daily routine every 7 days, adapting to the puppy's current age bracket and the owner's task completion patterns from the past week. The regeneration is lazy — triggered on dashboard load when the active routine is 7+ days old — so no API cost is incurred for inactive users. This is the core differentiator: the routine transforms with the puppy, not just at onboarding.
+
+**Context:** A static routine generated at onboarding becomes stale within 1-2 weeks. Puppies develop rapidly — a 10-week-old needs 4-5 naps and event-based potty breaks, but by 16 weeks they need only 2-3 naps and time-based potty spacing. A routine that doesn't evolve loses credibility and the user stops trusting it, then stops using the app. The existing `computeScheduleParams()` already computes different parameters per age bracket — this feature simply calls it again at the right time.
+
+**Scheduling model: Every 7 days from last generation (not calendar-based).** This eliminates the edge case where a user onboards on Sunday and gets a redundant regeneration on Monday. It's simpler (one comparison: `now > generated_at + 7 days`), naturally staggers API load across the week, and feels more personalized — "your puppy's week" starts when you started.
+
+**Trigger model: Lazy client-side check on dashboard load (not a server-side cron).** Benefits: zero cost for churned/inactive users, no new infrastructure to monitor, and the routine is always fresh when the user actually needs it. A user who disappears for 3 months gets exactly one regeneration when they return — not 12 weeks of wasted calls nobody saw.
+
+**Cost model:** The routine is per puppy, not per user. One LLM call per puppy per 7 days, shared across all household members. At ~$0.01-0.02 per call (Claude Sonnet), 1,000 active puppies costs ~$10-20/week.
+
+**Behavior:**
+
+**Lazy Regeneration Check:**
+- When any household member opens the dashboard, the app checks if the active routine's `valid_until` timestamp has passed
+- `valid_until` is computed as `generated_at + 7 days` and stored on the routine row at generation time
+- If `now > valid_until`: trigger background regeneration. The user sees their existing routine immediately with a subtle banner: "Updating [puppy name]'s routine for this week..."
+- If `now <= valid_until`: nothing happens
+- `valid_until` is null for legacy routines created before this feature — treat null as expired
+
+**Completion-Aware Prompt Context:**
+- When regenerating, the edge function aggregates `activity_logs` for the past 7 days into a completion summary per category (e.g., "walks: 12/14 completed, training: 3/14 completed")
+- This summary is included in the user prompt to Claude alongside the pre-computed schedule parameters
+- The system prompt instructs Claude to adjust the new routine based on patterns: if training sessions are consistently skipped, consider reducing frequency or changing timing; if walks are always completed, maintain or progress duration
+
+**Age-Aware Progression:**
+- The existing `computeScheduleParams()` reads `date_of_birth` and computes the age bracket at call time
+- A routine generated this week will naturally use different parameters than one generated 4 weeks ago — a puppy that was `early_puppy` (10-12 weeks) at onboarding automatically gets `puppy` (12-16 weeks) parameters when the routine regenerates 4 weeks later
+- No new code needed for the age dimension; the existing architecture already handles this
+
+**Regeneration Deduplication:**
+- Multiple household members may open the app around the same time
+- A `regeneration_status` field on the `routines` table (`'in_progress'` or null) prevents duplicate API calls
+- If a regeneration is already in progress (started within the last 5 minutes), subsequent dashboard loads skip triggering another one
+- All household members see the new routine once it completes via existing Supabase real-time subscriptions
+
+**Firebase Overlay Cleanup:**
+- When a new routine is generated, Firebase documents in `editedRoutineItems` and `deletedRoutineItems` that reference the previous routine's item IDs are deleted
+- Custom user-added tasks (Firebase `tasks` collection) are NOT affected — they persist across routine generations
+
+**Acceptance Criteria:**
+- If `now > valid_until` (or `valid_until` is null), regeneration triggers automatically on dashboard load
+- If `now <= valid_until`, nothing happens — no API call, no banner, no side effects
+- Only one regeneration can be in-flight per puppy at a time (deduplication via `regeneration_status`)
+- The user never has to press a button — regeneration is fully automatic and transparent
+- Old routine remains visible and functional while the new one generates
+- Banner "Updating [name]'s routine for this week..." appears during regeneration and disappears on completion
+- New routine replaces old one seamlessly — `is_active` flips from old to new
+- Completion summary from the past 7 days is included in the LLM prompt
+- A puppy that crosses an age bracket boundary between regenerations gets the new bracket's parameters
+- Firebase overlays (`editedRoutineItems`, `deletedRoutineItems`) for the old routine are cleaned up
+- Custom user-added tasks in Firebase `tasks` collection are unaffected by regeneration
+- If regeneration fails (API error, timeout), the old routine remains active — no disruption to the user
+- An inactive user who returns after weeks gets exactly one regeneration, not multiple queued calls
+- Users cannot manually trigger regeneration — there is no "regenerate" button
+
+**Data Model Changes:**
+- `routines` table: add `valid_until` (timestamptz, nullable) — `generated_at + 7 days`. Client checks `now > valid_until`. Null for legacy routines (treat as expired).
+- `routines` table: add `regeneration_status` (text, nullable) — `'in_progress'` or null. Lightweight lock to prevent duplicate regenerations.
+- `routines` table: add `generation_context` (JSONB, nullable) — Stores `age_bracket`, `age_weeks`, `completion_summary`, `schedule_params` snapshot. Useful for debugging and future "routine evolution history" features.
+
+**Technical Implementation:**
+- **Trigger:** Client-side check in Dashboard component on mount/load. Compare `routine.valid_until` against current timestamp.
+- **Edge function:** Extend existing `generate-routine` to accept an optional `completionContext` parameter. When present, include it in the user prompt.
+- **Completion aggregation:** Query `activity_logs` for the past 7 days grouped by `activity_type`, computing completed/total counts per category. Run this in the edge function before calling Claude.
+- **Lock mechanism:** Before calling Claude, set `regeneration_status = 'in_progress'` on the active routine. On completion (success or failure), set it back to null. A stale lock (older than 5 minutes) is treated as expired.
+- **Rollback safety:** If the Claude call fails, the old routine stays active. The `regeneration_status` is cleared so the next dashboard load can retry.
+- **Firebase cleanup:** After successful routine generation, a client-side function deletes orphaned `editedRoutineItems` and `deletedRoutineItems` documents referencing old routine item IDs.
+
+**Out of Scope (this feature, v1):**
+- Manual "regenerate" button — explicitly excluded per cost control
+- Day-of-week awareness — routines are the same daily template for the 7-day window; day-specific schedules are a future iteration
+- Push notifications about routine changes — the user discovers the update when they open the app
+- Routine diff/changelog UI — no "what changed from last week" view
+- Mid-week adaptive adjustments — changes only happen at the weekly boundary
+- Completion-based routine recommendations UI (e.g., "We noticed you skip training — want to reduce it?") — the LLM adjusts silently, no user-facing explanation in v1
+
+---
+
 ### Out of Scope (v1)
 
 | Feature | Rationale |
@@ -791,7 +872,7 @@ interface WeightLog {
 | Vet appointment scheduling | Different problem space. Could be P2. |
 | Puppy health records / medical log | Weight tracking is now in scope (F12). Broader health records (vet visits, vaccines, medications) remain P2. |
 | Push notification reminders | P1. Important but not a launch blocker - the routine view itself is the MVP. |
-| AI routine auto-adjustment over time | P1. The AI generates once; manual adjustments are available. Auto-learning comes later. |
+| AI routine auto-adjustment over time | Now in scope as F14: Weekly Routine Evolution. Automatic weekly regeneration adapts to puppy age and completion patterns. |
 | Multi-puppy support for a single owner | P1. Focus on the single-puppy experience first. |
 | Social features (sharing progress with friends) | P2. Not core to the pain point. |
 | Puppy photo/video journal | P2. Nice-to-have, not core. |
@@ -1165,6 +1246,60 @@ User opens app → sees Daily Routine:
   -> At a glance: puppy napped 45 min, walked 15 min, trained 5 min
 ```
 
+#### Flow 11: Routine Automatically Evolves Each Week
+```
+Scenario A: Seamless weekly update
+
+User (Jess) onboards on Wednesday with 10-week-old Biscuit
+  -> AI routine generates with "early_puppy" parameters:
+     4 meals, 4-5 naps, event-based potty, 10 min walks
+  -> Jess uses the routine all week
+  -> Following Wednesday (7 days later), Jess opens app
+  -> App detects valid_until has passed (routine is 7+ days old)
+  -> Banner appears: "Updating Biscuit's routine for this week..."
+  -> Background call to generate-routine edge function:
+     - Reads Biscuit's DOB → still early_puppy (11 weeks now)
+     - Aggregates past 7 days of activity_logs:
+       "walks: 14/14, training: 8/14, potty: 42/42, naps: completed"
+     - Training completion is low → Claude may shift training to post-nap slots
+  -> New routine replaces old one; banner disappears
+  -> Jess sees updated routine with training sessions at different times
+  -> Alex opens app 10 minutes later → sees same new routine (shared per puppy)
+
+Scenario B: Age bracket transition after several weeks
+
+Week 1: Biscuit is 10 weeks (early_puppy)
+  -> 4 meals/day, event-based potty, 4-5 naps, 10 min walks
+Week 3: Biscuit is 12 weeks (puppy)
+  -> Routine regenerates → 3 meals/day, fewer naps, longer awake windows
+  -> Walk duration increases, potty spacing starts to stretch
+Week 8: Biscuit is 17 weeks (junior)
+  -> 3 meals/day, time-based potty model kicks in, 2-3 naps, 20 min walks
+  -> Training sessions get longer (10 min instead of 5 min)
+  -> Each transition happens automatically — no re-onboarding needed
+
+Scenario C: Inactive user returns after 3 weeks
+
+Jess hasn't opened the app in 3 weeks
+  -> No API calls were made during absence (lazy trigger = zero cost)
+  -> Opens app → valid_until is 21 days in the past
+  -> Banner appears, regeneration triggers
+  -> Biscuit is now 3 weeks older → may have crossed an age bracket
+  -> Completion summary shows sparse data (mostly missed) → routine adjusts conservatively
+  -> Jess gets a fresh, age-appropriate routine immediately
+
+Scenario D: Multiple household members open app simultaneously
+
+Alex opens app at 8:00 AM → triggers regeneration
+  -> regeneration_status set to 'in_progress' on the routine
+Jess opens app at 8:02 AM → sees existing routine, deduplication lock prevents second API call
+  -> No banner for Jess (or shows "Routine is being updated...")
+At 8:05 AM, new routine completes
+  -> regeneration_status cleared
+  -> Both Jess and Alex see the new routine via Supabase real-time subscriptions
+  -> One LLM call, one cost, both users served
+```
+
 ---
 
 ### Data Model (High-Level)
@@ -1230,6 +1365,9 @@ Routine
   - generated_at
   - source (ai_generated | user_modified)
   - is_active (boolean)
+  - valid_until (timestamptz, nullable) — generated_at + 7 days. Client checks now > valid_until to trigger regeneration. Null for legacy routines (treat as expired).
+  - regeneration_status (text, nullable) — 'in_progress' or null. Lightweight lock preventing duplicate regenerations. Stale locks (>5 min) treated as expired.
+  - generation_context (JSONB, nullable) — Snapshot of generation inputs: age_bracket, age_weeks, completion_summary (per-category completed/total), schedule_params. For debugging and future evolution history features.
 
 RoutineItem
   - id (UUID)
