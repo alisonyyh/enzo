@@ -123,6 +123,9 @@ export type Database = {
           generated_at: string;
           source: string;
           is_active: boolean;
+          valid_until: string | null;
+          regeneration_status: string | null;
+          generation_context: GenerationContext | null;
         };
         Insert: {
           id?: string;
@@ -130,10 +133,16 @@ export type Database = {
           generated_at?: string;
           source?: string;
           is_active?: boolean;
+          valid_until?: string | null;
+          regeneration_status?: string | null;
+          generation_context?: GenerationContext | null;
         };
         Update: {
           source?: string;
           is_active?: boolean;
+          valid_until?: string | null;
+          regeneration_status?: string | null;
+          generation_context?: GenerationContext | null;
         };
       };
       routine_items: {
@@ -256,6 +265,14 @@ export type Database = {
     };
   };
 };
+
+// Generation context snapshot (F14 — stored as JSONB on routines)
+export interface GenerationContext {
+  age_bracket: string;
+  age_weeks: number;
+  completion_summary: Record<string, { completed: number; total: number }> | null;
+  schedule_params: Record<string, unknown>;
+}
 
 // Convenience types
 export type BreedProfile = Database['public']['Tables']['breed_profiles']['Row'];

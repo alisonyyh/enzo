@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInWithCustomToken, inMemoryPersistence, browserLocalPersistence, setPersistence } from 'firebase/auth';
 import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
+import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase';
 
 const firebaseConfig = {
@@ -13,7 +14,15 @@ const app = initializeApp(firebaseConfig);
 export const firebaseAuth = getAuth(app);
 export const db = getFirestore(app);
 
-// Enable offline persistence
+// On native platforms, use in-memory persistence to avoid IndexedDB hangs in WKWebView.
+// Auth state is re-established each session via custom token from Supabase anyway.
+if (Capacitor.isNativePlatform()) {
+  setPersistence(firebaseAuth, inMemoryPersistence).catch((err) => {
+    console.warn('Firebase: failed to set inMemoryPersistence:', err);
+  });
+}
+
+// Enable offline persistence for Firestore (not Auth)
 enableIndexedDbPersistence(db).catch((err) => {
   if (err.code === 'failed-precondition') {
     console.warn('Offline persistence: multiple tabs open');
@@ -89,7 +98,15 @@ export async function signInToFirebase() {
   console.log('Firebase auth: Custom Token received, signing in...');
 
   // Sign in to Firebase with the Custom Token
-  await signInWithCustomToken(firebaseAuth, data.firebaseToken);
+  // Timeout guard: signInWithCustomToken can hang on iOS WKWebView
+  // due to IndexedDB persistence issues in Capacitor
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Firebase signInWithCustomToken timed out after 10s')), 10000)
+  );
+  await Promise.race([
+    signInWithCustomToken(firebaseAuth, data.firebaseToken),
+    timeout,
+  ]);
 
   console.log('Firebase auth: Successfully signed in to Firebase');
 }
