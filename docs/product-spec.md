@@ -68,7 +68,7 @@
 #### F3: AI Routine Generation
 **Priority: P0 (Launch Blocker)**
 
-**Description:** Generates a personalized daily routine for the puppy using a two-layer system: (1) a deterministic parameter computation layer that calculates all scheduling values (walk duration, meal count, potty intervals, nap frequency, etc.) from the puppy's breed profile and current age, and (2) an LLM (Anthropic Claude) that assembles those parameters into a natural daily timeline. The LLM receives pre-computed constraints — it does not infer breed characteristics or do arithmetic (D70, D71).
+**Description:** Generates a personalized daily routine for the puppy using a two-layer system: (1) a deterministic parameter computation layer that calculates all scheduling values (walk duration, meal count, potty intervals, nap frequency, etc.) from the puppy's breed profile and current age, and (2) an LLM (Anthropic Claude) that assembles those parameters into a natural daily timeline. The LLM receives pre-computed constraints — it does not infer breed characteristics or do arithmetic (D70, D71). Duration-based activities (walk, nap/sleep, play, calm bonding, training) must have their recommended `duration_minutes` stored on every generated routine item and displayed on the dashboard from the moment the routine is created — users should never see a walk or nap task without knowing how long it should be.
 
 **How It Works (Behind the Scenes):**
 - The puppy's **date of birth** is used to calculate their current age in weeks and map it to one of 9 age brackets (newborn through young_adult). This happens fresh each time a routine is generated, so the schedule automatically adapts as the puppy grows (D69).
@@ -83,27 +83,30 @@
   - Wake-up time and morning routine
   - Feeding times (age/breed appropriate number of meals, precisely timed)
   - Potty break schedule (event-based for young puppies, time-based for older dogs)
-  - Exercise/walk sessions (duration capped by 5-min-per-month-of-age rule; brachycephalic breeds capped at 15 min)
-  - Training session windows (short, age-appropriate)
-  - Play sessions (adjusted for energy level: +25% for high energy, -15-20% for low energy)
-  - Nap/crate time (enforced awake window maximums)
-  - Calm bonding sessions
+  - Exercise/walk sessions with recommended duration (duration capped by 5-min-per-month-of-age rule; brachycephalic breeds capped at 15 min)
+  - Training session windows with recommended duration (short, age-appropriate)
+  - Play sessions with recommended duration (adjusted for energy level: +25% for high energy, -15-20% for low energy)
+  - Nap/crate time with recommended duration (enforced awake window maximums)
+  - Calm bonding sessions with recommended duration
   - Evening wind-down and bedtime
 - Routine is displayed as a timeline/schedule view for the current day
-- Each routine item shows: time, activity name, and duration only — **no LLM-generated explanations, coaching advice, or commentary**. Task descriptions must be clean and actionable (e.g., "Potty", "Meal", "Walk — 37 min"). The LLM must not inject tips, reasoning, or training guidance into the task description or any visible field.
+- Each routine item shows: time, activity name, and duration only — **no LLM-generated explanations, coaching advice, or commentary**. Task descriptions must be clean and actionable (e.g., "Potty", "Meal", "Walk"). The LLM must not inject tips, reasoning, or training guidance into the task description or any visible field.
+- **Duration display at generation time:** Duration-based activities (walk, nap/sleep, play, calm bonding, training) must display their recommended duration inline on the task card immediately after routine generation (e.g., "3:00 PM · 30 min  Walk", "9:00 AM · 45 min  Morning Nap"). The duration value comes from the deterministic parameter layer (`computeScheduleParams`) and is mapped to each routine item by activity category during insertion — the LLM does not compute or output duration values. Point-in-time activities (feeding, potty, bedtime) show no duration. See F13 for full duration tracking specification.
 
 **Acceptance Criteria:**
 - Routine generates within 10 seconds
 - Routine is medically/behaviorally sound for the puppy's age and breed
 - Same dog with same inputs produces consistent scheduling parameters across regenerations (breed classification and parameter values are deterministic, not LLM-inferred)
-- **AI-generated task descriptions contain NO LLM explanations or coaching commentary.** Descriptions must be empty or contain only factual, minimal details (e.g., duration, quantity). No tips, cues, praise instructions, or behavioral advice.
+- **AI-generated task descriptions contain NO LLM explanations or coaching commentary.** Descriptions must be empty or contain only factual, minimal details. No tips, cues, praise instructions, or behavioral advice.
+- **Every AI-generated walk, nap/sleep, play, calm bonding, and training task has a non-null `duration_minutes` value** stored on the routine item at generation time, derived from the deterministic parameter layer. These durations are displayed inline on the dashboard task card (e.g., "9:00 AM · 45 min  Morning Nap") without any user action required.
+- **Opening the edit bottom sheet for an AI-generated duration-based task pre-selects the correct duration chip** (or shows the custom value if it doesn't match a preset). Users can adjust the duration, but the AI-recommended value is the default.
 - Routine items are displayed in chronological order
 - If generation fails, user sees a retry option with a clear error message
 - Routine automatically uses age-appropriate parameters when regenerated as the puppy grows (no manual age update needed)
 
 **Decision (D4):** Users can edit the AI-generated routine minimally in v1 — adjust activity times (tap to change) and toggle activities on/off. Custom activity creation is P1.
 
-**LLM Output Constraint:** The LLM must output **only structured schedule data** (activity name, time, duration, activity type). It must NOT generate explanatory text, coaching advice, training tips, behavioral guidance, or any commentary in task descriptions. Task descriptions must be empty or contain only minimal factual details (e.g., "37 min" for walk duration). Any LLM reasoning or advice must be stripped before tasks are displayed to the user.
+**LLM Output Constraint:** The LLM must output **only structured schedule data** (activity name, time, activity type/category). It must NOT generate explanatory text, coaching advice, training tips, behavioral guidance, or any commentary in task descriptions. Task descriptions must be empty. Any LLM reasoning or advice must be stripped before tasks are displayed to the user. **Duration values are NOT output by the LLM** — they are mapped from the deterministic parameter layer (`computeScheduleParams`) onto each routine item by activity category during database insertion (e.g., category `exercise` → `walkDurationMinutes`, category `rest` → `napDurationMinutes`). This ensures durations are always medically accurate and consistent, regardless of LLM behavior.
 
 **Technical Note:** Schedule parameters are computed server-side in the Edge Function. The LLM (Claude Sonnet via Supabase Edge Function) handles schedule assembly only. Client-side fallback generation is available if the Edge Function fails.
 
@@ -746,9 +749,11 @@ interface WeightLog {
   - `8:30 AM  Potty Break 💩💦`
 - Duration badge uses a subtle secondary style (not competing with the time for visual prominence)
 
-**AI-Generated Routine Tasks:**
-- The AI routine generation already computes `duration_minutes` for applicable activities via the deterministic parameter layer. These values are now surfaced on the dashboard instead of being discarded in the legacy format transformation.
-- When editing an AI-generated task with a pre-computed duration, the corresponding preset chip (or custom value) is pre-selected in the bottom sheet.
+**AI-Generated Routine Tasks (P0 — Duration Must Be Visible at Generation Time):**
+- The deterministic parameter layer (`computeScheduleParams`) computes `duration_minutes` for all applicable activities: `walkDurationMinutes`, `trainingSessionMinutes`, `napDurationMinutes`, `playSessionMinutes`, `calmBondingMinutes`. During routine item insertion, the backend maps each LLM output category to its corresponding pre-computed duration (e.g., category `exercise` → `walkDurationMinutes`, `rest` → `napDurationMinutes`, `play` → `playSessionMinutes`, `bonding` → `calmBondingMinutes`, `training` → `trainingSessionMinutes`).
+- **These duration values MUST be stored as `duration_minutes` on every applicable routine item** in the database at generation time. The data transformation from Supabase `routine_items` to the dashboard display layer MUST preserve `duration_minutes` (not discard or null it out).
+- **Duration is displayed inline on the dashboard task card immediately after generation** — no user action required. Example: "3:00 PM · 30 min  Walk", "9:00 AM · 45 min  Morning Nap". This is the primary way users learn how long each activity should last for their puppy's age and breed.
+- When editing an AI-generated task with a pre-computed duration, the corresponding preset chip (or custom value) is pre-selected in the edit bottom sheet's Duration section.
 
 **Acceptance Criteria:**
 - Duration section appears in bottom sheet only for the five applicable activity types
@@ -757,8 +762,9 @@ interface WeightLog {
 - Custom input accepts values 1–480 with validation error for out-of-range
 - Duration is optional — saving without a duration is valid
 - Duration displays inline on dashboard timeline cards for applicable tasks that have a value set
-- AI-generated tasks with pre-computed `duration_minutes` display duration on the dashboard without user action
-- Editing an AI-generated task pre-selects the correct duration chip or shows the custom value
+- **AI-generated tasks for applicable activity types (walk, nap/sleep, play, calm bonding, training) display their pre-computed duration on the dashboard immediately after routine generation** — no user action required. Every walk task shows its walk duration, every nap shows its nap duration, etc.
+- Editing an AI-generated task pre-selects the correct duration chip (or shows the custom value in the Custom input) in the bottom sheet's Duration section
+- The data transformation from Supabase `routine_items` to the dashboard display format preserves `duration_minutes` — it is never discarded or nulled out for applicable activity types
 - `durationMinutes` persists to Firebase Firestore for custom tasks and syncs within 3 seconds
 - `duration_minutes` from Supabase `routine_items` is no longer discarded in the legacy format transformation
 - Duration data survives task editing (changing start time does not clear duration)

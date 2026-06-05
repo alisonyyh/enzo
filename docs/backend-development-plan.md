@@ -1,288 +1,313 @@
-# PupPlan Backend Development Plan
+# Enzo (PupPlan) — Backend Development Plan
 
-**Document Version:** 1.1
+**Version:** 2.0
 **Created:** 2026-02-11
-**Last Updated:** 2026-05-30
-**Status:** Active
-**Stage:** 0→1 (Launch MVP)
+**Last Updated:** 2026-06-05
+**Stage:** 0→1 (Pre-launch, approaching MVP completion)
 
 ---
 
 ## Executive Summary
 
-This document outlines the backend architecture and implementation plan for **PupPlan**, an AI-powered puppy care routine web app. The backend will replace the current client-side mock routine generation with a production-ready system using **Supabase** for data persistence, auth, real-time sync, and **Anthropic Claude API** for intelligent routine generation.
+This document is the definitive backend implementation plan for **Enzo** (formerly PupPlan), an AI-powered puppy care routine app. It maps every product spec feature to its backend status, documents the production architecture, and lays out remaining work for launch.
 
-**Current State:**
-- Frontend prototype complete (Vite + React + TypeScript)
-- Supabase integration partially implemented (auth, database schema, basic CRUD)
-- Client-side mock routine generation (breed/age rules)
-- No AI integration yet
+**Current state:** The backend is substantially complete. All 14 product spec features (F1–F14) have backend support implemented. The system uses a hybrid Supabase + Firebase architecture with three Edge Functions, comprehensive RLS policies, and a two-layer AI routine generation system.
 
-**Target State:**
-- Production-ready backend with Supabase Edge Functions
-- Two-layer AI routine generation: deterministic parameter computation + Claude schedule assembly (D70, D71)
-- `breed_profiles` table as single source of truth for breed characteristics (D68)
-- DOB-based age computation for automatic schedule adaptation (D69)
-- Robust API layer for all frontend operations
-- Scalable architecture ready for 1→100 growth
+**Remaining work:** Verification, bug fixes, production hardening, and deployment. No greenfield backend features remain for v1.
 
 ---
 
-## 1. Technology Stack
+## 1. Architecture Overview
 
-### 1.1 Backend Platform: **Supabase**
-**Rationale:** Already partially integrated, provides auth, Postgres, real-time sync, storage, and Edge Functions in one platform. Zero ops overhead for 0→1 stage.
+### 1.1 Technology Stack
 
-**Components:**
-- **Postgres Database:** Primary data store
-- **Supabase Auth:** Google OAuth (already configured)
-- **Supabase Realtime:** WebSocket-based live updates for activity completions
-- **Supabase Storage:** Profile pictures and puppy photos
-- **Supabase Edge Functions (Deno):** Serverless API endpoints for AI generation and business logic
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| **Database (primary)** | Supabase PostgreSQL | Users, puppies, routines, activity logs, weight logs, breed profiles, invite codes |
+| **Database (real-time overlay)** | Firebase Firestore | Task edits, task deletions, custom tasks — offline-first with built-in sync |
+| **Auth (primary)** | Supabase Auth (Google OAuth) | All user authentication, JWT tokens |
+| **Auth (secondary)** | Firebase Auth (Custom Tokens) | Firestore security rules — Custom Claims carry `puppyIds` array |
+| **Serverless API** | Supabase Edge Functions (Deno) | AI routine generation, invite validation, Firebase token minting |
+| **AI** | Anthropic Claude API (claude-sonnet-4-6) | Schedule assembly from pre-computed parameters |
+| **Storage** | Supabase Storage | Puppy photos (`puppy-photos`), user avatars (`user-avatars`) |
+| **Storage (profile photos)** | Firebase Storage | Custom profile photos (`users/{userId}/profile_photo.jpg`) |
+| **Analytics** | PostHog | Product analytics |
+| **Mobile** | Capacitor | iOS native wrapper |
+| **Frontend** | Vite + React + TypeScript + Tailwind v4 | Mobile-first web app |
 
-### 1.2 AI/LLM: **Anthropic Claude API (claude-sonnet-4-5-20250929)**
-**Rationale:** Sonnet 4.5 is the most capable model for generating structured, safe, and personalized puppy care routines. Fast, reliable, and cost-effective for production use.
+### 1.2 Hybrid Backend Architecture
 
-**Use Cases:**
-- Routine generation based on questionnaire data
-- Future: routine adjustment recommendations, Q&A about puppy care
-
-### 1.3 API Layer: **Supabase Edge Functions (TypeScript/Deno)**
-**Rationale:** Native Supabase integration, auto-scales, zero cold start cost, TypeScript for type safety.
-
-**Key Endpoints:**
-- `POST /functions/v1/generate-routine` - AI routine generation
-- `POST /functions/v1/accept-invite` - Caretaker invite acceptance flow
-- (Future) `POST /functions/v1/adjust-routine` - Routine modifications
-
-### 1.4 Development Tools
-- **Language:** TypeScript (both Edge Functions and frontend already use it)
-- **Type Safety:** Supabase auto-generates types from database schema
-- **Testing:** Deno's built-in test runner for Edge Functions
-- **Local Dev:** Supabase CLI for local database and Edge Function development
-
----
-
-## 2. Database Architecture
-
-### 2.1 Current Schema (Already Implemented)
-
-The database schema is **already defined** in Supabase and typed in `src/lib/database.types.ts`. Key tables:
-
-```sql
--- Users (handled by Supabase Auth)
--- Extended by profiles table
-
-profiles
-  - id (UUID, FK to auth.users)
-  - display_name (text, nullable)
-  - avatar_url (text, nullable)
-  - created_at (timestamp)
-
-breed_profiles (NEW — D68, single source of truth for breed characteristics)
-  - id (UUID, PK)
-  - breed_name (TEXT, UNIQUE — display name used in onboarding dropdown)
-  - breed_size (TEXT: toy | small | medium | large | giant)
-  - energy_level (TEXT: high | moderate | low)
-  - is_brachycephalic (BOOLEAN, default false)
-  - created_at (TIMESTAMPTZ)
-
-puppies
-  - id (UUID, PK)
-  - name (text)
-  - breed (text)
-  - date_of_birth (date, nullable — NEW D69, replaces age_months/age_weeks for new puppies)
-  - age_months (integer — LEGACY, retained for backward compatibility)
-  - age_weeks (integer — LEGACY, retained for backward compatibility)
-  - breed_size (text, nullable — NEW D72, copied from breed_profiles at creation)
-  - energy_level (text, nullable — NEW D72, copied from breed_profiles at creation)
-  - is_brachycephalic (boolean, default false — NEW D72)
-  - weight_value (numeric, nullable)
-  - weight_unit (text)
-  - photo_url (text, nullable)
-  - questionnaire_data (jsonb, nullable)
-  - created_at (timestamp)
-
-puppy_memberships
-  - id (UUID, PK)
-  - puppy_id (UUID, FK → puppies)
-  - user_id (UUID, FK → auth.users)
-  - role ('owner' | 'caretaker')
-  - status ('active' | 'removed')
-  - joined_at (timestamp)
-
-routines
-  - id (UUID, PK)
-  - puppy_id (UUID, FK → puppies)
-  - generated_at (timestamp)
-  - source (text: 'ai_generated' | 'user_modified')
-  - is_active (boolean)
-
-routine_items
-  - id (UUID, PK)
-  - routine_id (UUID, FK → routines)
-  - activity_type (text)
-  - title (text)
-  - description (text, nullable)
-  - scheduled_time (time)
-  - duration_minutes (integer, nullable)
-  - sort_order (integer, nullable)
-  - is_enabled (boolean)
-
-activity_logs
-  - id (UUID, PK)
-  - routine_item_id (UUID, FK → routine_items)
-  - puppy_id (UUID, FK → puppies)
-  - date (date)
-  - status ('completed' | 'missed' | 'skipped')
-  - completed_by (UUID, FK → auth.users, nullable)
-  - completed_at (timestamp, nullable)
-  - note (text, nullable)
-  - created_at (timestamp)
-
-invites
-  - id (UUID, PK)
-  - puppy_id (UUID, FK → puppies)
-  - invited_by (UUID, FK → auth.users)
-  - invite_token (text, unique)
-  - status ('pending' | 'accepted' | 'expired' | 'revoked')
-  - accepted_by (UUID, FK → auth.users, nullable)
-  - expires_at (timestamp)
-  - created_at (timestamp)
-
-weight_logs (NEW — F12 / Flow 8, D58-D67)
-  - id (UUID, PK)
-  - puppy_id (UUID, FK → puppies, CASCADE)
-  - weight_value (DECIMAL, NOT NULL)
-  - weight_unit (TEXT, NOT NULL, default 'lbs')
-  - logged_at (DATE, NOT NULL, default CURRENT_DATE)
-  - logged_by (UUID, FK → auth.users, nullable)
-  - note (TEXT, nullable, max 200 chars)
-  - is_onboarding (BOOLEAN, NOT NULL, default false)
-  - created_at (TIMESTAMPTZ)
-  - updated_at (TIMESTAMPTZ)
+```
+Frontend (React)
+  ├── Supabase Client
+  │     ├── Auth (Google OAuth)
+  │     ├── Database (Postgres via PostgREST)
+  │     ├── Realtime (WebSocket subscriptions for activity_logs, profiles)
+  │     ├── Storage (puppy photos, user avatars)
+  │     └── Edge Functions (generate-routine, validate-invite-code, get-firebase-token)
+  │
+  └── Firebase Client
+        ├── Auth (Custom Token from get-firebase-token Edge Function)
+        ├── Firestore (editedRoutineItems, deletedRoutineItems, tasks collections)
+        └── Storage (custom profile photos)
 ```
 
-### 2.2 Required Row-Level Security (RLS) Policies
+**Why hybrid:** Firestore provides built-in offline persistence, optimistic updates, and real-time listeners for task editing — building equivalent functionality with Supabase Realtime would have taken 3-4x longer. Supabase remains primary for relational data (users, puppies, routines). The dual-auth bridge (Supabase JWT → Firebase Custom Token with `puppyIds` claim) is handled by the `get-firebase-token` Edge Function.
 
-**Critical for production.** RLS must be enabled on all tables to prevent unauthorized access.
+### 1.3 Data Flow
 
-```sql
--- profiles: Users can read all, update own
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Users can view all profiles"
-  ON profiles FOR SELECT
-  USING (true);
-
-CREATE POLICY "Users can update own profile"
-  ON profiles FOR UPDATE
-  USING (auth.uid() = id);
-
--- puppies: Only members can read/update
-ALTER TABLE puppies ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Members can view puppies they have access to"
-  ON puppies FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM puppy_memberships
-      WHERE puppy_id = puppies.id
-        AND user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
-CREATE POLICY "Owners can update their puppies"
-  ON puppies FOR UPDATE
-  USING (
-    EXISTS (
-      SELECT 1 FROM puppy_memberships
-      WHERE puppy_id = puppies.id
-        AND user_id = auth.uid()
-        AND role = 'owner'
-        AND status = 'active'
-    )
-  );
-
--- puppy_memberships: Members can read own, owners can insert/update
-ALTER TABLE puppy_memberships ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Members can view memberships for their puppies"
-  ON puppy_memberships FOR SELECT
-  USING (
-    puppy_id IN (
-      SELECT puppy_id FROM puppy_memberships
-      WHERE user_id = auth.uid() AND status = 'active'
-    )
-  );
-
--- routines, routine_items, activity_logs: Similar member-based access
--- (Full policies available in migration files)
-
--- weight_logs: Both owner and caretaker have full CRUD (D58)
--- DELETE policy includes is_onboarding = false guard (D65)
-ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
--- (Full policies in migration file 20260302000001_weight_logs.sql)
+**Routine generation (onboarding):**
+```
+Questionnaire Submit
+  → Edge Function: generate-routine
+    → computeScheduleParams(DOB, breed, energy, brachy) → deterministic params
+    → Claude API: assemble timeline from params → structured JSON
+    → Map category → duration_minutes via getDurationForActivity()
+    → Insert routine + routine_items to Supabase
+  → Dashboard renders routine with durations
 ```
 
-### 2.3 Missing Indexes (Performance Optimization)
+**Routine generation (weekly regeneration, F14):**
+```
+Dashboard Load
+  → Check: routine.valid_until < now?
+    → Yes: triggerRegeneration()
+      → Edge Function: generate-routine (isRegeneration: true)
+        → Acquire lock (regeneration_status = 'in_progress')
+        → Aggregate activity_logs for past 7 days (completion summary)
+        → computeScheduleParams() with fresh age bracket from DOB
+        → Claude API with completion context in prompt
+        → Insert new routine (valid_until = now + 7 days)
+        → Deactivate old routine, release lock
+      → Clean up Firebase overlays for old routine item IDs
+    → No: show existing routine
+```
 
-Add these indexes for query performance:
+**Task editing (real-time):**
+```
+User taps task → Edit bottom sheet
+  → Save changes → Firestore: editedRoutineItems/{puppyId}_{itemId}_{date}
+  → Realtime subscription → All household members see update within 3 seconds
+  → Dashboard merge: Supabase routine_items + Firebase edits/deletes + custom tasks
+```
 
-```sql
--- Speed up membership lookups (critical for RLS)
-CREATE INDEX idx_puppy_memberships_user_puppy
-  ON puppy_memberships(user_id, puppy_id)
-  WHERE status = 'active';
-
--- Speed up routine fetching
-CREATE INDEX idx_routines_puppy_active
-  ON routines(puppy_id, is_active)
-  WHERE is_active = true;
-
--- Speed up activity log queries (dashboard loads)
-CREATE INDEX idx_activity_logs_puppy_date
-  ON activity_logs(puppy_id, date);
-
--- Speed up invite token lookups
-CREATE INDEX idx_invites_token
-  ON invites(invite_token)
-  WHERE status = 'pending';
-
--- Speed up weight log queries (newest first per puppy) — F12
-CREATE INDEX idx_weight_logs_puppy_date
-  ON weight_logs(puppy_id, logged_at DESC, created_at DESC);
-
--- Speed up onboarding migration check — F12
-CREATE INDEX idx_weight_logs_onboarding
-  ON weight_logs(puppy_id)
-  WHERE is_onboarding = true;
+**Auth flow (Supabase → Firebase bridge):**
+```
+1. User signs in via Supabase Google OAuth → gets Supabase JWT
+2. Client calls get-firebase-token Edge Function with Supabase JWT
+3. Edge Function:
+   a. Verifies JWT via Supabase JWKS endpoint (ES256)
+   b. Queries puppy_memberships for user's puppyIds
+   c. Creates Firebase Custom Token with { puppyIds: [...] } claim
+4. Client calls signInWithCustomToken(firebaseAuth, token)
+5. Firestore rules: hasPuppyAccess(puppyId) checks auth.token.puppyIds
 ```
 
 ---
 
-## 3. API Design
+## 2. Database Schema (Current)
 
-### 3.1 Core Endpoint: AI Routine Generation
+### 2.1 Supabase PostgreSQL
 
-**Endpoint:** `POST /functions/v1/generate-routine`
+All tables have Row Level Security (RLS) enabled. Helper functions `is_puppy_owner()` and `is_puppy_member()` use `SECURITY DEFINER` to avoid recursive RLS checks.
 
-**Purpose:** Replace the client-side `generateRoutine()` function with real AI-powered routine generation.
+#### Tables
+
+**`profiles`** — Extends Supabase `auth.users`
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | FK → auth.users |
+| display_name | TEXT | nullable |
+| avatar_url | TEXT | nullable |
+| created_at | TIMESTAMPTZ | default now() |
+
+**`breed_profiles`** — Reference data, seed-only (30 breeds)
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| breed_name | TEXT NOT NULL | UNIQUE |
+| breed_size | TEXT NOT NULL | CHECK (toy\|small\|medium\|large\|giant) |
+| energy_level | TEXT NOT NULL | CHECK (high\|moderate\|low) |
+| is_brachycephalic | BOOLEAN | default false |
+| created_at | TIMESTAMPTZ | default now() |
+
+**`puppies`** — Puppy profile
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| name | TEXT NOT NULL | |
+| breed | TEXT NOT NULL | |
+| date_of_birth | DATE | nullable (required for new puppies, D69) |
+| age_months | INT | legacy, default 0 |
+| age_weeks | INT | legacy, default 0 |
+| breed_size | TEXT | nullable (copied from breed_profiles at creation, D72) |
+| energy_level | TEXT | nullable (copied from breed_profiles at creation, D72) |
+| is_brachycephalic | BOOLEAN | default false |
+| weight_value | DECIMAL | nullable |
+| weight_unit | TEXT | default 'lbs' |
+| photo_url | TEXT | nullable |
+| questionnaire_data | JSONB | nullable — { wakeUpTime, bedTime } |
+| created_at | TIMESTAMPTZ | default now() |
+
+**`puppy_memberships`** — User-puppy relationship
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| puppy_id | UUID | FK → puppies (CASCADE) |
+| user_id | UUID | FK → auth.users (CASCADE) |
+| role | TEXT NOT NULL | CHECK (owner\|caretaker) |
+| status | TEXT | default 'active', CHECK (active\|removed) |
+| joined_at | TIMESTAMPTZ | default now() |
+| | | UNIQUE(puppy_id, user_id) |
+
+**`routines`** — Generated daily schedules
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| puppy_id | UUID | FK → puppies (CASCADE) |
+| generated_at | TIMESTAMPTZ | default now() |
+| source | TEXT | default 'ai_generated' |
+| is_active | BOOLEAN | default true |
+| valid_until | TIMESTAMPTZ | nullable — generated_at + 7 days (F14) |
+| regeneration_status | TEXT | nullable — 'in_progress' or null (F14 lock) |
+| generation_context | JSONB | nullable — age_bracket, age_weeks, completion_summary, schedule_params (F14) |
+
+**`routine_items`** — Activities in a routine
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| routine_id | UUID | FK → routines (CASCADE) |
+| activity_type | TEXT NOT NULL | feeding\|potty\|exercise\|training\|rest\|play\|bonding |
+| title | TEXT NOT NULL | |
+| description | TEXT | nullable (always null per D73 — no LLM commentary) |
+| scheduled_time | TIME NOT NULL | |
+| duration_minutes | INT | nullable — set for exercise/training/rest/play/bonding |
+| sort_order | INT | nullable |
+| is_enabled | BOOLEAN | default true |
+
+**`activity_logs`** — Task completion tracking
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| routine_item_id | UUID | FK → routine_items (CASCADE) |
+| puppy_id | UUID | FK → puppies (CASCADE) |
+| date | DATE NOT NULL | |
+| status | TEXT | CHECK (completed\|missed\|skipped) |
+| completed_by | UUID | FK → auth.users (CASCADE), nullable |
+| completed_at | TIMESTAMPTZ | nullable |
+| note | TEXT | nullable |
+| created_at | TIMESTAMPTZ | default now() |
+| | | UNIQUE(routine_item_id, date) |
+
+**`invite_codes`** — Household invite system
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| puppy_id | UUID | FK → puppies (CASCADE), UNIQUE |
+| code | TEXT NOT NULL | UNIQUE (format: WORD-ALPHANUMERIC) |
+| created_by | UUID | FK → auth.users |
+| created_at | TIMESTAMPTZ | default now() |
+
+**`weight_logs`** — Weight tracking (F12)
+| Column | Type | Constraints |
+|--------|------|------------|
+| id | UUID PK | gen_random_uuid() |
+| puppy_id | UUID | FK → puppies (CASCADE) |
+| weight_value | DECIMAL NOT NULL | CHECK (0 < weight ≤ 300) |
+| weight_unit | TEXT NOT NULL | default 'lbs' |
+| logged_at | DATE NOT NULL | default CURRENT_DATE |
+| logged_by | UUID | FK → auth.users, nullable |
+| note | TEXT | nullable, max 200 chars |
+| is_onboarding | BOOLEAN NOT NULL | default false |
+| created_at | TIMESTAMPTZ | default now() |
+| updated_at | TIMESTAMPTZ | default now() |
+
+#### Indexes
+
+```sql
+-- Membership lookups (critical for RLS)
+idx_puppy_memberships_user_puppy    ON (user_id, puppy_id) WHERE active
+idx_puppy_memberships_puppy_user    ON (puppy_id, user_id) WHERE active
+idx_puppy_memberships_role          ON (puppy_id, role) WHERE active
+
+-- Routine fetching
+idx_routines_puppy_active           ON (puppy_id, is_active) WHERE is_active=true
+idx_routines_puppy_generated        ON (puppy_id, generated_at DESC)
+
+-- Routine items
+idx_routine_items_routine           ON (routine_id, scheduled_time)
+idx_routine_items_time              ON (scheduled_time) WHERE is_enabled=true
+
+-- Activity logs (dashboard + progress)
+idx_activity_logs_puppy_date        ON (puppy_id, date DESC)
+idx_activity_logs_routine_item_date ON (routine_item_id, date)
+idx_activity_logs_completed_by      ON (completed_by, puppy_id, date) WHERE completed_by NOT NULL
+idx_activity_logs_date_range        ON (puppy_id, date, status)
+idx_activity_logs_dashboard         ON (puppy_id, date, completed_by) WHERE completed_by NOT NULL
+
+-- Invites
+idx_invites_token                   ON (invite_token) WHERE status=pending
+idx_invites_puppy_status            ON (puppy_id, status, created_at DESC)
+idx_invites_expires                 ON (expires_at) WHERE status=pending
+
+-- Weight logs
+idx_weight_logs_puppy_date          ON (puppy_id, logged_at DESC)
+
+-- Profiles
+idx_profiles_id                     ON (id)
+```
+
+#### Storage Buckets
+
+| Bucket | Access | Path Pattern |
+|--------|--------|-------------|
+| `puppy-photos` | Public read, authenticated write | `{userId}/{filename}` |
+| `user-avatars` | Public read, authenticated write | `{userId}/avatar.{ext}` |
+
+#### Realtime Publications
+
+`supabase_realtime` publishes: `activity_logs`, `invites`, `profiles` (with REPLICA IDENTITY FULL for profiles)
+
+### 2.2 Firebase Firestore
+
+Three collections, all secured by `hasPuppyAccess(puppyId)` which checks `auth.token.puppyIds` Custom Claim.
+
+**`editedRoutineItems/{docId}`** — Task edit overlays
+- docId format: `{puppyId}_{routineItemId}_{YYYY-MM-DD}`
+- Fields: puppyId, routineItemId, date, time, activityType, title, description, pottyDetails, durationMinutes, editedBy, editedAt
+
+**`deletedRoutineItems/{docId}`** — Task deletion overlays
+- docId format: `{puppyId}_{routineItemId}_{YYYY-MM-DD}`
+- Fields: puppyId, routineItemId, date, deletedBy, deletedAt
+
+**`tasks/{taskId}`** — User-added custom tasks
+- Fields: puppyId, date, scheduledTime, actualTime, activityType, title, isCompleted, isEdited, isUserAdded, lastEditedBy, lastEditedAt, createdAt
+- Validated on create: all required fields present, activityType in enum, lastEditedBy = auth.uid
+
+---
+
+## 3. Edge Functions (API Layer)
+
+### 3.1 `POST /functions/v1/generate-routine`
+
+**Purpose:** Two-layer AI routine generation — deterministic parameter computation + Claude schedule assembly.
+
+**File:** `supabase/functions/generate-routine/index.ts` + `schedule-params.ts`
 
 **Request:**
 ```typescript
 {
-  puppyId: string;          // UUID of newly created puppy
+  puppyId: string;
   questionnaireData: {
     puppyName: string;
     breed: string;
-    dateOfBirth: string;     // YYYY-MM-DD (D69 — replaces ageMonths/ageWeeks)
+    dateOfBirth: string;       // YYYY-MM-DD
     weight: number | null;
     weightUnit: 'lbs' | 'kg';
-    wakeUpTime: string;      // HH:MM
-    bedTime: string;         // HH:MM
-  }
+    wakeUpTime: string;        // HH:MM
+    bedTime: string;           // HH:MM
+  };
+  isRegeneration?: boolean;    // true = weekly regeneration (F14)
 }
 ```
 
@@ -290,5405 +315,445 @@ CREATE INDEX idx_weight_logs_onboarding
 ```typescript
 {
   routine: {
-    id: string;              // Routine UUID
+    id: string;
     puppy_id: string;
     generated_at: string;
-    source: 'ai_generated';
     is_active: true;
-    routine_items: [
-      {
-        id: string;
-        activity_type: string;
-        title: string;
-        description: null;       // D73: always null — no LLM commentary
-        scheduled_time: string;  // HH:MM:SS
-        duration_minutes: number | null;
-        sort_order: number;
-        is_enabled: true;
-      }
-    ]
+    valid_until: string;       // generated_at + 7 days
+    generation_context: {
+      age_bracket: string;
+      age_weeks: number;
+      completion_summary: Record<string, { completed: number; total: number }> | null;
+      schedule_params: ScheduleParams;
+    };
+    routine_items: Array<{
+      id: string;
+      activity_type: string;
+      title: string;
+      description: null;         // D73: always null
+      scheduled_time: string;    // HH:MM:SS
+      duration_minutes: number | null;  // set for exercise/training/rest/play/bonding
+      sort_order: number;
+      is_enabled: true;
+    }>;
   }
 }
 ```
 
-**Implementation Flow (Two-Layer System — D70, D71):**
-1. Validate request (auth check, puppy ownership)
-2. Read puppy record from Supabase (gets breed_size, energy_level, is_brachycephalic)
-3. Compute age bracket from date_of_birth (D69)
-4. Call `computeScheduleParams()` — deterministic parameter computation (D70)
-5. Build slim Claude prompt from pre-computed params (~50 lines, not ~330)
-6. Call Claude API — schedule assembly only (D71)
-7. Parse and validate Claude response
-8. Save routine + items to database (transaction)
-9. Return complete routine
+**Implementation flow:**
+1. Verify auth header + user membership
+2. Fetch puppy record (date_of_birth, breed_size, energy_level, is_brachycephalic)
+3. If `isRegeneration`: acquire lock, aggregate past-week completion summary from activity_logs
+4. `computeScheduleParams()` → all scheduling parameters (deterministic, no LLM)
+5. Build system + user prompts (slim ~50 lines, includes pre-computed params)
+6. Call Claude Sonnet 4.6 via tool_use (`generate_schedule`) → structured JSON
+7. Validate response (10-50 activities, valid categories, HH:MM format)
+8. Map each activity category to `duration_minutes` via `getDurationForActivity()`:
+   - `exercise` → `walkDurationMinutes`
+   - `training` → `trainingSessionMinutes`
+   - `rest` → `napDurationMinutes`
+   - `play` → `playSessionMinutes`
+   - `bonding` → `calmBondingMinutes`
+   - all others → `null`
+9. Deactivate old routine, insert new routine + items
+10. Set `valid_until = now + 7 days`, store `generation_context`
+11. If `isRegeneration`: release lock on old routine
 
-See **Section 16** for full details on the two-layer system.
+**Error handling:** 401 (no auth), 403 (not a member), 404 (no puppy), 500 (Claude failure)
 
-**Claude Prompt Strategy:**
-```typescript
-const prompt = `You are a certified dog trainer and veterinary advisor. Generate a personalized daily routine for a puppy based on the following information:
+#### `computeScheduleParams()` — Deterministic Parameter Engine
 
-Puppy Details:
-- Name: ${data.puppyName}
-- Breed: ${data.breed}
-- Age: ${data.ageMonths} months, ${data.ageWeeks} weeks
-- Weight: ${data.weight} ${data.weightUnit}
-- Wake-up Time: ${data.wakeUpTime}
-- Bedtime: ${data.bedTime}
+**File:** `supabase/functions/generate-routine/schedule-params.ts`
 
-Generate a daily routine with 15-20 activities covering:
-- Feeding (age-appropriate frequency and portions)
-- Potty breaks (frequent for young puppies)
-- Exercise (breed and age appropriate - avoid over-exercising)
-- Training sessions (short, positive reinforcement)
-- Nap/crate time
-- Play sessions
-- Socialization opportunities
+Pure TypeScript function. No network calls, no LLM. Takes breed profile + current age → returns every scheduling parameter.
 
-Format as a JSON array of activities. Each activity must have:
-- time: "HH:MM" (24-hour format, aligned with owner's schedule)
-- activity: short title (e.g., "Morning Walk")
-- category: one of [feeding, potty, exercise, training, rest, play, bonding]
-- description: 1-2 sentence guidance (include safety tips for young puppies)
+**Input:** `DogProfile` — dateOfBirth, breedSize, energyLevel, isBrachycephalic, wakeUpTime, bedTime
 
-Ensure:
-- Potty breaks are frequent (every 2-3 hours for puppies under 12 weeks)
-- Feeding matches breed size and age (3-4 meals for young puppies, 2-3 for older)
-- Exercise is gentle and age-appropriate (5 min per month of age, max)
-- Training sessions are short (5-10 minutes max)
-- Evening wind-down before bedtime
+**Output:** `ScheduleParams` — 20+ fields including:
+- `ageBracket` (1 of 9 tiers: newborn 8-10w → young_adult 52+w)
+- `pottyModel` (event_based for brackets 0-4, time_based for 5-8)
+- `mealsPerDay` + pre-computed `mealTimes[]`
+- `walkDurationMinutes`, `walkSessionsPerDay`
+- `trainingSessionMinutes`, `trainingSessionsPerDay`
+- `napDurationMinutes`, `napsPerDay`, `awakeWindowMinutes`
+- `playSessionMinutes`, `playSessionsPerDay`
+- `calmBondingMinutes`, `calmBondingSessions`
 
-Return ONLY valid JSON, no other text.`;
-```
+**Breed modifiers:**
+- Brachycephalic: walk capped at 15 min
+- Toy breeds: +1 meal in newborn/early_puppy (hypoglycemia)
+- Giant breeds: stay at 3 meals in adolescent+ (bloat prevention)
+- High energy: +25% play duration; Low energy: -17% play duration
+- Young adult walk: resolved by energy level (52/37/20 min)
 
-**Error Handling:**
-- 401: Not authenticated
-- 403: Not authorized (user doesn't own puppy)
-- 400: Invalid request (missing fields, invalid data)
-- 500: Claude API error (log and return generic error)
-- 503: Claude rate limit (retry with exponential backoff)
+### 3.2 `POST /functions/v1/validate-invite-code`
 
-**Cost Estimation:**
-- Claude Sonnet 4.5: $3.00 per million input tokens, $15.00 per million output tokens
-- Estimated prompt size: ~500 tokens input, ~2000 tokens output
-- Cost per routine: ~$0.03
-- For 1000 users/month: ~$30/month in AI costs (negligible)
+**Purpose:** Caretaker join flow — validates invite code, creates membership.
 
----
+**File:** `supabase/functions/validate-invite-code/index.ts`
 
-### 3.2 Invite Acceptance Endpoint
-
-**Endpoint:** `POST /functions/v1/accept-invite`
-
-**Purpose:** Handle caretaker invite acceptance (validate token, create membership).
-
-**Request:**
-```typescript
-{
-  inviteToken: string;     // From URL query param
-}
-```
+**Request:** `{ code: string }`
 
 **Response:**
 ```typescript
 {
   success: true;
-  puppy: {
-    id: string;
-    name: string;
-    photo_url: string | null;
-    owner_name: string;    // Display name of owner
-  };
-  membership: {
-    id: string;
-    role: 'caretaker';
-    joined_at: string;
-  }
+  puppy: { id, name, breed, ageDisplay, photoUrl };
+  membership: { id, puppyId, userId, role: 'caretaker', status: 'active' };
 }
 ```
 
-**Implementation Flow:**
-1. Validate token (exists, not expired, status = 'pending')
-2. Check user isn't already a member
-3. Create puppy_membership record (role = 'caretaker')
-4. Update invite (status = 'accepted', accepted_by = user_id)
-5. Return puppy details for UI display
+**Flow:**
+1. Verify auth, look up invite code (case-insensitive)
+2. Check: user not already in household, caretaker limit (max 1 per puppy)
+3. Create membership (uses service_role to bypass RLS — user isn't a member yet)
+4. Return puppy details for UI
 
-**Error Handling:**
-- 400: Invalid or expired token
-- 409: User already a member
-- 500: Database error
+**Error handling:** 400 (missing code), 401 (not auth), 404 (code not found), 409 (duplicate/limit)
 
----
+### 3.3 `POST /functions/v1/get-firebase-token`
 
-### 3.3 Weekly Routine Regeneration (F14)
+**Purpose:** Mint Firebase Custom Token from Supabase JWT for Firestore access.
 
-**Endpoint:** `POST /functions/v1/generate-routine` (extended, not new — D81)
+**File:** `supabase/functions/get-firebase-token/index.ts`
 
-**Purpose:** Same endpoint as onboarding, extended to handle weekly regeneration when `isRegeneration: true` is passed. Computes completion context server-side from `activity_logs`, includes it in the LLM prompt, and sets `valid_until` on the new routine.
+**Request:** (no body — auth via Authorization header)
 
-See **Section 24** for full implementation details (database changes, lock mechanism, prompt changes, client integration, deployment checklist).
+**Response:** `{ firebaseToken: string }`
 
-### 3.4 Future Endpoints (Post-MVP)
-
-**Progress Insights:**
-- `GET /functions/v1/insights/{puppyId}` - Weekly progress summary
-- Aggregate activity_logs for trends
+**Flow:**
+1. Verify Supabase JWT via JWKS endpoint (ES256 asymmetric)
+2. Query puppy_memberships for user's active puppyIds
+3. Create Firebase Custom Token with `{ puppyIds: [...] }` claim
+4. Return token (client calls `signInWithCustomToken()`)
 
 ---
 
-## 4. Authentication & Authorization
+## 4. Service Layer (Client-Side)
 
-### 4.1 Current State (Already Implemented)
-- **Google OAuth** via Supabase Auth
-- Frontend uses `supabase.auth.signInWithOAuth({ provider: 'google' })`
-- User profile created automatically via database trigger
+All services live in `src/lib/services/`. They wrap Supabase/Firebase operations for the React components.
 
-### 4.2 Authorization Model
-
-**Roles:**
-- **Owner:** Full access (CRUD on puppy, routine, settings, invites)
-- **Caretaker:** Read + track access (view routine, complete activities)
-
-**Enforcement:**
-- **Database RLS:** Postgres policies enforce access at query level
-- **Edge Functions:** Validate user role before mutations
-- **Frontend:** UI hides unavailable actions (defense in depth)
-
-**Example Check:**
-```typescript
-// In Edge Function: verify user is owner before allowing routine edit
-const { data: membership } = await supabase
-  .from('puppy_memberships')
-  .select('role')
-  .eq('puppy_id', puppyId)
-  .eq('user_id', user.id)
-  .eq('status', 'active')
-  .single();
-
-if (!membership || membership.role !== 'owner') {
-  return new Response('Forbidden', { status: 403 });
-}
-```
+| Service | File | Responsibility |
+|---------|------|---------------|
+| **auth** | `auth.ts` | Google OAuth sign-in (desktop + Capacitor), sign-out, profile CRUD, avatar upload, profile change subscriptions |
+| **routines** | `routines.ts` | getActiveRoutine, saveRoutine, generateRoutineWithAI (calls Edge Function), toggleRoutineItem |
+| **routine-evolution** | `routine-evolution.ts` | needsRegeneration, isRegenerationInProgress, clearStaleLock, triggerRegeneration, cleanupFirebaseOverlays (F14) |
+| **activity-logs** | `activity-logs.ts` | getTodayLogs, completeActivity, skipActivity, undoActivity, real-time subscription, getLogsForDateRange |
+| **puppies** | `puppies.ts` | createPuppy (+ owner membership + invite code), getUserPuppies, getPuppy, uploadPuppyPhoto, fetchBreedProfiles, computeAgeDisplay |
+| **weight-logs** | `weight-logs.ts` | getWeightLogs, addWeightLog, updateWeightLog, deleteWeightLog, ensureOnboardingWeight |
+| **invite-codes** | `invite-codes.ts` | createInviteCode, getInviteCode, validateInviteCode (calls Edge Function) |
+| **edited-routine-items** | `edited-routine-items.ts` | Subscribe to / save edits in Firestore (time, activityType, pottyDetails, durationMinutes) |
+| **deleted-routine-items** | `deleted-routine-items.ts` | Subscribe to / save deletions in Firestore |
+| **tasks** | `tasks.ts` | Subscribe to / CRUD custom user-added tasks in Firestore |
 
 ---
 
-## 5. AI Integration Details
+## 5. Feature Implementation Status
 
-### 5.1 Claude API Configuration
+### Status Legend
+- ✅ **Complete** — Backend fully implemented and deployed
+- ⚠️ **Needs verification** — Code exists but needs end-to-end testing
+- 🔧 **Needs fix** — Known issue or gap identified
+- ❌ **Not started** — No backend work done
 
-**Model:** `claude-sonnet-4-5-20250929`
-**Max Tokens:** 4096 (routine generation outputs ~2000 tokens)
-**Temperature:** 0.7 (balanced creativity and consistency)
-**System Prompt:** Define role as puppy care expert, safety guidelines
+### Feature Matrix
 
-**Structured Output:**
-Use Claude's built-in JSON mode to ensure valid schema:
-```typescript
-const response = await anthropic.messages.create({
-  model: 'claude-sonnet-4-5-20250929',
-  max_tokens: 4096,
-  temperature: 0.7,
-  messages: [
-    { role: 'user', content: slimPrompt }  // ~50 lines (D71)
-  ]
-});
-
-const routine = JSON.parse(response.content[0].text);
-```
-
-**Note:** The prompt is now a slim ~50-line template built from pre-computed scheduling parameters (D70, D71). All breed classification, age bracket computation, and parameter table lookups happen in `computeScheduleParams()` before the LLM is called. See Section 16 for full details.
-
-**Validation:**
-After parsing, validate:
-- All activities have required fields (time, activity, category). Description is NOT required (D73 — stripped before saving).
-- Times are chronological and within wake/bed window
-- Categories match allowed values
-- Meal times are within 15 min of pre-computed times (new — D70)
-- Activity durations don't exceed pre-computed maximums
-
-**Fallback Strategy:**
-If Claude call fails (rate limit, network error):
-1. Log error to Supabase (errors table)
-2. Fall back to client-side rule-based generation (existing `generateRoutine()`)
-3. Mark routine source as 'fallback_generated'
-4. Show user a notice: "We're experiencing high demand. Your routine was generated using our backup system."
+| Feature | Status | Backend Components | Notes |
+|---------|--------|-------------------|-------|
+| **F1: Onboarding** | ✅ | breed_profiles table (30 breeds seeded), puppies table with DOB + breed fields, createPuppy service | Breed dropdown loads from DB; fallback to cached list |
+| **F2: Auth** | ✅ | Supabase Google OAuth, Firebase Custom Token bridge, Capacitor deep link handler | Dual auth working for both web and iOS |
+| **F3: AI Routine Generation** | ⚠️ | generate-routine Edge Function, schedule-params.ts, getDurationForActivity() mapping | **Duration passthrough pipeline needs verification** — spec updated to require duration on all applicable AI-generated tasks. Code maps category→duration; need to confirm it reaches the dashboard. |
+| **F4: Daily Routine View** | ✅ | getActiveRoutine, activity_logs subscription, editedRoutineItems/deletedRoutineItems subscriptions | Dashboard merges Supabase routine + Firebase overlays |
+| **F5: Progress Tracking** | ✅ | activity_logs with date range queries, completion counts | Aggregation done client-side. No server-side ProgressSummary cache needed for v1. |
+| **F6: Caretaker Invite** | ✅ | invite_codes table, createInviteCode in puppies service | Uses word-based codes (BISCUIT-7X2K) instead of deep link URLs — simpler, same UX |
+| **F7: Caretaker Onboarding** | ✅ | validate-invite-code Edge Function, membership creation with service_role | Bypasses RLS since user isn't a member yet |
+| **F8: Completion Attribution** | ✅ | completed_by on activity_logs, profile picture fetching, real-time profile subscriptions | Green dot overlay is CSS-only (frontend) |
+| **F9: Profile Pictures** | ✅ | user-avatars storage bucket, uploadUserAvatar, Firebase Storage for custom photos | Google OAuth picture + custom upload supported |
+| **F10: Task Management** | ✅ | editedRoutineItems + deletedRoutineItems + tasks Firestore collections, Firestore rules | Full CRUD with real-time sync, offline persistence |
+| **F11: Potty Details** | ✅ | pottyDetails field in editedRoutineItems (Firebase), task card display | 💩/💦 toggles stored as `{ poop: bool, pee: bool }` |
+| **F12: Weight Tracking** | ✅ | weight_logs Supabase table, full CRUD service, onboarding migration | Delete protected for is_onboarding entries via RLS |
+| **F13: Activity Duration** | ⚠️ | duration_minutes on routine_items (Supabase), durationMinutes on editedRoutineItems (Firebase) | **Verify**: AI-generated durations display on dashboard at generation time. The `getDurationForActivity()` mapping exists in Edge Function; `legacyRoutine` conversion in App.tsx preserves `durationMinutes`. |
+| **F14: Weekly Routine Evolution** | ⚠️ | valid_until + regeneration_status + generation_context columns, routine-evolution.ts service, Edge Function lock mechanism, completion aggregation | Migration deployed. **Needs end-to-end testing**: regeneration trigger, lock acquisition/release, completion summary in prompt, Firebase overlay cleanup. |
 
 ---
 
-### 5.2 Safety & Content Moderation
+## 6. Remaining Backend Work
 
-**Input Validation:**
-- Breed names: check against allowlist (AKC recognized breeds + "Mixed")
-- Sanitize all text inputs (strip HTML, limit length)
-- Use zod schemas in Edge Functions
+### 6.1 Priority 1: Verification & Bug Fixes
 
-```typescript
-import { z } from 'zod';
+**Step 1: Verify AI-generated duration pipeline (F3 + F13)**
+- Files: `supabase/functions/generate-routine/index.ts:442-467`, `src/app/App.tsx:510-525`, `src/app/components/Dashboard.tsx:38-45,160-164`
+- Test: Generate a routine for a 10-week-old Golden Retriever. Confirm that walk, nap, play, training, and calm bonding tasks all have non-null `duration_minutes` in the database and display duration inline on dashboard cards.
+- Expected: "3:00 PM · 15 min  Walk" not just "3:00 PM  Walk"
+- Check: `getDurationForActivity()` maps all 5 applicable categories. `legacyRoutine` conversion preserves `durationMinutes`. Dashboard `formatDuration()` renders when `durationMinutes != null && durationMinutes > 0`.
+→ Unblocks: confidence that F13 acceptance criteria are met
 
-const requestSchema = z.object({
-  puppyId: z.string().uuid(),
-  questionnaireData: z.object({
-    puppyName: z.string().max(50),
-    breed: z.string().max(100),
-    ageMonths: z.number().int().min(0).max(12),
-    // ...
-  })
-});
-```
+**Step 2: End-to-end test weekly regeneration (F14)**
+- Test scenarios:
+  1. Fresh routine (< 7 days old): no regeneration triggers
+  2. Expired routine (> 7 days): regeneration triggers, banner shows, new routine appears
+  3. Null `valid_until` (legacy): treated as expired, regeneration triggers
+  4. Concurrent dashboard loads: only one regeneration proceeds (lock deduplication)
+  5. Lock stale > 5 min: lock is cleared, regeneration retries
+  6. Age bracket transition: puppy crosses bracket boundary → new parameters used
+  7. Completion context: low-completion categories appear in Claude prompt
+  8. Failure: old routine stays active, no error shown, lock released
+  9. Firebase overlay cleanup: old edits/deletes removed, custom tasks preserved
+- Files: `src/lib/services/routine-evolution.ts`, `supabase/functions/generate-routine/index.ts`, `src/app/App.tsx` (dashboard useEffect)
+→ Unblocks: confidence that F14 works in production
 
----
+**Step 3: Verify duration pre-selection in edit bottom sheet (F13)**
+- When user taps an AI-generated walk/nap/play/training/calm task to edit, the Duration section in the bottom sheet should pre-select the correct chip (or show the custom value).
+- Files: `src/app/components/TaskManagementDashboard.tsx` (or TaskCard)
+- Check: edit bottom sheet receives `durationMinutes` from the task data and maps to the correct preset chip.
+→ Unblocks: F13 acceptance criteria for edit pre-selection
 
-### 5.3 Rate Limiting
-**Threat:** Abuse (user spamming "Regenerate routine" to rack up AI costs).
+### 6.2 Priority 2: Production Hardening
 
-**Mitigation:**
-- Supabase Edge Functions have built-in rate limiting (100 req/min per IP)
-- Add application-level limit: 1 routine generation per puppy per 5 minutes
-- Track in database: `routine_generation_requests` table with timestamps
+**Step 4: RLS policy audit**
+- Recent migration `20260601000001_tighten_profiles_select.sql` restricted profiles SELECT. Verify:
+  - Users can still read co-member profiles (needed for completion attribution)
+  - Users cannot read profiles of unrelated users
+  - All tables pass RLS smoke test with multiple accounts
+- Run through the app as: owner, caretaker, and unrelated user
+→ Unblocks: security confidence
 
----
+**Step 5: Edge Function error handling review**
+- Verify all three Edge Functions handle edge cases:
+  - `generate-routine`: Claude API timeout, malformed response, puppyId not found, empty breed fields
+  - `validate-invite-code`: invalid code format, already-used code, caretaker limit exceeded
+  - `get-firebase-token`: expired Supabase JWT, JWKS fetch failure
+- Ensure no unhandled promise rejections or 500s with leaked stack traces
+→ Unblocks: production reliability
 
-## 6. Deployment Architecture
+**Step 6: Firebase token refresh on membership changes**
+- When a caretaker joins (new puppyId added), the Firebase Custom Token must be refreshed to include the new puppyId in claims
+- Verify: after invite acceptance, `signInToFirebase()` is called to refresh token
+- File: `src/app/App.tsx` (handleInviteSuccess)
+→ Unblocks: caretaker real-time sync working immediately after join
 
-### 6.1 Infrastructure (Supabase Cloud)
+### 6.3 Priority 3: Deployment
 
-**Components:**
-- **Database:** Supabase-managed Postgres (auto-backups, point-in-time recovery)
-- **Edge Functions:** Deployed via Supabase CLI (`supabase functions deploy`)
-- **Storage:** Supabase Storage with CDN for images
-- **Auth:** Supabase Auth (Google OAuth configured)
-
-**Environment Variables:**
-```env
-# Supabase (already configured)
-VITE_SUPABASE_URL=https://[project].supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-
-# Edge Function secrets (set via CLI)
-ANTHROPIC_API_KEY=sk-ant-... (set in Supabase dashboard)
-```
-
-**Regions:**
-- **Database:** us-east-1 (Supabase default, can migrate to us-west-2 for latency)
-- **Edge Functions:** Auto-deploy to nearest region (Deno Deploy)
-
----
-
-### 6.2 Frontend Hosting: **Vercel**
-
-**Rationale:** Already using Vite, Vercel offers zero-config deployment, edge functions for static assets, auto-preview deploys.
-
-**Setup:**
-```bash
-# Connect Vercel to GitHub repo
-vercel link
-
-# Auto-deploys on push to main
-# Preview deploys for PRs
-```
-
-**Environment Variables (Vercel):**
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
-
-**Build Config (`vercel.json`):**
-```json
-{
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite"
-}
-```
+**Step 7: Production deployment checklist**
+- [ ] All Supabase migrations applied to production
+- [ ] Edge Functions deployed: `supabase functions deploy generate-routine validate-invite-code get-firebase-token`
+- [ ] Supabase secrets set: `ANTHROPIC_API_KEY`, `FIREBASE_SERVICE_ACCOUNT`, `FIREBASE_API_KEY`
+- [ ] Firebase Firestore rules deployed: `firebase deploy --only firestore:rules`
+- [ ] Environment variables set in Vercel/hosting: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_FIREBASE_*`
+- [ ] PostHog configured for production
+- [ ] Storage buckets have correct CORS and access policies
+- [ ] Test full flow with fresh account: sign in → onboarding → routine generation → task editing → invite → caretaker join
+- [ ] Monitor: Supabase logs, Anthropic usage dashboard, Firebase console
 
 ---
 
-### 6.3 CI/CD Pipeline
+## 7. Security
 
-**0→1 Stage:** Keep it simple. No CI/CD needed yet.
+### 7.1 Authentication
 
-**Manual Deploy Process:**
-1. **Frontend:** `git push` → Vercel auto-deploys
-2. **Edge Functions:** `supabase functions deploy generate-routine`
-3. **Database Migrations:** `supabase db push` (run manually, review SQL first)
+| Concern | Mitigation |
+|---------|-----------|
+| JWT validation | Edge Functions verify Supabase JWT; get-firebase-token uses JWKS (ES256 asymmetric) |
+| Token refresh | Supabase auto-refreshes; Firebase token refreshed on membership changes |
+| API key exposure | ANTHROPIC_API_KEY stored in Supabase secrets, never in client code |
+| Firebase service account | Stored as Supabase secret, accessed only in get-firebase-token Edge Function |
 
-**1→100 Stage (Future):**
-- GitHub Actions for automated testing
-- Staging environment (separate Supabase project)
-- Database migration CI (check for breaking changes)
+### 7.2 Authorization (RLS)
 
----
+| Table | Owner | Caretaker | Unauthenticated |
+|-------|-------|-----------|-----------------|
+| profiles | Read own + co-members, Update own | Read co-members | None |
+| puppies | CRUD (own puppies) | Read only | None |
+| puppy_memberships | Read all for own puppies, Insert | Read own | None |
+| routines | Read + Create + Update | Read only | None |
+| routine_items | Read + Create + Update | Read only | None |
+| activity_logs | Read + Insert + Update own | Read + Insert + Update own | None |
+| invite_codes | Read + Insert | None (joins via Edge Function) | None |
+| breed_profiles | Read | Read | None |
+| weight_logs | Full CRUD (delete blocked for is_onboarding) | Full CRUD (same) | None |
 
-### 6.4 Monitoring & Logging
+### 7.3 Firestore Security
 
-**Supabase Built-In:**
-- **Database Logs:** Query performance, slow queries, errors
-- **Edge Function Logs:** Console output, errors, latency
-- **Auth Logs:** Sign-ins, failures, OAuth errors
+- All collections gated by `hasPuppyAccess(puppyId)` which checks `auth.token.puppyIds` Custom Claim
+- Write validation on `tasks` collection enforces required fields and `lastEditedBy = auth.uid`
+- No admin/public access rules
 
-**External (Future):**
-- **Sentry:** Frontend and Edge Function error tracking
-- **Anthropic Dashboard:** Claude API usage, rate limits, costs
+### 7.4 Input Validation
 
-**Alerts (Manual for Now):**
-- Check Supabase dashboard daily for errors
-- Monitor Anthropic usage to avoid surprise bills
-
----
-
-## 7. Development Phases
-
-### Phase 1: Backend Foundation (Week 1)
-**Goal:** Get Edge Functions working locally, set up dev environment.
-
-**Tasks:**
-1. Install Supabase CLI: `npm install -g supabase`
-2. Initialize local Supabase: `supabase init`
-3. Start local Supabase: `supabase start` (Postgres + Edge Functions)
-4. Create `supabase/functions/generate-routine/index.ts`
-5. Test Edge Function locally with mock data
-6. **Deliverable:** Edge Function responds to POST with hardcoded routine
-
-**Unblocks:** Phase 2 (AI integration)
+- Edge Functions validate request bodies (auth check, UUID format, required fields)
+- Breed names validated against `breed_profiles` table (not hardcoded)
+- DOB validation: not future, puppy must be ≥ 8 weeks old
+- Weight validation: > 0, ≤ 300 lbs / 136 kg
+- Notes: max 200 characters
+- LLM output: validated structure (10-50 activities, valid categories, HH:MM times)
 
 ---
 
-### Phase 2: AI Integration (Week 1-2)
-**Goal:** Claude API integration, structured output, validation.
+## 8. Performance
 
-**Tasks:**
-1. Sign up for Anthropic API key
-2. Add `ANTHROPIC_API_KEY` to Supabase secrets
-3. Install Anthropic SDK in Edge Function: `import Anthropic from '@anthropic-ai/sdk'`
-4. Build Claude prompt from request data
-5. Call Claude API, parse JSON response
-6. Validate routine structure (times, categories, safety checks)
-7. Test with real questionnaire data (various breeds, ages)
-8. **Deliverable:** Edge Function generates AI routines
+### 8.1 Database Query Optimization
 
-**Unblocks:** Phase 3 (database integration)
+| Query | Index Used | Target Latency |
+|-------|-----------|---------------|
+| Dashboard: get active routine + items | `idx_routines_puppy_active` + `idx_routine_items_routine` | < 200ms |
+| Dashboard: today's activity logs | `idx_activity_logs_dashboard` | < 100ms |
+| Progress: date range logs | `idx_activity_logs_date_range` | < 200ms |
+| Weight history | `idx_weight_logs_puppy_date` | < 100ms |
+| Membership check (RLS) | `idx_puppy_memberships_user_puppy` | < 10ms |
 
----
+### 8.2 AI Generation Performance
 
-### Phase 3: Database Integration (Week 2)
-**Goal:** Save AI-generated routines to Supabase, replace client-side logic.
+| Metric | Target |
+|--------|--------|
+| `computeScheduleParams()` | < 1ms (pure computation) |
+| Claude API call | < 8 seconds |
+| Total routine generation | < 10 seconds |
+| Weekly regeneration (with completion query) | < 12 seconds |
 
-**Tasks:**
-1. Update Edge Function to save routine + items to database (transaction)
-2. Add error handling (duplicate routines, invalid puppy IDs)
-3. Update frontend `AIRoutineGenerator` to call Edge Function instead of `generateRoutine()`
-4. Remove client-side `generateRoutine()` function (keep as fallback)
-5. Test end-to-end flow: questionnaire → Edge Function → database → dashboard
-6. **Deliverable:** Production routine generation
+### 8.3 Real-Time Sync
 
-**Unblocks:** Phase 4 (production hardening)
-
----
-
-### Phase 4: Production Hardening (Week 2-3)
-**Goal:** RLS policies, error handling, performance optimization.
-
-**Tasks:**
-1. Enable RLS on all tables
-2. Write and test RLS policies (use `supabase/migrations/`)
-3. Add database indexes (see Section 2.3)
-4. Implement fallback logic (Claude fails → client-side generation)
-5. Add request validation (zod schemas)
-6. Test error paths (invalid tokens, network failures, rate limits)
-7. Load test: simulate 100 concurrent routine generations
-8. **Deliverable:** Production-ready backend
-
-**Unblocks:** Phase 5 (deployment)
+| Channel | Technology | Latency Target |
+|---------|-----------|---------------|
+| Task edits/deletions | Firestore real-time | < 3 seconds |
+| Activity completions | Supabase Realtime (postgres_changes) | < 5 seconds |
+| Profile picture updates | Supabase Realtime (profiles) | < 5 seconds |
 
 ---
 
-### Phase 5: Deployment (Week 3)
-**Goal:** Deploy to production, verify E2E.
+## 9. Cost Projections
 
-**Tasks:**
-1. Deploy Edge Functions: `supabase functions deploy generate-routine`
-2. Run database migrations on production: `supabase db push --db-url <prod>`
-3. Update frontend env vars to point to production Supabase
-4. Deploy frontend to Vercel
-5. Create test account, run through onboarding flow
-6. Monitor logs for errors
-7. **Deliverable:** Live production app
-
-**Unblocks:** Phase 6 (invite system)
-
----
-
-### Phase 6: Invite System Backend (Week 3-4)
-**Goal:** Implement `/accept-invite` Edge Function.
-
-**Tasks:**
-1. Create `supabase/functions/accept-invite/index.ts`
-2. Validate invite token (check expiry, status)
-3. Create puppy_membership record
-4. Update invite status
-5. Test invite flow end-to-end
-6. Add RLS policy for invite table
-7. **Deliverable:** Working caretaker invite system
-
-**Unblocks:** Launch 🚀
-
----
-
-## 8. Key Technical Decisions
-
-### Decision 1: Supabase vs. Custom Backend
-**Choice:** Supabase
-**Rationale:** 0→1 speed. Supabase provides auth, database, realtime, storage, and serverless functions in one platform. Building a custom Node/Express backend would take 3-4x longer and require managing infra (hosting, DB, auth provider integration). Supabase scales to millions of users, so we won't outgrow it.
-
-**Trade-off:** Vendor lock-in, but migration path exists (Postgres dump + rewrite Edge Functions as standard Node.js).
-
----
-
-### Decision 2: Claude Sonnet 4.5 vs. GPT-4
-**Choice:** Claude Sonnet 4.5
-**Rationale:** Sonnet 4.5 is the most capable model as of 2026-02, excels at structured output (JSON), has strong safety filters, and costs less than GPT-4 Turbo. Claude's longer context window (200K) allows richer prompts with breed-specific examples.
-
-**Trade-off:** Single vendor dependency, but fallback to client-side rules mitigates risk.
-
----
-
-### Decision 3: Edge Functions vs. Traditional API Server
-**Choice:** Supabase Edge Functions (Deno)
-**Rationale:** Zero cold start, auto-scaling, TypeScript native, integrated with Supabase auth/db. No need to manage Express server, deploy to Heroku, configure CORS, etc. For 0→1, serverless is the obvious choice.
-
-**Trade-off:** Deno ecosystem smaller than Node, but Anthropic SDK works fine.
-
----
-
-### Decision 4: Client-Side Fallback vs. Error Page
-**Choice:** Client-side fallback
-**Rationale:** If Claude API is down (rare but possible), showing an error page is a terrible UX for a new user completing onboarding. Falling back to rule-based generation (existing `generateRoutine()`) ensures they get *some* routine immediately. We can mark it as "fallback_generated" and offer a "Regenerate with AI" button later.
-
-**Trade-off:** More code to maintain, but dramatically better UX.
-
----
-
-### Decision 5: Realtime Sync vs. Polling
-**Choice:** Supabase Realtime
-**Rationale:** Already implemented in frontend (`subscribeToActivityLogs`). Provides <1s sync for activity completions, critical for multi-caretaker households. Polling would add 3-5s delay and unnecessary API load.
-
-**Trade-off:** Realtime connections cost more at scale, but negligible for <10K users.
-
----
-
-## 9. Migration Strategy (Client → Server AI)
-
-### Current Flow (Client-Side):
-```
-Questionnaire Submit
-  → setAppState('generating-routine')
-  → generateRoutine(data) [client-side JS]
-  → 8s animation
-  → handleRoutineGenerated(routine)
-  → saveRoutine(puppyId, items) [Supabase call]
-  → setAppState('dashboard')
-```
-
-### Target Flow (Server-Side):
-```
-Questionnaire Submit
-  → setAppState('generating-routine')
-  → POST /functions/v1/generate-routine [Edge Function]
-    → Claude API call
-    → Parse + validate
-    → Save to database
-    → Return routine
-  → 8s animation (parallel)
-  → handleRoutineGenerated(routine)
-  → setAppState('dashboard')
-```
-
-### Migration Steps:
-1. **Add Edge Function** (non-breaking, runs alongside client-side)
-2. **Update frontend** to call Edge Function instead of `generateRoutine()`
-3. **Keep `generateRoutine()` as fallback** (called if Edge Function returns 500/503)
-4. **Test with feature flag** (env var `VITE_USE_AI_BACKEND=true`)
-5. **Deploy to staging** (separate Supabase project)
-6. **Deploy to production**
-7. **Remove client-side `generateRoutine()`** after 1 week of stable AI generation
-
-**Rollback Plan:**
-- If Edge Function has >5% error rate, flip feature flag back to client-side
-- Client-side code remains untouched during migration
-
----
-
-## 10. Cost Projections
-
-### Monthly Costs (1000 Active Users)
+### Monthly Costs (1,000 Active Users)
 
 | Service | Usage | Cost |
 |---------|-------|------|
-| **Supabase** | Pro plan (8GB DB, 50GB storage, 2M Edge Function invocations) | $25/mo |
-| **Anthropic Claude API** | 1000 onboarding + ~4000 weekly regenerations/mo (~2K tokens/gen, F14) | $80/mo |
-| **Vercel** | Hobby plan (100GB bandwidth) | $0 (free tier) |
-| **Supabase Storage** | 10GB puppy photos (assuming 50% upload rate, 1MB avg) | Included in Pro |
-| **Total** | | **~$105/mo** |
+| Supabase Pro | 8GB DB, 50GB storage, 2M Edge Function invocations | $25/mo |
+| Anthropic Claude API | 1,000 onboarding + ~4,000 weekly regenerations (~2K tokens/gen) | $60-80/mo |
+| Firebase Firestore | 50K reads/day + 20K writes/day (free tier) | $0 |
+| Vercel | Hobby plan (100GB bandwidth) | $0 |
+| PostHog | Free tier (1M events/mo) | $0 |
+| **Total** | | **~$85-105/mo** |
 
 ### Scaling (10K Users)
-- Supabase: Upgrade to Team plan ($599/mo for dedicated resources)
-- Claude API: ~$300/mo (10K routines)
-- Vercel: Pro plan ($20/mo)
-- **Total:** ~$920/mo
-
-**Revenue Model (Future):**
-- Freemium: Basic routine free, AI adjustments behind paywall ($4.99/mo)
-- Premium: Unlimited AI regenerations, custom goals ($9.99/mo)
-- Break-even: ~100 paying users
+- Supabase: Team plan ($599/mo)
+- Claude API: ~$600-800/mo
+- Firestore: ~$25/mo (exceeds free tier)
+- **Total:** ~$1,225-1,425/mo
 
 ---
 
-## 11. Security Considerations
+## 10. Migrations Log
 
-### 11.1 Input Validation
-**Threat:** Prompt injection via fake breed names, malicious questionnaire data.
-
-**Mitigation:**
-- Validate breed against allowlist (AKC recognized breeds + "Mixed")
-- Sanitize all text inputs (strip HTML, limit length)
-- Use zod schemas in Edge Functions
-
-### 11.2 Data Privacy
-**Compliance:** COPPA not applicable (users are adults, puppy data is not PII).
-
-**Best Practices:**
-- Encrypt at rest (Supabase default)
-- TLS in transit (HTTPS everywhere)
-- No third-party analytics (avoid leaking user data)
-- User data deletion: implement account deletion (GDPR compliance)
-
-### 11.3 API Key Security
-**Threat:** Exposed `ANTHROPIC_API_KEY` in client code or logs.
-
-**Mitigation:**
-- Store in Supabase secrets (never in Git, env files)
-- Access via `Deno.env.get('ANTHROPIC_API_KEY')` in Edge Functions only
-- Rotate keys quarterly
-- Monitor Anthropic usage dashboard for anomalies
+| Migration | Date | Purpose |
+|-----------|------|---------|
+| `001_initial_schema.sql` | 2026-02-01 | Core tables: profiles, puppies, puppy_memberships, routines, routine_items, activity_logs, invites |
+| `002_fix_rls_recursion.sql` | 2026-02-01 | Fix recursive RLS policy on puppy_memberships |
+| `003_fix_insert_policies.sql` | 2026-02-01 | Fix INSERT policies for authenticated users |
+| `004_nuclear_rls_fix.sql` | 2026-02-01 | Comprehensive RLS rewrite with SECURITY DEFINER helpers |
+| `005_definitive_rls_fix.sql` | 2026-02-01 | Final RLS policy set |
+| `006_fix_user_deletion.sql` | 2026-02-01 | Fix CASCADE on user deletion |
+| `20260101000005_fix_insert_for_anon.sql` | 2026-02-01 | Fix anon insert policy |
+| `20260211000001_rls_policies.sql` | 2026-02-11 | Production RLS policies |
+| `20260211000002_indexes.sql` | 2026-02-11 | Performance indexes for all tables |
+| `20260217000001_user_avatars_storage_rls.sql` | 2026-02-17 | Storage bucket RLS for user avatars |
+| `20260217000002_profiles_realtime.sql` | 2026-02-17 | Enable Realtime for profiles |
+| `20260302000001_drop_living_situation.sql` | 2026-03-02 | Remove unused column |
+| `20260302000001_weight_logs.sql` | 2026-03-02 | Weight tracking table (F12) |
+| `20260302000002_invite_codes.sql` | 2026-03-02 | Invite codes table |
+| `20260525000001_breed_profiles.sql` | 2026-05-25 | Breed profiles reference table + 30 breeds seed (D68) |
+| `20260525000002_puppy_dob_fields.sql` | 2026-05-25 | Add DOB + breed fields to puppies (D69, D72) |
+| `20260525000003_backfill_existing.sql` | 2026-05-25 | Backfill DOB + breed fields for existing puppies |
+| `20260601000001_tighten_profiles_select.sql` | 2026-06-01 | Restrict profiles SELECT to co-members only |
+| `20260605000001_add_routine_evolution_columns.sql` | 2026-06-05 | Add valid_until, regeneration_status, generation_context to routines (F14) |
 
 ---
 
-## 12. Testing Strategy
+## 11. Key Technical Decisions
 
-### 12.1 Unit Tests (Edge Functions)
-**Framework:** Deno's built-in test runner
+| # | Decision | Choice | Rationale |
+|---|----------|--------|-----------|
+| D68 | Breed data source | `breed_profiles` Supabase table | Single source of truth, seed-only, queryable for onboarding dropdown |
+| D69 | Age tracking | `date_of_birth` (replaces age_months/age_weeks) | Enables automatic age progression — routine adapts as puppy grows |
+| D70 | Parameter computation | Deterministic TypeScript function | All scheduling math happens server-side without LLM — consistent, testable, auditable |
+| D71 | LLM role | Schedule assembly only | LLM receives pre-computed params (~50 lines) and arranges activities into a timeline. No breed classification, no arithmetic. |
+| D72 | Breed fields on puppy | Denormalized (copied from breed_profiles at creation) | Edge Function reads puppy record directly — no JOIN needed |
+| D73 | Task descriptions | Always null | No LLM-generated commentary or coaching advice in task descriptions |
+| Hybrid | Backend architecture | Supabase + Firebase | Supabase for relational data, Firebase for real-time task sync with offline persistence |
+| Codes | Invite mechanism | Word-based codes (BISCUIT-7X2K) | Simpler than deep links, works across platforms, easy to share verbally |
+| Lock | Regeneration dedup | `regeneration_status` column | Conditional UPDATE prevents duplicate Claude API calls |
+| Lazy | Regeneration trigger | Client-side check on dashboard load | Zero cost for inactive users, no cron infrastructure needed |
 
-**Test Coverage:**
-- Input validation (invalid puppyId, missing fields)
-- Claude response parsing (valid/invalid JSON)
-- Database transactions (rollback on error)
-- RLS policy enforcement (unauthorized access)
+---
 
-**Example:**
-```typescript
-// supabase/functions/generate-routine/index.test.ts
-Deno.test("rejects invalid puppyId", async () => {
-  const req = new Request('http://localhost', {
-    method: 'POST',
-    body: JSON.stringify({ puppyId: 'not-a-uuid' })
-  });
-  const res = await handler(req);
-  assertEquals(res.status, 400);
-});
+## 12. File Map
+
+```
+supabase/
+├── functions/
+│   ├── generate-routine/
+│   │   ├── index.ts              ← Edge Function: AI routine generation (410 lines)
+│   │   └── schedule-params.ts    ← Deterministic parameter engine (310 lines)
+│   ├── validate-invite-code/
+│   │   └── index.ts              ← Edge Function: caretaker invite validation (174 lines)
+│   └── get-firebase-token/
+│       └── index.ts              ← Edge Function: Firebase Custom Token minting (124 lines)
+├── migrations/                   ← 19 SQL migrations (see Section 10)
+└── .temp/linked-project.json
+
+src/lib/
+├── supabase.ts                   ← Supabase client initialization
+├── firebase.ts                   ← Firebase client + signInToFirebase()
+├── posthog.ts                    ← PostHog analytics
+├── database.types.ts             ← Supabase-generated TypeScript types
+└── services/
+    ├── auth.ts                   ← Google OAuth, profile CRUD, avatar upload
+    ├── routines.ts               ← Routine fetching + AI generation
+    ├── routine-evolution.ts      ← Weekly regeneration (F14)
+    ├── activity-logs.ts          ← Task completion tracking + real-time
+    ├── puppies.ts                ← Puppy CRUD + breed profiles
+    ├── weight-logs.ts            ← Weight tracking (F12)
+    ├── invite-codes.ts           ← Invite code generation + validation
+    ├── edited-routine-items.ts   ← Firebase: task edit overlays
+    ├── deleted-routine-items.ts  ← Firebase: task deletion overlays
+    ├── tasks.ts                  ← Firebase: custom user-added tasks
+    └── index.ts                  ← Service exports
+
+firebase/
+├── firestore.rules               ← Firestore security rules (72 lines)
+└── firestore.indexes.json
+
+src/app/
+├── App.tsx                       ← Main app: routing, auth flow, data loading (500+ lines)
+└── components/
+    ├── Dashboard.tsx             ← Routine display, duration formatting, progress card
+    ├── TaskManagementDashboard.tsx ← Edit/add/delete task bottom sheets
+    ├── OnboardingQuestionnaire.tsx ← 3-step onboarding form
+    ├── AIRoutineGenerator.tsx    ← Calls Edge Function, handles fallback
+    ├── Settings.tsx              ← Puppy profile, caretakers, profile photo
+    ├── WeightHistory.tsx         ← Growth chart + weight log list
+    └── ...
 ```
 
 ---
 
-### 12.2 Integration Tests
-**Scope:** E2E flows (onboarding → AI generation → dashboard).
-
-**Tools:** Playwright (headless browser testing)
-
-**Key Scenarios:**
-1. New user signs in → completes questionnaire → sees AI routine
-2. Owner invites caretaker → caretaker accepts → both see same routine
-3. Caretaker completes task → owner sees update in <5s (realtime)
-
-**Run Frequency:** Pre-deploy (manual), post-deploy (smoke test)
-
----
-
-### 12.3 Load Testing
-**Goal:** Validate Edge Function handles 100 concurrent routine generations.
-
-**Tool:** `wrk` or `artillery`
-
-**Test Plan:**
-```bash
-# 100 concurrent users, 10 seconds
-wrk -t10 -c100 -d10s --timeout 30s \
-  -s post.lua \
-  https://[project].supabase.co/functions/v1/generate-routine
-```
-
-**Success Criteria:**
-- <5% error rate
-- p99 latency <10s (Claude API is the bottleneck)
-- No database connection pool exhaustion
-
----
-
-## 13. Rollout Plan
-
-### Pre-Launch Checklist
-- [ ] RLS policies enabled on all tables
-- [ ] Database indexes created
-- [ ] Edge Function deployed to production
-- [ ] Frontend env vars updated (production Supabase URL)
-- [ ] Anthropic API key configured in Supabase secrets
-- [ ] Test account created, onboarding flow verified
-- [ ] Error monitoring configured (Supabase logs)
-- [ ] Invite flow tested (owner → caretaker)
-- [ ] Realtime sync verified (activity completion propagation)
-- [ ] Fallback logic tested (Claude API disabled → client-side generation)
-
-### Launch Day
-1. Deploy frontend to Vercel (main branch)
-2. Monitor Supabase logs for errors
-3. Monitor Anthropic dashboard for API usage
-4. Test E2E flow on production
-5. Invite 5 beta users (friends/family)
-6. Watch for errors, gather feedback
-
-### Week 1 Post-Launch
-- Daily log review (catch errors early)
-- User feedback sessions (UX issues, AI routine quality)
-- Iterate on Claude prompt (improve routine quality)
-- Monitor costs (Anthropic usage)
-
----
-
-## 14. Future Enhancements (Post-MVP)
+## 13. Post-v1 Backend Roadmap
 
 ### P1 (Needed Soon After Launch)
-1. **Push Notifications**
-   - Edge Function cron job (daily at wake-up time)
-   - Send notification via Expo Push API
-   - "Good morning! Biscuit's routine is ready."
-
-2. **AI Routine Adjustments (Manual)**
-   - User requests change (e.g., "Move dinner to 7pm")
-   - POST /functions/v1/adjust-routine
-   - Claude rewrites routine with constraint
-   - Note: automatic weekly regeneration is now in scope (F14, Section 24)
-
-3. **Progress Insights**
-   - Weekly email summary (% completion, trends)
-   - Edge Function cron job (Sundays)
-   - Anthropic API for natural language insights
+| Feature | Backend Work | Complexity |
+|---------|-------------|-----------|
+| Push notifications | Expo Push API integration, cron Edge Function for daily wake-up reminder | Medium |
+| Multi-puppy support | UI only — backend already supports multiple puppy_memberships per user | Low |
+| Custom activity types | Add `custom_activity_types` table, update Firestore validation | Medium |
+| Task edit version history | Add `task_edit_history` Firestore subcollection | Low |
 
 ### P2 (Future)
-- Multi-puppy support (switch between puppies)
-- Routine templates (share routines between users)
-- Vet appointment reminders (calendar integration)
-- Health records (vaccination tracking)
-- Mobile app (React Native, reuse backend)
+| Feature | Backend Work | Complexity |
+|---------|-------------|-----------|
+| Breed-specific growth curves | Seed reference data per breed, serve via API | Medium |
+| Weight-based routine regeneration | Trigger regeneration when weight changes > 20% | Low |
+| Potty analytics | Server-side aggregation of pottyDetails data | Medium |
+| Duration analytics | Average nap/walk/training time per week | Low |
+| Social features | New Supabase tables + Realtime channels | High |
 
 ---
 
-## 15. Open Questions & Risks
-
-### Open Questions
-1. **Claude prompt tuning:** How many iterations to get consistently good routines?
-   - **Mitigation:** User feedback loop, A/B test prompts
-2. **Fallback trigger:** What error rate triggers fallback mode?
-   - **Decision:** >5% Edge Function errors in 5-min window
-3. **Image optimization:** Should we resize puppy photos server-side?
-   - **Decision:** Client-side for now (React Image Crop), server-side in P1
-
-### Risks
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| Claude API rate limit hit during launch | Medium | High | Implement queue system (defer routine generation), fallback to client-side |
-| Supabase Realtime connection limit | Low | Medium | Monitor connection count, upgrade plan proactively |
-| RLS policy bug (data leak) | Low | Critical | Pre-launch security audit, test with multiple accounts |
-| Edge Function cold start latency | Medium | Low | Accept it (0→1 stage), warm-up pings in P1 |
-| Routine quality issues (unsafe advice) | Low | High | Manual review of first 100 AI routines, add safety validation |
-
----
-
-## 16. Pre-Computed Dog Profile Layer (D68-D72)
-
-**Added:** 2026-05-25
-**Priority:** P0 (Launch Blocker — required before AI routine generation goes live)
-**References:** Decisions D68-D72, Product Spec F1/F3, User Flows 1/4/8A
-
-### 16.1 Overview
-
-The current routine generation system sends the full LLM a ~330-line prompt containing breed classification tables, age bracket definitions, and 15+ parameter lookup tables. The LLM is expected to do breed → size/energy mapping, age → bracket calculation, and cross-reference parameter tables — all of which are deterministic math with exactly one correct answer.
-
-This overhaul moves all deterministic computation out of the LLM prompt and into server-side TypeScript code. The LLM receives only pre-computed scheduling parameters (~50 lines) and focuses on what it's good at: assembling a natural daily schedule.
-
-**What changes:**
-1. New `breed_profiles` Supabase table replaces the hardcoded breed dropdown array
-2. Puppy records gain `date_of_birth`, `breed_size`, `energy_level`, `is_brachycephalic` fields
-3. A `computeScheduleParams()` function encodes all parameter tables from the system prompt
-4. The Edge Function computes age bracket from DOB, looks up breed fields from the puppy record, calls `computeScheduleParams()`, and builds a slim prompt
-5. The onboarding questionnaire uses a DOB date picker (replaces month/week inputs) and populates breed fields from `breed_profiles` at puppy creation time
-
----
-
-### 16.2 Database Changes
-
-#### Migration 1: `breed_profiles` table (D68)
-
-```sql
--- New reference table: single source of truth for breed → characteristics
-CREATE TABLE breed_profiles (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  breed_name TEXT NOT NULL UNIQUE,
-  breed_size TEXT NOT NULL CHECK (breed_size IN ('toy', 'small', 'medium', 'large', 'giant')),
-  energy_level TEXT NOT NULL CHECK (energy_level IN ('high', 'moderate', 'low')),
-  is_brachycephalic BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
--- RLS: all authenticated users can read (needed for onboarding dropdown)
-ALTER TABLE breed_profiles ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Authenticated users can read breed profiles"
-  ON breed_profiles FOR SELECT
-  USING (auth.uid() IS NOT NULL);
-
--- No insert/update/delete policies — data is seed-only, managed via migrations
-
--- Seed data: 30 breeds matching the current onboarding dropdown
-INSERT INTO breed_profiles (breed_name, breed_size, energy_level, is_brachycephalic) VALUES
-  ('Mixed/Unknown',              'medium', 'moderate', false),
-  ('Australian Shepherd',        'medium', 'high',     false),
-  ('Beagle',                     'small',  'moderate', false),
-  ('Bernese Mountain Dog',       'giant',  'moderate', false),
-  ('Border Collie',              'medium', 'high',     false),
-  ('Boston Terrier',             'small',  'moderate', true),
-  ('Boxer',                      'large',  'moderate', true),
-  ('Bulldog (English)',          'medium', 'low',      true),
-  ('Cavalier King Charles',      'small',  'low',      true),
-  ('Chihuahua',                  'toy',    'low',      false),
-  ('Cocker Spaniel',             'small',  'moderate', false),
-  ('Corgi (Pembroke Welsh)',     'small',  'moderate', false),
-  ('Dachshund',                  'small',  'moderate', false),
-  ('Dalmatian',                  'large',  'high',     false),
-  ('Doberman Pinscher',          'large',  'high',     false),
-  ('French Bulldog',             'small',  'low',      true),
-  ('German Shepherd',            'large',  'high',     false),
-  ('Golden Retriever',           'large',  'high',     false),
-  ('Great Dane',                 'giant',  'low',      false),
-  ('Havanese',                   'toy',    'moderate', false),
-  ('Husky (Siberian)',           'large',  'high',     false),
-  ('Labrador Retriever',         'large',  'high',     false),
-  ('Maltese',                    'toy',    'low',      false),
-  ('Miniature Schnauzer',        'small',  'moderate', false),
-  ('Pomeranian',                 'toy',    'moderate', false),
-  ('Poodle (Standard)',          'medium', 'moderate', false),
-  ('Pug',                        'small',  'low',      true),
-  ('Rottweiler',                 'large',  'moderate', false),
-  ('Shih Tzu',                   'small',  'low',      true),
-  ('Yorkshire Terrier',          'toy',    'moderate', false);
-```
-
-#### Migration 2: Puppy table additions (D69, D72)
-
-```sql
--- Add new fields to puppies table
-ALTER TABLE puppies
-  ADD COLUMN date_of_birth DATE,
-  ADD COLUMN breed_size TEXT,
-  ADD COLUMN energy_level TEXT,
-  ADD COLUMN is_brachycephalic BOOLEAN DEFAULT false;
-
--- NOTE: date_of_birth, breed_size, energy_level are nullable
--- because existing puppies won't have them until migration runs.
--- New puppies created after this migration will always have these fields.
-
--- age_months and age_weeks columns are retained for backward compatibility
--- but will no longer be used for new routine generation.
-```
-
-#### Migration 3: Backfill existing puppies
-
-```sql
--- Synthesize date_of_birth from existing age data
--- Formula: DOB = created_at - (age_months * 4 + age_weeks) weeks
-UPDATE puppies
-SET date_of_birth = (
-  created_at::date - ((age_months * 4 + age_weeks) * INTERVAL '1 week')
-)::date
-WHERE date_of_birth IS NULL
-  AND age_months IS NOT NULL;
-
--- Backfill breed fields from breed_profiles (exact breed name match)
-UPDATE puppies p
-SET
-  breed_size = bp.breed_size,
-  energy_level = bp.energy_level,
-  is_brachycephalic = bp.is_brachycephalic
-FROM breed_profiles bp
-WHERE p.breed = bp.breed_name
-  AND p.breed_size IS NULL;
-
--- For puppies whose breed doesn't match breed_profiles (edge case),
--- default to medium/moderate/false
-UPDATE puppies
-SET
-  breed_size = COALESCE(breed_size, 'medium'),
-  energy_level = COALESCE(energy_level, 'moderate'),
-  is_brachycephalic = COALESCE(is_brachycephalic, false)
-WHERE breed_size IS NULL;
-```
-
-#### Updated database.types.ts additions
-
-```typescript
-// New table type
-breed_profiles: {
-  Row: {
-    id: string;
-    breed_name: string;
-    breed_size: 'toy' | 'small' | 'medium' | 'large' | 'giant';
-    energy_level: 'high' | 'moderate' | 'low';
-    is_brachycephalic: boolean;
-    created_at: string;
-  };
-  Insert: { /* seed-only, no client inserts */ };
-  Update: { /* seed-only, no client updates */ };
-};
-
-// Updated puppies table type (new fields)
-puppies: {
-  Row: {
-    // ... existing fields ...
-    date_of_birth: string | null;       // ISO date string, YYYY-MM-DD
-    breed_size: string | null;          // toy | small | medium | large | giant
-    energy_level: string | null;        // high | moderate | low
-    is_brachycephalic: boolean;         // default false
-  };
-  Insert: {
-    // ... existing fields ...
-    date_of_birth?: string | null;
-    breed_size?: string | null;
-    energy_level?: string | null;
-    is_brachycephalic?: boolean;
-  };
-  Update: {
-    // ... existing fields ...
-    date_of_birth?: string | null;
-    breed_size?: string | null;
-    energy_level?: string | null;
-    is_brachycephalic?: boolean;
-  };
-};
-```
-
----
-
-### 16.3 `computeScheduleParams()` — Deterministic Parameter Engine
-
-This is a pure TypeScript function that lives in the Edge Function. It takes breed characteristics + current age and returns every scheduling parameter the LLM needs. No network calls, no LLM — pure math.
-
-**File location:** `supabase/functions/generate-routine/schedule-params.ts`
-
-#### Type definitions
-
-```typescript
-// --- Age Brackets ---
-type AgeBracket =
-  | 'newborn'           // 8-10 weeks
-  | 'early_puppy'       // 10-12 weeks
-  | 'puppy'             // 12-16 weeks
-  | 'junior'            // 16-22 weeks (4-5 months)
-  | 'pre_adolescent'    // 22-26 weeks (5-6 months)
-  | 'adolescent_early'  // 26-35 weeks (6-8 months)
-  | 'adolescent_mid'    // 35-44 weeks (8-10 months)
-  | 'adolescent_late'   // 44-52 weeks (10-12 months)
-  | 'young_adult';      // 52+ weeks (12+ months)
-
-type BreedSize = 'toy' | 'small' | 'medium' | 'large' | 'giant';
-type EnergyLevel = 'high' | 'moderate' | 'low';
-
-// --- Input ---
-interface DogProfile {
-  dateOfBirth: string;       // ISO date (YYYY-MM-DD)
-  breedSize: BreedSize;
-  energyLevel: EnergyLevel;
-  isBrachycephalic: boolean;
-  wakeUpTime: string;        // HH:MM (24h)
-  bedTime: string;           // HH:MM (24h)
-}
-
-// --- Output: all scheduling parameters for the LLM ---
-interface ScheduleParams {
-  ageBracket: AgeBracket;
-  ageWeeks: number;
-
-  // Potty
-  pottyModel: 'event_based' | 'time_based';
-  pottyMaxDaytimeGapHours: number | null;   // time-based only
-  pottyOvernightBreaks: number;
-
-  // Meals
-  mealsPerDay: number;
-  mealTimes: string[];        // Pre-computed HH:MM times
-
-  // Walks
-  walkDurationMinutes: number;
-  walkSessionsPerDay: number;
-
-  // Training
-  trainingSessionMinutes: number;
-  trainingSessionsPerDay: number;
-
-  // Naps
-  awakeWindowMinutes: number;
-  napDurationMinutes: number;
-  napsPerDay: number;
-
-  // Play
-  playSessionMinutes: number;
-  playSessionsPerDay: number;
-
-  // Calm Bonding
-  calmBondingMinutes: number;
-  calmBondingSessions: number;
-
-  // Schedule boundaries
-  wakeUpTime: string;
-  bedTime: string;
-  wakingHours: number;
-}
-```
-
-#### Core functions
-
-```typescript
-// Compute age bracket from date of birth
-function getAgeBracket(dateOfBirth: string): { bracket: AgeBracket; ageWeeks: number } {
-  const dob = new Date(dateOfBirth);
-  const now = new Date();
-  const ageMs = now.getTime() - dob.getTime();
-  const ageWeeks = Math.floor(ageMs / (7 * 24 * 60 * 60 * 1000));
-
-  if (ageWeeks < 10) return { bracket: 'newborn', ageWeeks };
-  if (ageWeeks < 12) return { bracket: 'early_puppy', ageWeeks };
-  if (ageWeeks < 16) return { bracket: 'puppy', ageWeeks };
-  if (ageWeeks < 22) return { bracket: 'junior', ageWeeks };
-  if (ageWeeks < 26) return { bracket: 'pre_adolescent', ageWeeks };
-  if (ageWeeks < 35) return { bracket: 'adolescent_early', ageWeeks };
-  if (ageWeeks < 44) return { bracket: 'adolescent_mid', ageWeeks };
-  if (ageWeeks < 52) return { bracket: 'adolescent_late', ageWeeks };
-  return { bracket: 'young_adult', ageWeeks };
-}
-
-// Pre-compute meal times using the 12-hour gap rule
-function computeMealTimes(
-  mealsPerDay: number,
-  wakeUpTime: string,
-  bedTime: string
-): string[] {
-  // First meal = wake + 15 min
-  // Last meal = first + 12h, adjusted if <2h before bed
-  // Remaining meals evenly spaced between first and last
-  // ... (full implementation)
-}
-
-// Main entry point
-function computeScheduleParams(profile: DogProfile): ScheduleParams {
-  const { bracket, ageWeeks } = getAgeBracket(profile.dateOfBirth);
-  // Look up all parameter tables by bracket + breed characteristics
-  // Apply modifiers (brachycephalic walk cap, energy play adjustment, etc.)
-  // Compute meal times
-  // Return complete ScheduleParams object
-}
-```
-
-#### Parameter lookup tables (encoded as TypeScript objects)
-
-Each parameter table from the system prompt becomes a constant object keyed by `AgeBracket`. Example structure:
-
-```typescript
-const WALK_PARAMS: Record<AgeBracket, { durationMin: number; sessions: number }> = {
-  newborn:           { durationMin: 10, sessions: 1 },
-  early_puppy:       { durationMin: 12, sessions: 1 },
-  puppy:             { durationMin: 15, sessions: 2 },
-  junior:            { durationMin: 20, sessions: 2 },
-  pre_adolescent:    { durationMin: 25, sessions: 2 },
-  adolescent_early:  { durationMin: 30, sessions: 2 },
-  adolescent_mid:    { durationMin: 37, sessions: 2 },
-  adolescent_late:   { durationMin: 45, sessions: 2 },
-  young_adult:       { durationMin: 0, sessions: 2 },  // resolved by energy level
-};
-
-// Similar tables for: POTTY_PARAMS, MEAL_PARAMS, TRAINING_PARAMS,
-// NAP_PARAMS, PLAY_PARAMS, CALM_BONDING_PARAMS
-```
-
-**Modifiers applied inside `computeScheduleParams()`:**
-- Walk duration capped at 15 min if `isBrachycephalic === true`
-- Young adult walk duration resolved by energy level (high: 52 min, moderate: 37 min, low: 20 min)
-- Play duration adjusted: `high` energy gets +25%, `low` energy gets -17%
-- Potty daytime gap reduced ~25% for `toy`/`small` breeds (time-based model)
-- Toy breeds get +1 meal per day in brackets 1-4 (hypoglycemia risk)
-- Giant breeds stay at 3 meals in bracket 6+ (bloat risk)
-
----
-
-### 16.4 Updated Edge Function — Slim LLM Prompt
-
-The `generate-routine` Edge Function is rewritten to use the two-layer system.
-
-**File location:** `supabase/functions/generate-routine/index.ts`
-
-#### Updated request shape
-
-```typescript
-// The Edge Function reads breed fields directly from the puppy record
-// No need to pass breed characteristics in the request — they're already stored
-{
-  puppyId: string;
-  questionnaireData: {
-    puppyName: string;
-    breed: string;
-    dateOfBirth: string;      // YYYY-MM-DD (replaces ageMonths/ageWeeks)
-    weight: number | null;
-    weightUnit: 'lbs' | 'kg';
-    wakeUpTime: string;
-    bedTime: string;
-  }
-}
-```
-
-#### Updated flow
-
-```
-1. Validate request (auth, puppy ownership)
-2. Read puppy record from Supabase
-   → Gets: date_of_birth, breed_size, energy_level, is_brachycephalic
-3. Call computeScheduleParams({
-     dateOfBirth, breedSize, energyLevel,
-     isBrachycephalic, wakeUpTime, bedTime
-   })
-   → Returns: all scheduling parameters (ScheduleParams object)
-4. Build SLIM prompt (~50 lines) with pre-computed params
-5. Call Claude API
-6. Parse + validate response
-7. Save routine + items to database
-8. Return complete routine
-```
-
-#### Slim prompt template (replaces the current ~330-line prompt)
-
-```typescript
-function buildSlimPrompt(
-  puppyName: string,
-  params: ScheduleParams
-): string {
-  return `You are a puppy care schedule assembler. Your job is to arrange
-pre-computed activities into a natural daily timeline.
-
-PUPPY: ${puppyName}
-SCHEDULE: ${params.wakeUpTime} wake → ${params.bedTime} bed
-  (${params.wakingHours} waking hours)
-
-PRE-COMPUTED PARAMETERS (use these exact values):
-- Potty model: ${params.pottyModel}
-${params.pottyModel === 'event_based'
-  ? '  Wake-up potty + pre-nap potty each awake window. Post-meal potty only if 45+ min from adjacent potties.'
-  : `  Max daytime gap: ${params.pottyMaxDaytimeGapHours}h. Wake-up + final potty always. Post-meal potty if 45+ min from previous.`}
-- Overnight potty breaks: ${params.pottyOvernightBreaks}
-- Meals: ${params.mealsPerDay}/day at [${params.mealTimes.join(', ')}]
-- Walks: ${params.walkDurationMinutes} min × ${params.walkSessionsPerDay}/day
-- Training: ${params.trainingSessionMinutes} min × ${params.trainingSessionsPerDay}/day
-- Naps: ${params.napDurationMinutes} min × ${params.napsPerDay}/day
-  (max awake window: ${params.awakeWindowMinutes} min)
-- Play: ${params.playSessionMinutes} min × ${params.playSessionsPerDay}/day
-- Calm bonding: ${params.calmBondingMinutes} min × ${params.calmBondingSessions}/day
-
-ASSEMBLY RULES:
-1. Place meals at the exact pre-computed times.
-2. Distribute walks, training, play, and calm bonding evenly across waking hours.
-3. Never place two of the same activity back-to-back. Min 2h gap between walks, training, or play.
-4. Enforce awake window maximums — insert nap when window is reached.
-5. Morning walk after first meal. Evening walk in second half of day.
-6. Training after naps (when alert). Calm bonding as evening wind-down.
-7. Final 2 hours before bed: at least one activity (calm bonding + final potty).
-
-OUTPUT: JSON array of activities. Each: { "time": "HH:MM", "activity": "title", "category": "type" }
-Do NOT include a "description" field. The user wants a clean checklist, not coaching advice. (D73)
-Categories: feeding, potty, exercise, training, rest, play, bonding
-Return ONLY the JSON array.`;
-}
-```
-
----
-
-### 16.5 Onboarding Flow Changes
-
-#### Frontend: OnboardingQuestionnaire.tsx
-
-**Change 1: Breed dropdown from `breed_profiles` table (D68)**
-```typescript
-// Replace static DOG_BREEDS array with Supabase fetch
-const [breedProfiles, setBreedProfiles] = useState<BreedProfile[]>([]);
-
-useEffect(() => {
-  async function fetchBreeds() {
-    const { data } = await supabase
-      .from('breed_profiles')
-      .select('breed_name, breed_size, energy_level, is_brachycephalic')
-      .order('breed_name');
-    if (data) setBreedProfiles(data);
-  }
-  fetchBreeds();
-}, []);
-
-// Dropdown renders breed_name from fetched data
-// Fallback: if fetch fails, use cached static list
-```
-
-**Change 2: DOB date picker replaces month/week inputs (D69)**
-```typescript
-// Step 2/3: "When was your puppy born?"
-// Replace:
-//   - age_months number input
-//   - age_weeks number input
-// With:
-//   - date_of_birth date picker (required)
-//   - Validation: not in future, puppy must be ≥ 8 weeks old
-```
-
-**Change 3: On submit — copy breed characteristics to puppy record (D72)**
-```typescript
-// When creating the puppy:
-const selectedBreed = breedProfiles.find(b => b.breed_name === breed);
-
-await supabase.from('puppies').insert({
-  name: puppyName,
-  breed: breed,
-  date_of_birth: dateOfBirth,        // NEW: store DOB
-  breed_size: selectedBreed?.breed_size ?? 'medium',
-  energy_level: selectedBreed?.energy_level ?? 'moderate',
-  is_brachycephalic: selectedBreed?.is_brachycephalic ?? false,
-  weight_value: weight,
-  weight_unit: weightUnit,
-  questionnaire_data: { wakeUpTime, bedTime },
-  // age_months and age_weeks are no longer set for new puppies
-});
-```
-
----
-
-### 16.6 Implementation Plan — Ordered Steps
-
-```
-Step 1: Database migrations
-  - Create breed_profiles table + seed 30 breeds
-  - Add date_of_birth, breed_size, energy_level, is_brachycephalic to puppies
-  - Backfill existing puppies (synthesize DOB, copy breed fields)
-  - Add RLS policy for breed_profiles (authenticated read)
-  → Unblocks: Steps 2, 3, and 4
-
-Step 2: computeScheduleParams() function
-  - Create supabase/functions/generate-routine/schedule-params.ts
-  - Implement getAgeBracket() with all 9 bracket boundaries
-  - Encode all parameter tables (potty, meals, walks, training, naps, play, bonding)
-  - Implement computeMealTimes() with 12-hour gap algorithm
-  - Implement potty model logic (event-based vs time-based)
-  - Apply breed modifiers (brachycephalic cap, energy adjustments, size adjustments)
-  - Write unit tests for each parameter table and edge cases
-  → Unblocks: Step 3
-
-Step 3: Rewrite generate-routine Edge Function
-  - Update request shape (dateOfBirth replaces ageMonths/ageWeeks)
-  - Read breed fields from puppy record (no join needed — denormalized)
-  - Call computeScheduleParams() with puppy data
-  - Build slim LLM prompt (~50 lines) from ScheduleParams
-  - Keep existing response validation (10-25 activities, valid categories, HH:MM format)
-  - Add validation: meal times in response should be within 15 min of pre-computed times
-  - Update fallback generation to also use computeScheduleParams()
-  → Unblocks: Step 5
-
-Step 4: Update onboarding questionnaire (frontend)
-  - Fetch breed_profiles from Supabase for dropdown (with static fallback)
-  - Replace age month/week inputs with DOB date picker
-  - Add DOB validation (not future, ≥ 8 weeks old)
-  - On submit: look up selected breed's characteristics from fetched data
-  - Store date_of_birth + breed fields on puppy record
-  - Update AIRoutineGenerator to pass dateOfBirth instead of ageMonths/ageWeeks
-  → Unblocks: Step 5
-
-Step 5: Update database.types.ts + frontend services
-  - Add BreedProfile type to database.types.ts
-  - Add new puppy fields to database.types.ts
-  - Update any age display logic (Puppy Profile, Accept Invite screen)
-    to compute age from DOB instead of reading static months/weeks
-  - Update services/puppies.ts for new fields
-  → Unblocks: End-to-end testing
-
-Step 6: End-to-end testing + deploy
-  - Test new onboarding flow (DOB picker, breed dropdown from DB)
-  - Test routine generation with various breed/age combinations
-  - Verify existing puppies work with backfilled data
-  - Verify deterministic consistency (same dog = same params every time)
-  - Deploy migrations, Edge Function, frontend
-  → Unblocks: Launch
-```
-
----
-
-### 16.7 File Locations (New + Modified)
-
-```
-NEW FILES:
-  supabase/migrations/XXXXXXXX_breed_profiles.sql       — breed_profiles table + seed
-  supabase/migrations/XXXXXXXX_puppy_dob_fields.sql     — puppies table additions
-  supabase/migrations/XXXXXXXX_backfill_existing.sql    — existing puppy backfill
-  supabase/functions/generate-routine/schedule-params.ts — computeScheduleParams()
-  supabase/functions/generate-routine/schedule-params.test.ts — unit tests
-
-MODIFIED FILES:
-  supabase/functions/generate-routine/index.ts    — two-layer generation system
-  src/lib/database.types.ts                       — BreedProfile type, updated Puppy type
-  src/app/components/OnboardingQuestionnaire.tsx   — DOB picker, breed_profiles dropdown
-  src/app/components/AIRoutineGenerator.tsx        — pass dateOfBirth to Edge Function
-  src/lib/services/puppies.ts                     — updated create/read for new fields
-```
-
----
-
-### 16.8 Risks and Mitigations
-
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| Existing puppies' synthesized DOB is inaccurate | Medium | Low | DOB = created_at minus stored age in weeks. Approximate but sufficient. Owners can correct via profile edit (P1). |
-| Breed name mismatch during backfill | Low | Low | Use exact string match against breed_profiles. Unmatched breeds default to medium/moderate/false. |
-| computeScheduleParams() has a bug in one parameter table | Medium | High | Unit test every bracket × parameter combination. Edge cases: boundary weeks (exactly 10, 12, 16, etc.), toy breed meal count, brachycephalic walk cap. |
-| LLM ignores pre-computed meal times | Medium | Medium | Add validation: response meal times must be within 15 min of computed times. Reject and retry if not. |
-| breed_profiles fetch fails during onboarding | Low | Medium | Static fallback list cached in the frontend (same 30 breeds). Breed fields default to medium/moderate/false if lookup fails. |
-
----
-
-## 17. Success Metrics
-
-### Technical Metrics (Week 1)
-- [ ] Edge Function p99 latency <10s
-- [ ] Error rate <1%
-- [ ] Database query p95 <500ms
-- [ ] Realtime sync latency <2s
-- [ ] Zero RLS policy violations
-
-### Product Metrics (Month 1)
-- [ ] 60% of users complete onboarding
-- [ ] 40% of routines are AI-generated (vs. fallback)
-- [ ] 30% of owners invite a caretaker
-- [ ] 50% retention at 2 weeks
-- [ ] <5 support tickets about AI routine quality
-
----
-
-## Appendix A: File Structure
-
-```
-puppy_daycare/
-├── supabase/
-│   ├── functions/
-│   │   ├── generate-routine/
-│   │   │   ├── index.ts          # Main Edge Function
-│   │   │   ├── index.test.ts     # Unit tests
-│   │   │   └── prompts.ts        # Claude prompt templates
-│   │   └── accept-invite/
-│   │       └── index.ts
-│   ├── migrations/
-│   │   ├── 20260211_rls_policies.sql
-│   │   ├── 20260211_indexes.sql
-│   │   └── 20260211_triggers.sql
-│   └── config.toml               # Supabase local config
-├── src/
-│   ├── lib/
-│   │   ├── supabase.ts           # Supabase client
-│   │   ├── database.types.ts     # Auto-generated types
-│   │   └── services/
-│   │       ├── routines.ts       # Frontend service (calls Edge Function)
-│   │       ├── activity-logs.ts
-│   │       └── invites.ts
-│   └── app/
-│       └── components/
-│           └── AIRoutineGenerator.tsx  # Updated to call Edge Function
-├── .env.local                    # Local dev env vars
-└── docs/
-    └── backend-development-plan.md  # This document
-```
-
----
-
-## Appendix B: Environment Variables
-
-### Development (.env.local)
-```env
-VITE_SUPABASE_URL=http://localhost:54321
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... (local)
-VITE_USE_AI_BACKEND=true  # Feature flag for testing Edge Function
-```
-
-### Production (Vercel + Supabase)
-```env
-VITE_SUPABASE_URL=https://[project].supabase.co
-VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... (prod)
-
-# Supabase Secrets (set via dashboard)
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
----
-
-## Appendix C: Claude Prompt Example (Full)
-
-```typescript
-export function buildRoutinePrompt(data: QuestionnaireData): string {
-  const totalWeeks = data.ageMonths * 4 + data.ageWeeks;
-  const isYoung = totalWeeks < 16;
-
-  return `You are a certified professional dog trainer (CPDT-KA) and veterinary advisor. Generate a personalized daily care routine for a puppy.
-
-PUPPY DETAILS:
-- Name: ${data.puppyName}
-- Breed: ${data.breed}
-- Age: ${data.ageMonths} months, ${data.ageWeeks} weeks (${totalWeeks} weeks total)
-- Weight: ${data.weight || 'unknown'} ${data.weightUnit}
-- Wake-up Time: ${data.wakeUpTime}
-- Bedtime: ${data.bedTime}
-
-CRITICAL SAFETY RULES:
-1. Exercise: Max ${Math.min(totalWeeks * 5, 60)} minutes per day (5 min/week of age)
-2. Feeding: ${isYoung ? '4 meals/day' : '3 meals/day'} for this age
-3. Potty breaks: Every ${isYoung ? '2' : '3'} hours minimum
-4. Training sessions: 5-10 minutes max (puppies have short attention spans)
-5. Avoid: dog parks until fully vaccinated (16 weeks), jumping/stairs (joint damage)
-
-REQUIRED ACTIVITIES (15-20 total):
-- Feeding (age-appropriate portions for ${data.breed})
-- Potty breaks (frequent, after meals/play/naps)
-- Exercise (gentle walks, no forced running)
-- Training (positive reinforcement, basic commands)
-- Nap/crate time (puppies need 18-20 hours sleep)
-- Play sessions (interactive, mental stimulation)
-- Socialization (safe exposure to sounds, surfaces, people)
-
-SCHEDULE CONSTRAINTS:
-- Align with owner's wake (${data.wakeUpTime}) and bed (${data.bedTime}) times
-- Space activities evenly throughout waking hours
-
-OUTPUT FORMAT (JSON array):
-[
-  {
-    "time": "07:00",
-    "activity": "Morning Potty Break",
-    "category": "potty"
-  },
-  ...
-]
-
-Do NOT include a "description" field. Return only time, activity, and category. (D73)
-
-CATEGORIES (use exactly these):
-- feeding
-- potty
-- exercise
-- training
-- rest
-- play
-- bonding
-
-Return ONLY the JSON array. No additional text, explanations, or markdown formatting.`;
-}
-```
-
----
-
----
-
-## 18. Flow 6: Task Management Implementation Plan
-
-**Added:** 2026-02-12
-**Priority:** P0 (Launch Blocker)
-**Complexity:** High (Hybrid backend architecture)
-
-### 18.1 Overview
-
-Flow 6 introduces real-time collaborative task editing with Firebase Firestore, adding a second backend alongside Supabase. This hybrid approach leverages Firestore's superior real-time sync capabilities for the task editing feature while maintaining Supabase for all other data.
-
-**Key Components:**
-1. Firebase Firestore setup for task sync
-2. Supabase Edge Function for Firebase Custom Token generation
-3. Firestore security rules with Custom Claims
-4. Frontend TasksService with real-time listeners
-5. Optimistic UI updates with offline queue
-6. Task management UI components (swipe-to-delete, expandable cards, FAB)
-
----
-
-### 18.2 Architecture: Hybrid Backend Strategy
-
-**Why Hybrid?**
-- **Firestore:** Built-in real-time listeners, automatic offline persistence (IndexedDB), optimistic updates out-of-the-box. Building equivalent functionality with Supabase Realtime would take 3-4x longer.
-- **Supabase:** Remains primary backend for relational data (users, puppies, routines). PostgreSQL is superior for structured data with complex relationships.
-
-**Data Flow:**
-```
-Frontend
-  ├─→ Supabase (users, puppies, routines, activity_logs)
-  └─→ Firestore (tasks collection - today's editable task instances)
-
-Authentication:
-  Supabase Auth (Google OAuth)
-    └─→ Custom Token → Firebase Auth (for Firestore security rules)
-```
-
-**Trade-offs:**
-- **Complexity:** Two backends to manage, dual auth setup
-- **Benefit:** Firestore's real-time features save significant dev time (offline queue, optimistic UI, conflict resolution all built-in)
-- **Cost:** Firestore free tier: 50K reads/day, 20K writes/day (sufficient for 50 users @ 100 ops/day each)
-
----
-
-### 18.3 Firebase Setup
-
-#### Step 1: Firebase Project Creation
-**Duration:** 15 minutes
-
-```bash
-# 1. Create Firebase project at https://console.firebase.google.com
-# Project name: pupplan-prod
-# Enable Google Analytics: No (keep it simple for 0→1)
-
-# 2. Install Firebase CLI
-npm install -g firebase-tools
-
-# 3. Login and initialize Firebase in project
-firebase login
-cd /Users/alyeo/Documents/puppy_daycare
-firebase init firestore
-
-# Select:
-# - Use existing project: pupplan-prod
-# - Firestore rules: firebase/firestore.rules
-# - Firestore indexes: firebase/firestore.indexes.json
-```
-
-**Deliverable:** Firebase project created, Firestore initialized
-
-**Unblocks:** Step 2 (security rules)
-
----
-
-#### Step 2: Firestore Security Rules
-**Duration:** 30 minutes
-
-Create `firebase/firestore.rules`:
-
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-
-    // Helper: Check if user has access to puppy (via Custom Claims)
-    function hasPuppyAccess(puppyId) {
-      return request.auth != null
-        && request.auth.token.puppyIds != null
-        && request.auth.token.puppyIds.hasAny([puppyId]);
-    }
-
-    // Helper: Validate task fields
-    function validTaskData() {
-      let data = request.resource.data;
-      return data.keys().hasAll([
-        'puppyId', 'date', 'scheduledTime', 'actualTime',
-        'activityType', 'title', 'isCompleted', 'isEdited',
-        'isUserAdded', 'lastEditedBy', 'createdAt'
-      ])
-      && data.puppyId is string
-      && data.date is string  // YYYY-MM-DD
-      && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
-      && data.lastEditedBy == request.auth.uid
-      && data.lastEditedAt == request.time;
-    }
-
-    // Tasks collection
-    match /tasks/{taskId} {
-      // Read: User must have access to puppy
-      allow read: if hasPuppyAccess(resource.data.puppyId);
-
-      // Create: User must have access AND provide valid data
-      allow create: if hasPuppyAccess(request.resource.data.puppyId)
-        && validTaskData();
-
-      // Update: User must have access
-      allow update: if hasPuppyAccess(resource.data.puppyId)
-        && request.resource.data.lastEditedBy == request.auth.uid
-        && request.resource.data.lastEditedAt == request.time;
-
-      // Delete: User must have access
-      allow delete: if hasPuppyAccess(resource.data.puppyId);
-    }
-  }
-}
-```
-
-**Deploy rules:**
-```bash
-firebase deploy --only firestore:rules
-```
-
-**Test rules locally:**
-```bash
-firebase emulators:start --only firestore
-# Run tests against localhost:8080
-```
-
-**Deliverable:** Firestore security rules deployed, tested
-
-**Unblocks:** Step 3 (Custom Token generation)
-
----
-
-#### Step 3: Firebase Custom Token Generation (Supabase Edge Function)
-**Duration:** 2 hours
-
-**Problem:** Firestore security rules need to know which puppies a user can access, but Firestore can't query Supabase. Solution: Embed `puppyIds` array in Firebase Custom Claims during token generation.
-
-Create `supabase/functions/get-firebase-token/index.ts`:
-
-```typescript
-import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import * as admin from 'https://esm.sh/firebase-admin@11.10.1';
-
-// Initialize Firebase Admin SDK (server-side only)
-const serviceAccount = JSON.parse(Deno.env.get('FIREBASE_SERVICE_ACCOUNT')!);
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
-
-serve(async (req) => {
-  try {
-    // Verify Supabase auth
-    const authHeader = req.headers.get('Authorization')!;
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
-
-    const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
-    if (authError || !user) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-
-    // Get user's puppy access (owner OR caretaker)
-    const { data: memberships, error: membershipError } = await supabaseClient
-      .from('puppy_memberships')
-      .select('puppy_id')
-      .eq('user_id', user.id)
-      .eq('status', 'active');
-
-    if (membershipError) {
-      throw membershipError;
-    }
-
-    const puppyIds = memberships.map(m => m.puppy_id);
-
-    // Generate Firebase Custom Token with puppyIds claim
-    const firebaseToken = await admin.auth().createCustomToken(user.id, {
-      puppyIds: puppyIds,
-      email: user.email
-    });
-
-    return new Response(
-      JSON.stringify({ firebaseToken }),
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-  } catch (error) {
-    console.error('Error generating Firebase token:', error);
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
-});
-```
-
-**Deploy Edge Function:**
-```bash
-# Set Firebase service account in Supabase secrets
-# Download service account JSON from Firebase Console → Project Settings → Service Accounts
-supabase secrets set FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}'
-
-# Deploy function
-supabase functions deploy get-firebase-token
-```
-
-**Frontend integration** (`src/lib/firebase.ts`):
-
-```typescript
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
-import { supabase } from './supabase';
-
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-};
-
-const app = initializeApp(firebaseConfig);
-export const firebaseAuth = getAuth(app);
-export const db = getFirestore(app);
-
-// Enable offline persistence
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    console.warn('Offline persistence: multiple tabs open');
-  } else if (err.code === 'unimplemented') {
-    console.warn('Offline persistence: not supported in this browser');
-  }
-});
-
-// Sign in to Firebase with Custom Token from Supabase
-export async function signInToFirebase() {
-  const { data, error } = await supabase.functions.invoke('get-firebase-token');
-
-  if (error) throw error;
-
-  await signInWithCustomToken(firebaseAuth, data.firebaseToken);
-}
-```
-
-**Deliverable:** Firebase Custom Token generation working, user authenticated in both Supabase and Firebase
-
-**Unblocks:** Step 4 (Firestore CRUD operations)
-
----
-
-### 18.4 Frontend Implementation
-
-#### Step 4: TasksService (Firestore CRUD)
-**Duration:** 3 hours
-
-Create `src/lib/services/tasks.ts`:
-
-```typescript
-import {
-  collection,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  Timestamp,
-  serverTimestamp
-} from 'firebase/firestore';
-import { db, firebaseAuth } from '../firebase';
-
-export interface Task {
-  id: string;
-  puppyId: string;
-  date: string; // YYYY-MM-DD
-  scheduledTime: Timestamp;
-  actualTime: Timestamp;
-  activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
-  title: string;
-  description?: string;
-  pottyDetails?: {        // D52: Only present when activityType = potty_break
-    poop: boolean;
-    pee: boolean;
-  };
-  isCompleted: boolean;
-  isEdited: boolean;
-  isUserAdded: boolean;
-  completedBy?: string;
-  completedAt?: Timestamp;
-  lastEditedBy: string;
-  lastEditedAt: Timestamp;
-  createdAt: Timestamp;
-}
-
-// Get today's date in YYYY-MM-DD format
-function getTodayString(): string {
-  return new Date().toISOString().split('T')[0];
-}
-
-// Subscribe to today's tasks (real-time)
-export function subscribeToTasks(
-  puppyId: string,
-  callback: (tasks: Task[]) => void,
-  onError?: (error: Error) => void
-) {
-  const tasksRef = collection(db, 'tasks');
-  const q = query(
-    tasksRef,
-    where('puppyId', '==', puppyId),
-    where('date', '==', getTodayString()),
-    orderBy('actualTime', 'asc')
-  );
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const tasks: Task[] = [];
-      snapshot.forEach((doc) => {
-        tasks.push({ id: doc.id, ...doc.data() } as Task);
-      });
-      callback(tasks);
-    },
-    (error) => {
-      console.error('Firestore sync error:', error);
-      onError?.(error);
-    }
-  );
-}
-
-// Add new task
-export async function addTask(
-  puppyId: string,
-  activityType: Task['activityType'],
-  time: Date,
-  title: string
-): Promise<string> {
-  const userId = firebaseAuth.currentUser?.uid;
-  if (!userId) throw new Error('Not authenticated');
-
-  const docRef = await addDoc(collection(db, 'tasks'), {
-    puppyId,
-    date: getTodayString(),
-    scheduledTime: Timestamp.fromDate(time),
-    actualTime: Timestamp.fromDate(time),
-    activityType,
-    title,
-    isCompleted: false,
-    isEdited: true, // User-added tasks are always marked as edited
-    isUserAdded: true,
-    lastEditedBy: userId,
-    lastEditedAt: serverTimestamp(),
-    createdAt: Timestamp.now(),
-  });
-
-  return docRef.id;
-}
-
-// Edit existing task
-export async function editTask(
-  taskId: string,
-  updates: {
-    actualTime?: Date;
-    activityType?: Task['activityType'];
-  }
-): Promise<void> {
-  const userId = firebaseAuth.currentUser?.uid;
-  if (!userId) throw new Error('Not authenticated');
-
-  const taskRef = doc(db, 'tasks', taskId);
-
-  await updateDoc(taskRef, {
-    ...(updates.actualTime && { actualTime: Timestamp.fromDate(updates.actualTime) }),
-    ...(updates.activityType && { activityType: updates.activityType }),
-    isEdited: true,
-    lastEditedBy: userId,
-    lastEditedAt: serverTimestamp(),
-  });
-}
-
-// Delete task
-export async function deleteTask(taskId: string): Promise<void> {
-  const taskRef = doc(db, 'tasks', taskId);
-  await deleteDoc(taskRef);
-}
-
-// Complete task
-export async function completeTask(taskId: string): Promise<void> {
-  const userId = firebaseAuth.currentUser?.uid;
-  if (!userId) throw new Error('Not authenticated');
-
-  const taskRef = doc(db, 'tasks', taskId);
-
-  await updateDoc(taskRef, {
-    isCompleted: true,
-    completedBy: userId,
-    completedAt: Timestamp.now(),
-    lastEditedBy: userId,
-    lastEditedAt: serverTimestamp(),
-  });
-}
-```
-
-**Deliverable:** TasksService with real-time listeners, CRUD operations
-
-**Unblocks:** Step 5 (UI components)
-
----
-
-#### Step 5: Display-Only Task Card Component
-**Duration:** 2 hours
-**Updated:** 2026-02-18 (D45 — removed inline expansion, now display-only with `onEdit` callback)
-
-Create `src/app/components/TaskCard.tsx`:
-
-```tsx
-import { CheckCircle2, Circle } from 'lucide-react';
-import { Task } from '../../lib/services/tasks';
-
-// Category dot colors matching the Dashboard's CATEGORY_COLORS
-function getCategoryColor(activityType: string): string {
-  const colors: Record<string, string> = {
-    potty_break: '#4A9B5E',
-    meal: '#E8722A',
-    training: '#8B6FC0',
-    nap: '#8B7355',
-    calm_time: '#8B7355',
-    play_time: '#5B8FD4',
-    walk: '#5B8FD4',
-  };
-  return colors[activityType] || '#8B7355';
-}
-
-// Format time to 12-hour display
-function formatDisplayTime(date: Date): string {
-  const hour = date.getHours();
-  const minute = date.getMinutes();
-  const period = hour >= 12 ? "PM" : "AM";
-  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-  return `${displayHour}:${minute.toString().padStart(2, "0")} ${period}`;
-}
-
-interface TaskCardProps {
-  task: Task;
-  /** Called when the user taps the card (opens edit bottom sheet). */
-  onEdit?: (task: Task) => void;
-}
-
-export function TaskCard({ task, onEdit }: TaskCardProps) {
-  const categoryColor = getCategoryColor(task.activityType);
-  const taskDate = task.actualTime.toDate();
-
-  return (
-    <div
-      onClick={() => onEdit?.(task)}
-      className={`
-        bg-card rounded-xl p-4 min-h-[64px] flex gap-3 transition-all cursor-pointer active:scale-[0.98]
-        ${task.isCompleted ? 'opacity-60' : ''}
-      `}
-      style={{
-        backgroundColor: '#FFFFFF',
-        boxShadow: '0 2px 8px rgba(45, 27, 14, 0.06)'
-      }}
-    >
-      {/* Time on LEFT */}
-      <div className="flex-shrink-0 pt-0.5">
-        <div className="text-sm font-bold text-foreground w-14 text-left">
-          {formatDisplayTime(taskDate)}
-        </div>
-      </div>
-
-      {/* Activity Content in MIDDLE */}
-      <div className="flex-1 text-left">
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <div
-                className="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5"
-                style={{ backgroundColor: categoryColor }}
-              />
-              <h3 className={`font-medium text-base text-foreground ${task.isCompleted ? 'line-through' : ''}`}>
-                {task.title}
-              </h3>
-            </div>
-            <p className="text-[13px] text-muted-foreground mt-0.5 ml-3.5" style={{ lineHeight: '1.5' }}>
-              {task.activityType.replace(/_/g, ' ')}
-              {task.isEdited && ' · edited'}
-              {task.isUserAdded && ' · custom'}
-            </p>
-          </div>
-
-          {/* Status Icon on RIGHT */}
-          <div className="flex-shrink-0 pt-0.5">
-            {task.isCompleted ? (
-              <CheckCircle2 className="size-6 text-secondary" />
-            ) : (
-              <Circle className="size-6 text-border" />
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-```
-
-**Key change (D45):** TaskCard is now a pure display component with zero local state. Tapping calls `onEdit(task)` which the parent (Dashboard) uses to open the AddTaskFAB bottom sheet in edit mode. All inline expansion, time picker, activity dropdown, save/cancel buttons have been removed.
-
-**Deliverable:** Display-only task card with `onEdit` callback
-
-**Unblocks:** Step 6 (swipe-to-delete)
-
----
-
-#### Step 6: Swipe-to-Delete Gesture
-**Duration:** 2 hours
-**Updated:** 2026-02-18 (D45 — added `onEdit` prop passthrough to TaskCard)
-
-**Install dependency:**
-```bash
-npm install react-swipeable
-```
-
-Create `src/app/components/SwipeableTaskCard.tsx`:
-
-```tsx
-import { useSwipeable } from 'react-swipeable';
-import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
-import { Task, deleteTask } from '../../lib/services/tasks';
-import { TaskCard } from './TaskCard';
-
-interface SwipeableTaskCardProps {
-  task: Task;
-  /** Called when the user taps the card (opens edit bottom sheet). */
-  onEdit?: (task: Task) => void;
-}
-
-/**
- * Wraps a custom task card with swipe-to-delete.
- * Swiping left reveals a circular trash icon button to the right of the card.
- * Tapping the trash icon immediately deletes the task (no confirmation).
- */
-export function SwipeableTaskCard({ task, onEdit }: SwipeableTaskCardProps) {
-  const [swipeOffset, setSwipeOffset] = useState(0);
-
-  const handlers = useSwipeable({
-    onSwiping: (eventData) => {
-      if (eventData.dir === 'Left' && eventData.deltaX < 0) {
-        setSwipeOffset(Math.max(eventData.deltaX, -80));
-      }
-    },
-    onSwiped: (eventData) => {
-      if (eventData.dir === 'Left' && Math.abs(eventData.deltaX) > 60) {
-        setSwipeOffset(-80);
-      } else {
-        setSwipeOffset(0);
-      }
-    },
-    trackMouse: true,
-  });
-
-  const handleDelete = async () => {
-    try {
-      await deleteTask(task.id);
-    } catch (error) {
-      console.error('Failed to delete task:', error);
-      alert('Failed to delete task. Please try again.');
-    }
-  };
-
-  return (
-    <div className="relative flex items-center">
-      {/* Circular delete button — positioned to the right, vertically centered */}
-      <div
-        className="absolute right-0 flex items-center justify-center"
-        style={{
-          opacity: swipeOffset < 0 ? Math.min(1, Math.abs(swipeOffset) / 60) : 0,
-          transform: `scale(${swipeOffset < 0 ? Math.min(1, Math.abs(swipeOffset) / 60) : 0})`,
-          transition: swipeOffset === 0 ? 'all 0.3s ease-out' : 'none',
-        }}
-      >
-        <button
-          onClick={handleDelete}
-          className="w-14 h-14 rounded-full bg-destructive flex items-center justify-center shadow-lg active:scale-95 transition-transform"
-          style={{ boxShadow: '0 2px 8px rgba(212, 87, 78, 0.3)' }}
-        >
-          <Trash2 className="size-5 text-destructive-foreground" />
-        </button>
-      </div>
-
-      {/* Task card (swipeable) */}
-      <div
-        {...handlers}
-        style={{
-          transform: `translateX(${swipeOffset}px)`,
-          transition: swipeOffset === 0 ? 'transform 0.3s ease-out' : 'none',
-        }}
-        className="relative z-10 w-full"
-      >
-        <TaskCard task={task} onEdit={onEdit} />
-      </div>
-    </div>
-  );
-}
-```
-
-**Key change (D45):** Added `onEdit` prop to interface, passed through to `<TaskCard onEdit={onEdit} />`. Also simplified delete to immediate (no confirmation modal) with circular trash icon instead of text button.
-
-**Deliverable:** Swipe-to-delete with `onEdit` passthrough
-
-**Unblocks:** Step 7 (FAB button)
-
----
-
-#### Step 7: Floating Action Button — Dual-Mode Bottom Sheet (Add / Edit)
-**Duration:** 3 hours
-**Updated:** 2026-02-18 (D45 — dual-mode: add new task + edit existing task via same bottom sheet)
-
-Create `src/app/components/AddTaskFAB.tsx`:
-
-```tsx
-import { useState, useEffect } from 'react';
-import { Plus } from 'lucide-react';
-import { addTask, editTask, Task } from '../../lib/services/tasks';
-import { format } from 'date-fns';
-
-const ACTIVITY_OPTIONS = [
-  { value: 'potty_break', label: 'Potty', emoji: '🚽' },  // D55: "Potty" in grid, "Potty Break" in timeline titles
-  { value: 'meal', label: 'Meal', emoji: '🍽️' },
-  { value: 'training', label: 'Training', emoji: '🎓' },
-  { value: 'nap', label: 'Nap', emoji: '😴' },
-  { value: 'calm_time', label: 'Calm Time', emoji: '🧘' },
-  { value: 'play_time', label: 'Play Time', emoji: '🎾' },
-  { value: 'walk', label: 'Walk', emoji: '🚶' },
-];
-
-interface AddTaskFABProps {
-  puppyId: string;
-  /** When set, the bottom sheet opens in "Edit Task" mode pre-populated with this task's data. */
-  editingTask?: Task | null;
-  /** Called when the edit sheet closes (save or cancel) so the parent can clear editingTask. */
-  onEditDone?: () => void;
-}
-
-export function AddTaskFAB({ puppyId, editingTask, onEditDone }: AddTaskFABProps) {
-  const [showModal, setShowModal] = useState(false);
-  const [selectedActivity, setSelectedActivity] = useState('');
-  const [selectedTime, setSelectedTime] = useState(
-    new Date().toTimeString().slice(0, 5)
-  );
-  const [isSaving, setIsSaving] = useState(false);
-
-  const isEditMode = !!editingTask;
-
-  // Open the sheet and pre-populate when editingTask is set
-  useEffect(() => {
-    if (editingTask) {
-      setSelectedActivity(editingTask.activityType);
-      setSelectedTime(format(editingTask.actualTime.toDate(), 'HH:mm'));
-      setShowModal(true);
-    }
-  }, [editingTask]);
-
-  const resetAndClose = () => {
-    setSelectedActivity('');
-    setSelectedTime(new Date().toTimeString().slice(0, 5));
-    setShowModal(false);
-    onEditDone?.();
-  };
-
-  const handleSubmit = async () => {
-    if (!selectedActivity) return;
-
-    setIsSaving(true);
-    try {
-      const [hours, minutes] = selectedTime.split(':').map(Number);
-      const time = new Date();
-      time.setHours(hours, minutes, 0, 0);
-
-      if (isEditMode && editingTask) {
-        // Edit mode: update existing task (including title)
-        const activityLabel = ACTIVITY_OPTIONS.find(
-          (opt) => opt.value === selectedActivity
-        )?.label || selectedActivity;
-
-        await editTask(editingTask.id, {
-          actualTime: time,
-          activityType: selectedActivity as Task['activityType'],
-          title: activityLabel,
-        });
-      } else {
-        // Add mode: create new task
-        const activityLabel = ACTIVITY_OPTIONS.find(
-          (opt) => opt.value === selectedActivity
-        )?.label || selectedActivity;
-
-        await addTask(puppyId, selectedActivity as any, time, activityLabel);
-      }
-
-      resetAndClose();
-    } catch (error) {
-      console.error(isEditMode ? 'Failed to edit task:' : 'Failed to add task:', error);
-      alert(isEditMode ? 'Failed to save changes. Please try again.' : 'Failed to add task. Please try again.');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  // When opening via FAB (not edit mode), reset fields to defaults
-  const handleFABClick = () => {
-    setSelectedActivity('');
-    setSelectedTime(new Date().toTimeString().slice(0, 5));
-    setShowModal(true);
-  };
-
-  return (
-    <>
-      {/* FAB Button */}
-      <button
-        onClick={handleFABClick}
-        className="fixed bottom-10 right-6 w-14 h-14 bg-primary text-primary-foreground rounded-full flex items-center justify-center hover:bg-primary/90 active:scale-95 transition-all z-40"
-        style={{ boxShadow: '0 4px 16px rgba(232, 114, 42, 0.35)' }}
-        aria-label="Add new task"
-      >
-        <Plus className="size-6" strokeWidth={2.5} />
-      </button>
-
-      {/* Bottom Sheet (dual-mode: Add / Edit) */}
-      {showModal && (
-        <div
-          className="fixed inset-0 bg-black/50 z-50 flex items-end"
-          onClick={resetAndClose}
-        >
-          <div
-            className="bg-background rounded-t-3xl p-6 w-full max-w-[390px] mx-auto"
-            style={{ boxShadow: '0 -4px 24px rgba(45, 27, 14, 0.15)' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-12 h-1 bg-muted rounded-full mx-auto mb-4" />
-
-            <h3 className="text-xl font-bold text-foreground mb-5">
-              {isEditMode ? 'Edit Task' : 'Add Custom Task'}
-            </h3>
-
-            <div className="space-y-4">
-              {/* Time Picker */}
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Time</label>
-                <input
-                  type="time"
-                  value={selectedTime}
-                  onChange={(e) => setSelectedTime(e.target.value)}
-                  className="w-full px-3 py-2.5 bg-accent border border-border rounded-xl text-foreground text-sm"
-                />
-              </div>
-
-              {/* Activity Type Grid (2-column emoji-labeled buttons) */}
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1.5">Activity Type</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {ACTIVITY_OPTIONS.map((option) => (
-                    <button
-                      key={option.value}
-                      onClick={() => setSelectedActivity(option.value)}
-                      className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm text-left transition-all ${
-                        selectedActivity === option.value
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-accent text-foreground hover:bg-accent/80'
-                      }`}
-                    >
-                      <span>{option.emoji}</span>
-                      <span>{option.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Buttons */}
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={resetAndClose}
-                  disabled={isSaving}
-                  className="flex-1 py-3 px-4 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSubmit}
-                  disabled={!selectedActivity || isSaving}
-                  className="flex-1 py-3 px-4 bg-primary text-primary-foreground rounded-xl font-semibold hover:bg-primary/90 disabled:opacity-40 transition-all"
-                >
-                  {isSaving
-                    ? (isEditMode ? 'Saving...' : 'Adding...')
-                    : (isEditMode ? 'Save Changes' : 'Add Task')
-                  }
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-```
-
-**Key change (D45):** AddTaskFAB is now dual-mode. When `editingTask` is provided, the bottom sheet opens pre-populated with the task's current time and activity type, title reads "Edit Task", button reads "Save Changes", and it calls `editTask()` instead of `addTask()`. The `onEditDone` callback lets Dashboard clear the editing state on save or cancel.
-
-**Dashboard wiring (in Dashboard.tsx):**
-```tsx
-const [editingTask, setEditingTask] = useState<Task | null>(null);
-
-// In task list rendering:
-<SwipeableTaskCard
-  task={entry.task}
-  onEdit={(task) => setEditingTask(task)}
-/>
-
-// At component root:
-<AddTaskFAB
-  puppyId={puppyId}
-  editingTask={editingTask}
-  onEditDone={() => setEditingTask(null)}
-/>
-```
-
-**Deliverable:** Dual-mode FAB + bottom sheet (add and edit)
-
-**Unblocks:** Step 8 (network status banner)
-
----
-
-#### Step 8: Network Status Banner
-**Duration:** 1.5 hours
-
-Create `src/app/components/NetworkStatusBanner.tsx`:
-
-```tsx
-import { useState, useEffect } from 'react';
-import { onSnapshot, doc } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
-
-type BannerState = 'connected' | 'offline' | 'syncing' | 'failed';
-
-export function NetworkStatusBanner() {
-  const [state, setState] = useState<BannerState>('connected');
-  const [showConnected, setShowConnected] = useState(false);
-
-  useEffect(() => {
-    // Listen to Firestore connection state
-    const unsubscribe = onSnapshot(
-      doc(db, '.info/connected'),
-      (snapshot) => {
-        const isConnected = snapshot.data()?.connected ?? false;
-
-        if (isConnected) {
-          setState('connected');
-          setShowConnected(true);
-          setTimeout(() => setShowConnected(false), 2000); // Auto-dismiss after 2s
-        } else {
-          setState('offline');
-        }
-      },
-      (error) => {
-        console.error('Connection state error:', error);
-        setState('failed');
-      }
-    );
-
-    return unsubscribe;
-  }, []);
-
-  if (state === 'connected' && !showConnected) {
-    return null; // Don't show banner when connected after auto-dismiss
-  }
-
-  const bannerConfig = {
-    connected: {
-      bg: 'bg-green-50',
-      border: 'border-green-200',
-      text: 'text-green-800',
-      message: '✓ Synced',
-    },
-    offline: {
-      bg: 'bg-yellow-50',
-      border: 'border-yellow-200',
-      text: 'text-yellow-800',
-      message: '⚠️ You\'re offline. Changes will sync when connected.',
-    },
-    syncing: {
-      bg: 'bg-blue-50',
-      border: 'border-blue-200',
-      text: 'text-blue-800',
-      message: '⏳ Syncing changes...',
-    },
-    failed: {
-      bg: 'bg-red-50',
-      border: 'border-red-200',
-      text: 'text-red-800',
-      message: '❌ Couldn\'t sync changes. Check your connection.',
-    },
-  };
-
-  const config = bannerConfig[state];
-
-  return (
-    <div className={`${config.bg} border-b ${config.border} px-4 py-3 text-sm ${config.text} flex items-center justify-between`}>
-      <span>{config.message}</span>
-      {state === 'failed' && (
-        <button
-          onClick={() => window.location.reload()}
-          className="underline font-medium"
-        >
-          Retry
-        </button>
-      )}
-    </div>
-  );
-}
-```
-
-**Deliverable:** Network status banner with 4 states
-
-**Unblocks:** Step 9 (integration)
-
----
-
-### 17.5 Integration & Testing
-
-#### Step 9: Dashboard Integration
-**Duration:** 2 hours
-
-Update `src/app/components/Dashboard.tsx` to use Firestore tasks:
-
-```tsx
-import { useEffect, useState } from 'react';
-import { subscribeToTasks, Task } from '../../lib/services/tasks';
-import { signInToFirebase } from '../../lib/firebase';
-import { SwipeableTaskCard } from './SwipeableTaskCard';
-import { AddTaskFAB } from './AddTaskFAB';
-import { NetworkStatusBanner } from './NetworkStatusBanner';
-
-export function Dashboard({ puppyId }: { puppyId: string }) {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let unsubscribe: (() => void) | null = null;
-
-    async function init() {
-      try {
-        // Sign in to Firebase (get Custom Token from Supabase)
-        await signInToFirebase();
-
-        // Subscribe to tasks
-        unsubscribe = subscribeToTasks(
-          puppyId,
-          (updatedTasks) => {
-            setTasks(updatedTasks);
-            setIsLoading(false);
-          },
-          (err) => {
-            setError(err.message);
-            setIsLoading(false);
-          }
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load tasks');
-        setIsLoading(false);
-      }
-    }
-
-    init();
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [puppyId]);
-
-  if (isLoading) {
-    return <div>Loading tasks...</div>;
-  }
-
-  if (error) {
-    return <div>Error: {error}</div>;
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <NetworkStatusBanner />
-
-      <div className="max-w-2xl mx-auto p-4 space-y-2">
-        <h1 className="text-2xl font-bold mb-4">Today's Routine</h1>
-
-        {tasks.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
-            <div className="text-4xl mb-2">🐾</div>
-            <p>No tasks for today</p>
-            <p className="text-sm">Tap + to add a task</p>
-          </div>
-        ) : (
-          tasks.map((task) => (
-            <SwipeableTaskCard key={task.id} task={task} />
-          ))
-        )}
-      </div>
-
-      <AddTaskFAB puppyId={puppyId} />
-    </div>
-  );
-}
-```
-
-**Deliverable:** Fully integrated Dashboard with Flow 6 features
-
-**Unblocks:** Step 10 (testing)
-
----
-
-#### Step 10: End-to-End Testing
-**Duration:** 3 hours
-
-**Test Scenarios:**
-
-1. **Add Task Flow**
-   - Tap FAB → Select activity → Set time → Tap Add
-   - Verify: Task appears in chronological order, marked with ✏️
-
-2. **Edit Task Flow**
-   - Tap task card → Change time → Tap Save
-   - Verify: Task reorders, shows ✏️, changes sync to other devices within 3s
-
-3. **Delete Task Flow**
-   - Swipe left → Tap Delete → Confirm
-   - Verify: Task disappears, deletion syncs to other devices
-
-4. **Real-Time Sync**
-   - Open app in two browser tabs (different accounts)
-   - Edit task in Tab 1
-   - Verify: Tab 2 updates within 3 seconds
-
-5. **Offline Mode**
-   - Disable network (browser DevTools → Offline)
-   - Edit task
-   - Verify: Yellow banner appears, change appears instantly
-   - Re-enable network
-   - Verify: Banner changes to "Syncing..." then "Synced", other devices receive update
-
-6. **Conflict Resolution**
-   - Two users edit same task offline
-   - Both reconnect
-   - Verify: Last-write-wins applies, no data corruption
-
-**Acceptance Criteria:**
-- All 6 scenarios pass
-- No console errors
-- Network status banner displays correctly
-- Animations are smooth (200ms expansions, 300ms fade-outs)
-- Offline queue works (edits sync when reconnected)
-
-**Deliverable:** Flow 6 fully tested and working
-
-**Unblocks:** Production deployment
-
----
-
-### 17.6 Deployment Checklist
-
-**Firebase:**
-- [ ] Firestore security rules deployed (`firebase deploy --only firestore:rules`)
-- [ ] Firestore indexes created (auto-generated on first query)
-- [ ] Firebase service account JSON added to Supabase secrets
-
-**Supabase:**
-- [ ] `get-firebase-token` Edge Function deployed
-- [ ] Edge Function tested in production (returns valid Custom Token)
-
-**Frontend:**
-- [ ] Firebase config env vars added to Vercel:
-  - `VITE_FIREBASE_API_KEY`
-  - `VITE_FIREBASE_AUTH_DOMAIN`
-  - `VITE_FIREBASE_PROJECT_ID`
-- [ ] Build succeeds with no TypeScript errors
-- [ ] Deployed to Vercel
-
-**Testing:**
-- [ ] E2E test on production (add/edit/delete task)
-- [ ] Multi-user sync verified
-- [ ] Offline mode verified
-- [ ] Mobile responsive (tested on iOS Safari, Android Chrome)
-
----
-
-### 17.7 Cost Impact
-
-**Firebase Firestore (Free Spark Tier):**
-- 50K reads/day, 20K writes/day, 1GB storage
-- **Estimated usage (50 users):**
-  - 50 users × 15 tasks/day × 2 reads (load + updates) = 1,500 reads/day
-  - 50 users × 5 edits/day = 250 writes/day
-  - **Well under free tier limits**
-
-**Scaling (1000 users):**
-- 30K reads/day, 5K writes/day
-- Still under free tier
-- **Upgrade to Blaze (pay-as-you-go) at 10K+ users:** ~$15/month
-
----
-
-### 17.8 Known Limitations & Future Improvements
-
-**v1 Limitations:**
-- No undo/redo for task edits
-- No conflict resolution UI (last-write-wins is silent)
-- Today's tasks only (no multi-day editing)
-- Pre-defined activity types only
-
-**P1 Improvements:**
-- Conflict notification: "Mike edited this task after you. Updated to [time]."
-- Undo button (24-hour window to revert edits)
-- Task edit history/audit log
-
-**P2 Improvements:**
-- Multi-day task editing (past 7 days)
-- Custom activity types
-- Task notes/comments
-- Recurring task templates
-
----
-
-## 18. Flow 7 / F9: Profile Picture Management — Backend Plan
-
-**Added:** 2026-02-17
-**Priority:** P0 (Launch Blocker)
-**Complexity:** Low (Supabase Storage + profiles table update)
-
----
-
-### 18.1 Overview
-
-Flow 7 allows users to upload a custom profile photo from the Settings screen. The photo is stored in Supabase Storage and its URL is written back to the `profiles` table. The frontend then propagates the new URL to all UI surfaces that display it (settings avatar, task completion indicators).
-
-**What is already built (frontend):**
-- `uploadUserAvatar()` in `src/lib/services/auth.ts` — uploads file to Supabase Storage `user-avatars` bucket, returns cache-busted URL
-- `updateProfile()` in `src/lib/services/auth.ts` — writes `avatar_url` to `profiles` table
-- Action sheet UI in `Settings.tsx` with "Take a Photo", "Choose from Photo Library", "Cancel"
-- `avatarUrl` state in `App.tsx`, seeded from profile on load, cleared on sign out
-- `onAvatarUpdate` callback propagates new URL to all consumers
-
-**What still needs to be done (backend):**
-1. Confirm `user-avatars` Supabase Storage bucket exists with correct RLS policies
-2. Confirm `profiles.avatar_url` column exists and is writable by the owner
-3. Add a Supabase Storage RLS policy so users can only write to their own folder
-4. Verify the profiles RLS `UPDATE` policy covers `avatar_url`
-5. Add a Supabase Realtime subscription on `profiles.avatar_url` so other users' views update when a profile picture changes
-
----
-
-### 18.2 Data Model Changes
-
-No new tables required. Flow 7 uses existing schema:
-
-```
-profiles
-  - id           (UUID, FK → auth.users)  ← used as storage path prefix
-  - avatar_url   (text, nullable)          ← written after upload
-  - display_name (text, nullable)
-  - created_at   (timestamp)
-```
-
-**Storage bucket:** `user-avatars` (already created manually per D35)
-
-**Storage path convention:** `{userId}/avatar.{ext}` (deterministic, upserted on each upload — see D36)
-
----
-
-### 18.3 Supabase Storage RLS Policies
-
-The `user-avatars` bucket must enforce that users can only read all objects (public) but only write their own folder. Add these policies in the Supabase dashboard under **Storage → Policies**, or via a migration.
-
-#### Migration file: `supabase/migrations/20260217000001_user_avatars_storage_rls.sql`
-
-```sql
--- Allow any authenticated user to read from user-avatars bucket
--- (bucket is public, but we still add a policy for completeness)
-CREATE POLICY "Avatar images are publicly readable"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'user-avatars');
-
--- Allow authenticated users to upload/update ONLY their own folder
--- Storage path format: {userId}/avatar.{ext}
--- We check that the first path segment matches the authenticated user's ID.
-CREATE POLICY "Users can upload their own avatar"
-  ON storage.objects FOR INSERT
-  WITH CHECK (
-    bucket_id = 'user-avatars'
-    AND auth.uid()::text = (storage.foldername(name))[1]
-  );
-
-CREATE POLICY "Users can update their own avatar"
-  ON storage.objects FOR UPDATE
-  USING (
-    bucket_id = 'user-avatars'
-    AND auth.uid()::text = (storage.foldername(name))[1]
-  );
-
-CREATE POLICY "Users can delete their own avatar"
-  ON storage.objects FOR DELETE
-  USING (
-    bucket_id = 'user-avatars'
-    AND auth.uid()::text = (storage.foldername(name))[1]
-  );
-```
-
-**How `storage.foldername()` works:**
-- For path `abc-123/avatar.jpg`, `storage.foldername(name)` returns `['abc-123', 'avatar.jpg']`
-- Index `[1]` is the first segment — the user's UUID
-- This ensures user `abc-123` can only write to `abc-123/*` and cannot overwrite other users' avatars
-
----
-
-### 18.4 Profiles Table RLS Verification
-
-The existing `profiles` UPDATE policy (from Phase 4 / Section 2.2) already covers `avatar_url`:
-
-```sql
-CREATE POLICY "Users can update own profile"
-  ON profiles FOR UPDATE
-  USING (auth.uid() = id);
-```
-
-This policy allows updating any column on the user's own row, including `avatar_url`. No change needed.
-
-**Verify it's in place:**
-```sql
-SELECT policyname, cmd, qual
-FROM pg_policies
-WHERE tablename = 'profiles' AND cmd = 'UPDATE';
-```
-
-Expected output: one row with `policyname = 'Users can update own profile'` and `qual = '(auth.uid() = id)'`.
-
----
-
-### 18.5 Supabase Realtime: Profile Picture Propagation
-
-The product spec requires that when a user updates their profile picture, other household members' views (task completion indicators) update within 1 second. This requires a Realtime subscription on the `profiles` table.
-
-**Enable Realtime on `profiles` table:**
-
-By default, Supabase Realtime only broadcasts changes for tables with `REPLICA IDENTITY FULL`. Add this migration:
-
-#### Migration file: `supabase/migrations/20260217000002_profiles_realtime.sql`
-
-```sql
--- Enable full row replication for Realtime change detection on profiles
-ALTER TABLE profiles REPLICA IDENTITY FULL;
-
--- Add profiles to the Supabase Realtime publication
--- (This makes INSERT/UPDATE/DELETE events available via the Realtime API)
-ALTER PUBLICATION supabase_realtime ADD TABLE profiles;
-```
-
-**Frontend subscription** (`src/lib/services/auth.ts` — add this function):
-
-```typescript
-// Subscribe to profile picture changes for a list of user IDs
-// Used by Dashboard to update task completion indicators when a co-user changes their avatar
-export function subscribeToProfileChanges(
-  userIds: string[],
-  callback: (userId: string, newAvatarUrl: string | null) => void
-): () => void {
-  const channel = supabase
-    .channel('profile-avatar-changes')
-    .on(
-      'postgres_changes',
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'profiles',
-        filter: `id=in.(${userIds.join(',')})`,
-      },
-      (payload) => {
-        const { id, avatar_url } = payload.new as { id: string; avatar_url: string | null };
-        callback(id, avatar_url);
-      }
-    )
-    .subscribe();
-
-  // Return unsubscribe function
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}
-```
-
-**Where to call this in the Dashboard:**
-
-The Dashboard already has a `routine` prop with `completed_by` user IDs on each task item. After loading the routine, subscribe to profile changes for all unique `completed_by` values:
-
-```typescript
-// In Dashboard.tsx — add alongside existing Supabase Realtime subscription
-useEffect(() => {
-  if (!routine) return;
-
-  // Collect unique user IDs who have completed tasks
-  const userIds = [
-    ...new Set(
-      activityLogs
-        .filter((log) => log.completed_by)
-        .map((log) => log.completed_by as string)
-    ),
-  ];
-
-  if (userIds.length === 0) return;
-
-  const unsubscribe = subscribeToProfileChanges(userIds, (userId, newAvatarUrl) => {
-    // Update the local avatarCache map so task indicators re-render
-    setAvatarCache((prev) => ({ ...prev, [userId]: newAvatarUrl }));
-  });
-
-  return unsubscribe;
-}, [routine, activityLogs]);
-```
-
-> **Note:** The exact integration point depends on how task completion indicators are currently rendered in `Dashboard.tsx`. The pattern above shows the intent — read the current Dashboard implementation before wiring this in.
-
----
-
-### 18.6 Implementation Steps
-
-```
-Step 1: Apply Storage RLS migration
-  File: supabase/migrations/20260217000001_user_avatars_storage_rls.sql
-  Command: supabase db push
-  Verify: Attempt to upload to another user's folder → expect 403
-  → Unblocks: Secure avatar upload in production
-
-Step 2: Apply Realtime migration
-  File: supabase/migrations/20260217000002_profiles_realtime.sql
-  Command: supabase db push
-  Verify: supabase dashboard → Database → Replication → confirm profiles table listed
-  → Unblocks: Real-time avatar propagation to other users
-
-Step 3: Add subscribeToProfileChanges() to auth.ts
-  File: src/lib/services/auth.ts
-  → Unblocks: Dashboard can listen for avatar updates
-
-Step 4: Wire subscription into Dashboard
-  File: src/app/components/Dashboard.tsx
-  Pattern: collect completed_by userIds → call subscribeToProfileChanges → update avatarCache state
-  → Unblocks: Task completion indicators auto-update when co-user changes photo
-
-Step 5: Verify profiles RLS UPDATE policy exists
-  Query: SELECT policyname FROM pg_policies WHERE tablename = 'profiles' AND cmd = 'UPDATE';
-  If missing: add policy from Section 2.2 (already in migrations)
-  → Unblocks: updateProfile() call succeeds in production
-
-Step 6: End-to-end test
-  Scenario A: User uploads photo → Settings avatar updates → toast appears
-  Scenario B: User uploads photo → co-user's Dashboard task indicators update within 1s
-  Scenario C: User uploads file >5MB → client-side rejection, no upload
-  Scenario D: User attempts to upload to another user's storage path → 403 from Supabase
-```
-
----
-
-### 18.7 Deployment Checklist
-
-**Supabase Storage:**
-- [ ] `user-avatars` bucket exists (public read)
-- [ ] Storage RLS migration applied (`20260217000001_user_avatars_storage_rls.sql`)
-- [ ] Test: authenticated user can upload to own path, blocked from other paths
-
-**Supabase Database:**
-- [ ] `profiles.avatar_url` column exists (type: `text`, nullable)
-- [ ] `profiles` UPDATE RLS policy exists (`Users can update own profile`)
-- [ ] Realtime migration applied (`20260217000002_profiles_realtime.sql`)
-- [ ] `profiles` table listed in Supabase Realtime replication settings
-
-**Frontend (already implemented):**
-- [ ] `uploadUserAvatar()` in `auth.ts`
-- [ ] `updateProfile()` in `auth.ts`
-- [ ] `subscribeToProfileChanges()` in `auth.ts` (Step 3 above)
-- [ ] Avatar upload UI in `Settings.tsx`
-- [ ] `avatarUrl` state in `App.tsx`
-- [ ] Dashboard wired to `subscribeToProfileChanges` (Step 4 above)
-
-**Testing:**
-- [ ] Upload flow on mobile (iOS Safari camera + library paths)
-- [ ] Upload flow on desktop (file picker)
-- [ ] 5MB limit enforced client-side
-- [ ] HEIC/PNG/JPEG all accepted
-- [ ] Co-user avatar update propagation verified in two browser tabs
-- [ ] Offline upload attempt: graceful failure, error toast shown
-
----
-
-### 18.8 Cost Impact
-
-**Supabase Storage:**
-- Bucket: `user-avatars`, average file size ~100KB (400×400px JPEG)
-- 1000 users × 100KB = 100MB storage total
-- Supabase Pro includes 100GB storage — negligible cost
-- Each upload: 1 storage write + 1 profiles DB update = minimal Supabase usage
-
-**Supabase Realtime:**
-- 1 additional Realtime channel per active Dashboard session (profile-avatar-changes)
-- Low message frequency (only triggers when a user changes their photo)
-- No meaningful cost impact within free/Pro tier limits
-
----
-
-### 18.9 Known Limitations & Future Improvements
-
-**v1 Limitations:**
-- No server-side image resizing to 400×400px (spec calls for it, but `react-image-crop` is not yet integrated — client sends raw file)
-- No "Reset to Google picture" option (deferred to P1 per Out of Scope table)
-- HEIC files are accepted by the file input but browser support for rendering HEIC is inconsistent on non-Apple devices — acceptable for v1, add server-side conversion in P1
-
-**P1 Improvements:**
-- Server-side image resizing via Supabase Edge Function (`resize-avatar`) — receives raw upload, resizes to 400×400, stores optimized JPEG, returns URL
-- "Reset to Google OAuth picture" — store original Google picture URL at sign-up in `profiles.google_avatar_url`, allow revert
-- Image format normalization — convert HEIC → JPEG server-side for cross-platform compatibility
-
-**P2 Improvements:**
-- CDN cache invalidation strategy (current `?v=timestamp` approach works but bypasses CDN — use Supabase Storage transform API for proper cache control)
-- Profile picture propagation via Firestore Custom Claims update (so task completion indicators in the Firestore-backed task list also refresh without a page reload)
-
----
-
-## 19. D45: Custom Task Edit UX — Backend Assessment
-
-**Added:** 2026-02-18
-**Decision Reference:** D45 (decisions-log.md)
-**Priority:** P0 (Launch Blocker — frontend already implemented)
-**Complexity:** Minimal (one service function update + frontend wiring fix)
-
----
-
-### 19.1 Overview
-
-**Change:** Tapping a custom (user-added) task now opens the "Add Custom Task" bottom sheet in edit mode (pre-populated with the task's current time and activity type) instead of showing an inline expandable card. The frontend implementation is complete (D45). This section assesses backend changes needed.
-
-**Frontend Components Updated (already shipped):**
-- `AddTaskFAB.tsx` — Dual-mode bottom sheet (add/edit) via `editingTask` and `onEditDone` props
-- `TaskCard.tsx` — Simplified to display-only (removed all inline expansion state and edit logic)
-- `SwipeableTaskCard.tsx` — Added `onEdit` prop passthrough to TaskCard
-- `Dashboard.tsx` — Added `editingTask` state, wires TaskCard → AddTaskFAB
-
----
-
-### 19.2 Backend Assessment
-
-#### Firestore Security Rules: No Changes Needed
-
-The existing `firestore.rules` already permit task updates by authenticated users with puppy access:
-
-```javascript
-// Update: User must have access
-allow update: if hasPuppyAccess(resource.data.puppyId)
-  && request.resource.data.lastEditedBy == request.auth.uid
-  && request.resource.data.lastEditedAt == request.time;
-```
-
-The update rule validates:
-1. User has puppy access via Custom Claims (`hasPuppyAccess`)
-2. `lastEditedBy` matches the authenticated user
-3. `lastEditedAt` matches `request.time` (server timestamp)
-
-These rules apply identically whether the edit originates from an inline card or a bottom sheet — the Firestore document update is the same `updateDoc()` call. **No rule changes needed.**
-
-#### Data Model: No Changes Needed
-
-The `tasks` collection schema remains unchanged. The D45 change affects only the UI surface through which edits are triggered — the underlying Firestore document fields (`actualTime`, `activityType`, `isEdited`, `lastEditedBy`, `lastEditedAt`) are identical.
-
-#### Service Function: One Fix Required
-
-**Gap identified:** The existing `editTask()` function in `src/lib/services/tasks.ts` updates `actualTime` and `activityType` but does **not** update the `title` field. When a user changes the activity type in the edit bottom sheet (e.g., from "Potty Break" to "Walk"), the document's `title` field retains the old value ("Potty Break") while `activityType` changes to `walk`.
-
-This causes a display mismatch: TaskCard renders `task.title` as the primary label, so the card would show "Potty Break" with a "walk" activity type subtitle.
-
-**Fix:** Add `title` to the `editTask()` updates parameter and pass the derived title from `AddTaskFAB.tsx`.
-
----
-
-### 19.3 Implementation Steps
-
-```
-Step 1: Update editTask() service function
-  File: src/lib/services/tasks.ts
-  Change: Add optional `title` field to the updates parameter
-  Verify: TypeScript compiles, existing editTask callers unaffected (title is optional)
-  Duration: 5 minutes
-  → Unblocks: Step 2
-
-Step 2: Update AddTaskFAB to pass title on edit
-  File: src/app/components/AddTaskFAB.tsx
-  Change: In handleSubmit() edit branch, derive title from ACTIVITY_OPTIONS
-          and pass it to editTask()
-  Verify: Edit a task, change activity type → title updates in Firestore
-  Duration: 5 minutes
-  → Unblocks: End-to-end verification
-
-Step 3: Verify (no deployment needed)
-  Firestore rules: unchanged, no deploy
-  Edge Functions: unchanged, no deploy
-  Database: unchanged, no migration
-  Test: Edit a custom task via bottom sheet → confirm title, time, activityType
-        all update correctly in Firestore
-```
-
----
-
-### 19.4 Section 17 Code Samples — Updated for D45
-
-The code samples in Section 17 Steps 5, 6, and 7 have been updated in-place to reflect the D45 changes (display-only TaskCard, SwipeableTaskCard with `onEdit` prop, dual-mode AddTaskFAB). See those steps for current implementation reference.
-
----
-
-### 19.5 Summary
-
-| Component | Change Required | Status |
-|---|---|---|
-| Firestore Security Rules | None | Already supports task updates |
-| Data Model (tasks collection) | None | Schema unchanged |
-| Firebase Custom Token Edge Function | None | Claims unchanged |
-| `editTask()` service function | Add `title` to updates | **Needs fix** |
-| `AddTaskFAB.tsx` (frontend) | Pass title in edit mode | **Needs fix** |
-| Supabase Edge Functions | None | Not involved in task CRUD |
-| Deployment | None required | All changes are client-side |
-
-**Bottom line:** The D45 UX change is almost entirely a frontend concern. The only backend-adjacent fix is adding `title` to the `editTask()` service function so that changing the activity type also updates the displayed task name. No Firestore rules, no migrations, no Edge Function changes, no deployment needed.
-
----
-
-## 20. F11 / Flow 6H: Potty Details (Poop & Pee Tracking) — Backend Plan
-
-**Added:** 2026-02-19
-**Decision References:** D52–D57 (decisions-log.md)
-**Priority:** P0 (Launch Blocker — frontend already implemented)
-**Complexity:** Minimal (Firestore rules validation update only)
-
----
-
-### 20.1 Overview
-
-Flow 6H adds structured potty detail tracking to the task editing flow. When a user selects "Potty" as the activity type in the Edit Task or Add Custom Task bottom sheet, a conditional "Details" section appears with two emoji toggle buttons (💩 Poop, 💦 Pee). Selected details are persisted to Firestore and displayed inline on the task card in the timeline.
-
-**Frontend Components Updated (already shipped):**
-- `AddTaskFAB.tsx` — Renamed "Potty Break" → "Potty" in activity grid (D55), added conditional Details section with 💩/💦 emoji toggle buttons (D53, D54), wired `pottyDetails` into save logic for all three paths (add custom, edit custom, edit routine item)
-- `TaskCard.tsx` — Shows potty emojis inline after task title for custom tasks (D56)
-- `Dashboard.tsx` — Passes `pottyDetails` from editedRoutineItems overlay, shows emojis on routine cards, passes `pottyDetails` when opening edit sheet
-- `tasks.ts` (service layer) — Added `pottyDetails` to Task interface, `addTask()`, and `editTask()` (D52)
-- `edited-routine-items.ts` (service layer) — Added `pottyDetails` to RoutineItemEdit interface and `saveRoutineItemEdit()` (D52, D57)
-
----
-
-### 20.2 Backend Assessment
-
-#### Firestore Security Rules: Minor Update Recommended
-
-**Current state:** The `validTaskData()` function in `firebase/firestore.rules` validates required fields using `hasAll()`:
-
-```javascript
-function validTaskData() {
-  let data = request.resource.data;
-  return data.keys().hasAll([
-    'puppyId', 'date', 'scheduledTime', 'actualTime',
-    'activityType', 'title', 'isCompleted', 'isEdited',
-    'isUserAdded', 'lastEditedBy', 'createdAt'
-  ])
-  && data.puppyId is string
-  && data.date is string
-  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
-  && data.lastEditedBy == request.auth.uid
-  && data.lastEditedAt == request.time;
-}
-```
-
-**Impact analysis:**
-- `hasAll()` checks that required keys are present — it does **not** reject extra keys. Adding `pottyDetails` to the document won't break this check.
-- `pottyDetails` is optional (`?` in TypeScript) — tasks without it (all non-potty tasks, all existing tasks) continue to pass validation.
-- The `create` rule calls `validTaskData()`, so new tasks with `pottyDetails` will pass.
-- The `update` rule does **not** call `validTaskData()`, so editing tasks to add `pottyDetails` is also fine.
-
-**Recommendation:** Add optional `pottyDetails` structure validation to `validTaskData()`. This prevents a malicious client from writing arbitrary data into the `pottyDetails` field (e.g., `pottyDetails: "hacked"` instead of `{ poop: true, pee: false }`). For 0→1 this is a nice-to-have, but the cost is minimal.
-
-**Updated `validTaskData()` function:**
-
-```javascript
-function validTaskData() {
-  let data = request.resource.data;
-  return data.keys().hasAll([
-    'puppyId', 'date', 'scheduledTime', 'actualTime',
-    'activityType', 'title', 'isCompleted', 'isEdited',
-    'isUserAdded', 'lastEditedBy', 'createdAt'
-  ])
-  && data.puppyId is string
-  && data.date is string
-  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
-  && data.lastEditedBy == request.auth.uid
-  && data.lastEditedAt == request.time
-  // Potty details validation (D52): if present, must be a map with boolean fields
-  && (!('pottyDetails' in data.keys()) || (
-    data.pottyDetails is map
-    && data.pottyDetails.keys().hasAll(['poop', 'pee'])
-    && data.pottyDetails.poop is bool
-    && data.pottyDetails.pee is bool
-  ));
-}
-```
-
-**Note:** This validation only applies to `create` operations on the `tasks` collection. The `update` rule and the `editedRoutineItems` rules do not call `validTaskData()`, so they are unaffected. For v1, this is acceptable — the `editedRoutineItems` collection has its own access control (`editedBy == request.auth.uid`) and the update rule already validates `lastEditedBy` and `lastEditedAt`.
-
-#### editedRoutineItems Rules: No Changes Needed
-
-The `editedRoutineItems` collection rules validate:
-1. `hasPuppyAccess(request.resource.data.puppyId)` — puppy membership check
-2. `request.resource.data.editedBy == request.auth.uid` — user identity check
-
-There is no field-level validation for this collection (consistent with D48's overlay pattern). `pottyDetails` is just another field in the `setDoc()` payload. No rule changes needed.
-
-#### Data Model: No Migration Needed
-
-Firestore is schema-less. Adding `pottyDetails` to documents happens automatically when the frontend writes it. Existing documents without `pottyDetails` are handled gracefully:
-- TypeScript: `task.pottyDetails?.poop ?? false` (optional chaining + nullish coalescing)
-- Firestore rules: `!('pottyDetails' in data.keys())` handles documents without the field
-
-No Firestore indexes are needed for `pottyDetails`. The field is not used in any query `where()` clause — it's only read after the document is fetched.
-
-#### Supabase Edge Functions: No Changes Needed
-
-| Edge Function | Affected? | Reason |
-|---|---|---|
-| `generate-routine` | No | Generates Supabase `routine_items`, not Firestore tasks |
-| `accept-invite` | No | Creates `puppy_memberships`, doesn't touch tasks |
-| `get-firebase-token` | No | Generates Custom Token with `puppyIds` claim — no field-level awareness |
-
-#### Supabase Database: No Changes Needed
-
-The Supabase `routine_items` table (source of AI-generated routines) does **not** need a `potty_details` column. Potty details are only captured when a user **edits** a routine item — this edit is stored in the Firestore `editedRoutineItems` collection, not in Supabase. The AI routine generator doesn't produce potty details — it generates the schedule; the user fills in details after the fact.
-
-#### Firebase Custom Token Claims: No Changes Needed
-
-The `get-firebase-token` Edge Function embeds `puppyIds` in Custom Claims. `pottyDetails` is a field within existing documents, not a new collection, so no claim changes are needed.
-
----
-
-### 20.3 Implementation Steps
-
-```
-Step 1: Update Firestore security rules (optional — recommended)
-  File: firebase/firestore.rules
-  Change: Add pottyDetails structure validation to validTaskData()
-  Deploy: firebase deploy --only firestore:rules
-  Verify: Create a task with pottyDetails → succeeds
-          Create a task with pottyDetails: "invalid" → rejected
-  Duration: 15 minutes
-  → Unblocks: Secure pottyDetails field validation
-
-Step 2: Verify existing rules still work
-  Test: Create a non-potty task (no pottyDetails field) → succeeds
-  Test: Update a potty task to add pottyDetails → succeeds
-  Test: Update a non-potty task (no pottyDetails) → succeeds
-  Duration: 10 minutes
-  → Unblocks: Confidence that existing functionality is unbroken
-
-Step 3: End-to-end verification
-  Test A: Add custom potty task with 💩 selected → verify pottyDetails in Firestore document
-  Test B: Edit routine item to potty with 💦 selected → verify pottyDetails in editedRoutineItems document
-  Test C: Switch activity type away from potty → verify pottyDetails omitted from write
-  Test D: Multi-user sync: User A adds potty details → User B sees emojis within 3s
-  Duration: 15 minutes
-  → Unblocks: Production confidence
-```
-
-**Total backend effort: ~40 minutes** (optional rules update + verification)
-
----
-
-### 20.4 Firestore Rules Update
-
-If applying the optional `pottyDetails` validation (Step 1), update `firebase/firestore.rules`:
-
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-
-    // Helper: Check if user has access to puppy (via Custom Claims)
-    function hasPuppyAccess(puppyId) {
-      return request.auth != null
-        && request.auth.token.puppyIds != null
-        && request.auth.token.puppyIds.hasAny([puppyId]);
-    }
-
-    // Helper: Validate task fields
-    function validTaskData() {
-      let data = request.resource.data;
-      return data.keys().hasAll([
-        'puppyId', 'date', 'scheduledTime', 'actualTime',
-        'activityType', 'title', 'isCompleted', 'isEdited',
-        'isUserAdded', 'lastEditedBy', 'createdAt'
-      ])
-      && data.puppyId is string
-      && data.date is string  // YYYY-MM-DD
-      && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
-      && data.lastEditedBy == request.auth.uid
-      && data.lastEditedAt == request.time
-      // Potty details: optional, but if present must be valid (D52)
-      && (!('pottyDetails' in data.keys()) || (
-        data.pottyDetails is map
-        && data.pottyDetails.keys().hasAll(['poop', 'pee'])
-        && data.pottyDetails.poop is bool
-        && data.pottyDetails.pee is bool
-      ));
-    }
-
-    // ... (rest of rules unchanged)
-  }
-}
-```
-
----
-
-### 20.5 Section 17 Code Samples — Updated for F11
-
-The Task interface code sample in Section 17.4 Step 4 should be updated to include `pottyDetails`. The current production code (`src/lib/services/tasks.ts`) already includes this field:
-
-```typescript
-export interface Task {
-  id: string;
-  puppyId: string;
-  date: string;
-  scheduledTime: Timestamp;
-  actualTime: Timestamp;
-  activityType: 'potty_break' | 'meal' | 'training' | 'nap' | 'calm_time' | 'play_time' | 'walk';
-  title: string;
-  description?: string;
-  pottyDetails?: {        // D52: Only present when activityType = potty_break
-    poop: boolean;        // True if 💩 was selected
-    pee: boolean;         // True if 💦 was selected
-  };
-  isCompleted: boolean;
-  isEdited: boolean;
-  isUserAdded: boolean;
-  completedBy?: string;
-  completedAt?: Timestamp;
-  lastEditedBy: string;
-  lastEditedAt: Timestamp;
-  createdAt: Timestamp;
-}
-```
-
-The `addTask()` and `editTask()` functions in the code sample have also been updated to accept `pottyDetails` as an optional parameter. See the current source files for production implementation.
-
----
-
-### 20.6 Summary
-
-| Component | Change Required | Status |
-|---|---|---|
-| Firestore Security Rules (`validTaskData()`) | Add optional `pottyDetails` structure validation | **Recommended** (not blocking) |
-| Firestore Security Rules (`editedRoutineItems`) | None | Already supports arbitrary edit fields |
-| Firestore Security Rules (`tasks` update rule) | None | Doesn't call `validTaskData()` |
-| Data Model (`tasks` collection) | None | Firestore is schema-less, `pottyDetails` auto-accepted |
-| Data Model (`editedRoutineItems` collection) | None | Same as above |
-| Firestore Indexes | None | `pottyDetails` not used in queries |
-| Firebase Custom Token Edge Function | None | Claims unchanged |
-| `generate-routine` Edge Function | None | Generates Supabase data, not Firestore tasks |
-| `accept-invite` Edge Function | None | Not involved in task CRUD |
-| Supabase Database (`routine_items` table) | None | Potty details captured at edit time, not generation time |
-| Supabase RLS Policies | None | Tasks are Firestore-only |
-| Frontend Service Layer (`tasks.ts`) | Already shipped | `pottyDetails` in interface, `addTask()`, `editTask()` |
-| Frontend Service Layer (`edited-routine-items.ts`) | Already shipped | `pottyDetails` in interface, `saveRoutineItemEdit()` |
-| Frontend Components | Already shipped | AddTaskFAB, TaskCard, Dashboard all updated |
-| Deployment | `firebase deploy --only firestore:rules` (if applying validation) | **One command** |
-
-**Bottom line:** The Potty Details feature is a frontend-heavy change with near-zero backend impact. The only recommended backend action is adding optional field validation to the Firestore security rules to prevent malformed `pottyDetails` data. No new collections, no new Edge Functions, no Supabase changes, no migrations. Total backend effort: ~40 minutes.
-
----
-
-### 20.7 Cost Impact
-
-**Zero additional cost.** `pottyDetails` is a field within existing Firestore documents. Firestore charges per document read/write, not per field (D57). Adding 2 booleans to a document has no measurable impact on:
-- Read/write costs
-- Document size (adds ~30 bytes per document with `pottyDetails`)
-- Bandwidth (negligible for real-time sync)
-- Storage (well within free tier limits)
-
----
-
-### 20.8 Deployment Checklist
-
-**Firestore:**
-- [ ] Updated `firebase/firestore.rules` with `pottyDetails` validation in `validTaskData()` (optional)
-- [ ] Deployed rules: `firebase deploy --only firestore:rules`
-- [ ] Verified: task create with valid `pottyDetails` succeeds
-- [ ] Verified: task create without `pottyDetails` still succeeds
-- [ ] Verified: task create with malformed `pottyDetails` is rejected (if validation applied)
-
-**Frontend (already shipped):**
-- [ ] `Task` interface includes `pottyDetails?: { poop: boolean; pee: boolean }`
-- [ ] `RoutineItemEdit` interface includes `pottyDetails`
-- [ ] `addTask()` accepts and persists `pottyDetails`
-- [ ] `editTask()` accepts and persists `pottyDetails`
-- [ ] `saveRoutineItemEdit()` accepts and persists `pottyDetails`
-- [ ] AddTaskFAB shows "Potty" label and conditional Details section
-- [ ] TaskCard shows inline potty emojis
-- [ ] Dashboard shows inline potty emojis on routine cards
-- [ ] Dashboard passes `pottyDetails` to edit bottom sheet
-
-**Testing:**
-- [ ] Add potty task with 💩 only → "Potty Break 💩" on timeline
-- [ ] Add potty task with 💦 only → "Potty Break 💦" on timeline
-- [ ] Add potty task with both → "Potty Break 💩💦" on timeline
-- [ ] Add potty task with neither → "Potty Break" (no emojis) on timeline
-- [ ] Edit routine item to potty with details → emojis appear on routine card
-- [ ] Switch activity type away from potty → pottyDetails cleared, no emojis
-- [ ] Multi-user sync: potty details appear on co-user's device within 3s
-- [ ] Offline: add potty details offline → sync when reconnected
-- [ ] Build succeeds: `npx vite build` with no errors in modified files
-
----
-
-## 21. F12 / Flow 8: Weight Tracking — Backend Plan
-
-**Added:** 2026-03-02
-**Decision References:** D58–D67 (decisions-log.md)
-**Priority:** P0 (Launch Blocker — frontend already implemented)
-**Complexity:** Medium (new Supabase table + RLS + trigger + migration)
-
----
-
-### 21.1 Overview
-
-Flow 8 adds a complete weight tracking system to PupPlan. Users can log weight entries over time, view an Apple Health-style growth chart with time-range filtering (W/M/6M/Y), and browse a chronological history list. The most recent weight entry automatically becomes the puppy's "current weight" on their profile.
-
-**Key architectural decision (D58):** Weight data lives in **Supabase** (not Firebase). Weight logs are permanent historical health data — not ephemeral daily tasks. They need relational integrity (foreign key to puppies), date-range queries with ordering, and aggregation (averages by period). This is the same backend as puppies, routines, and profiles. Firebase is reserved for real-time collaborative task editing only.
-
-**Frontend Components Already Shipped:**
-- `WeightHistory.tsx` — Apple Health-style chart with W/M/6M/Y time range tabs, average summary, custom SVG chart (380px), and "All Entries" history list
-- `LogWeightSheet.tsx` — Bottom sheet for logging/editing weight entries (add + edit + delete modes)
-- `Settings.tsx` — Updated with dedicated Weight card (replaces inline weight field), navigates to weight-history section
-- `weight-logs.ts` (service layer) — CRUD operations: `getWeightLogs()`, `addWeightLog()`, `updateWeightLog()`, `deleteWeightLog()`, `ensureOnboardingWeight()`
-- `database.types.ts` — Added `weight_logs` table types (Row, Insert, Update) and `WeightLog` convenience type
-- `App.tsx` — Added `weightValue`, `weightUnit`, `puppyCreatedAt` props to Settings, `onWeightUpdate` callback
-
----
-
-### 21.2 Backend Assessment
-
-#### Supabase Database: New Table Required
-
-**Status: NOT YET CREATED**
-
-The `weight_logs` table must be created in the Supabase database. The frontend service layer (`weight-logs.ts`) already calls `supabase.from('weight_logs')` for all CRUD operations. The table will fail with a Postgres error until the migration is applied.
-
-#### Supabase RLS: New Policies Required
-
-**Status: NOT YET CREATED**
-
-Four RLS policies needed — one per operation (SELECT, INSERT, UPDATE, DELETE). Both owner and caretaker have equal access (D58). The DELETE policy includes an additional `is_onboarding = false` guard to prevent deletion of the baseline weight entry at the database level (D65).
-
-#### Supabase Trigger: New Trigger Required
-
-**Status: NOT YET CREATED**
-
-A database trigger (`update_current_weight`) should fire AFTER INSERT, UPDATE, or DELETE on `weight_logs`. It updates `puppies.weight_value` and `puppies.weight_unit` to match the most recent entry by `logged_at` date. The frontend currently handles this optimistically (D66), but the trigger ensures data consistency even if the client crashes mid-operation.
-
-#### Supabase Edge Functions: No Changes Needed
-
-The `generate-routine` Edge Function generates AI routines and doesn't interact with weight data. The `accept-invite` Edge Function handles caretaker invites and doesn't touch weight. No new Edge Functions are needed — weight logging is a simple CRUD flow handled entirely by the Supabase JS SDK from the client.
-
-#### Firebase: No Changes Needed
-
-Weight tracking is entirely Supabase-based (D58). No Firestore collections, no Firestore security rules, no Firebase custom token changes.
-
-#### Supabase Realtime: Not Required
-
-Weight logging is infrequent (once every few days/weeks) and not collaborative in real-time. The frontend fetches weight logs on screen load — no WebSocket subscription needed. If two household members both log weight around the same time, the next screen load will show both entries. This is a non-issue for the weight logging use case (unlike task completion, which needs <3s sync).
-
----
-
-### 21.3 Data Model
-
-```sql
--- New table: weight_logs
--- Stores historical weight entries for a puppy
--- Each entry records its own unit independently (D63)
-
-CREATE TABLE weight_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
-  weight_value DECIMAL NOT NULL,
-  weight_unit TEXT NOT NULL DEFAULT 'lbs',
-  logged_at DATE NOT NULL DEFAULT CURRENT_DATE,
-  logged_by UUID REFERENCES auth.users(id),
-  note TEXT,
-  is_onboarding BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Constraints:
--- weight_value > 0 (enforced client-side in LogWeightSheet: min 0.1, max 300)
--- weight_unit IN ('lbs', 'kg') (enforced client-side in unit selector)
--- note max 200 chars (enforced client-side in input maxLength)
--- logged_at <= CURRENT_DATE (enforced client-side in date picker max)
--- logged_at >= puppy.created_at (enforced client-side in date picker min)
--- Multiple entries on the same date ARE allowed (product spec Flow 8J)
-```
-
-**Column Details:**
-
-| Column | Type | Nullable | Default | Purpose |
-|---|---|---|---|---|
-| `id` | UUID | NO | `gen_random_uuid()` | Primary key |
-| `puppy_id` | UUID | NO | — | Foreign key → `puppies(id)`, CASCADE delete |
-| `weight_value` | DECIMAL | NO | — | Weight amount (e.g., 18.5) |
-| `weight_unit` | TEXT | NO | `'lbs'` | Unit of measurement ('lbs' or 'kg') |
-| `logged_at` | DATE | NO | `CURRENT_DATE` | Date the weight was recorded |
-| `logged_by` | UUID | YES | — | Who logged it (FK → `auth.users(id)`) |
-| `note` | TEXT | YES | — | Optional note, max 200 chars |
-| `is_onboarding` | BOOLEAN | NO | `false` | True for migrated onboarding entry (D62) |
-| `created_at` | TIMESTAMPTZ | NO | `now()` | Row creation timestamp |
-| `updated_at` | TIMESTAMPTZ | NO | `now()` | Last modification timestamp |
-
-**Relationship to existing tables:**
-
-```
-puppies (1) ──< (N) weight_logs
-  puppies.weight_value ← synced from most recent weight_logs entry (via trigger)
-  puppies.weight_unit  ← synced from most recent weight_logs entry (via trigger)
-```
-
----
-
-### 21.4 Migration File
-
-**File:** `supabase/migrations/20260302000001_weight_logs.sql`
-
-```sql
--- ============================================================================
--- WEIGHT TRACKING: weight_logs table, RLS policies, indexes, and sync trigger
--- Feature: F12 / Flow 8 (decisions-log.md D58-D67)
--- ============================================================================
-
--- ============================================================================
--- TABLE: weight_logs
--- ============================================================================
-
-CREATE TABLE weight_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  puppy_id UUID NOT NULL REFERENCES puppies(id) ON DELETE CASCADE,
-  weight_value DECIMAL NOT NULL,
-  weight_unit TEXT NOT NULL DEFAULT 'lbs',
-  logged_at DATE NOT NULL DEFAULT CURRENT_DATE,
-  logged_by UUID REFERENCES auth.users(id),
-  note TEXT,
-  is_onboarding BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Add CHECK constraints for data integrity
-ALTER TABLE weight_logs
-  ADD CONSTRAINT weight_logs_weight_positive CHECK (weight_value > 0),
-  ADD CONSTRAINT weight_logs_weight_max CHECK (weight_value <= 300),
-  ADD CONSTRAINT weight_logs_unit_valid CHECK (weight_unit IN ('lbs', 'kg')),
-  ADD CONSTRAINT weight_logs_note_length CHECK (note IS NULL OR char_length(note) <= 200);
-
--- ============================================================================
--- INDEXES
--- ============================================================================
-
--- Primary query pattern: fetch all logs for a puppy, newest first
--- Used by getWeightLogs() in weight-logs.ts
-CREATE INDEX idx_weight_logs_puppy_date
-  ON weight_logs(puppy_id, logged_at DESC, created_at DESC);
-
--- Speed up onboarding check: ensureOnboardingWeight() queries by puppy_id + is_onboarding
-CREATE INDEX idx_weight_logs_onboarding
-  ON weight_logs(puppy_id)
-  WHERE is_onboarding = true;
-
--- Speed up RLS subquery: membership lookups
--- (Uses existing idx_puppy_memberships_user_puppy from 20260211000002_indexes.sql)
-
--- ============================================================================
--- ROW LEVEL SECURITY
--- ============================================================================
-
-ALTER TABLE weight_logs ENABLE ROW LEVEL SECURITY;
-
--- SELECT: Both owner and caretaker can view weight logs
-CREATE POLICY "Members can view weight logs for their puppies"
-  ON weight_logs FOR SELECT
-  USING (
-    puppy_id IN (
-      SELECT puppy_id FROM puppy_memberships
-      WHERE user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
--- INSERT: Both owner and caretaker can add weight logs
-CREATE POLICY "Members can insert weight logs for their puppies"
-  ON weight_logs FOR INSERT
-  WITH CHECK (
-    puppy_id IN (
-      SELECT puppy_id FROM puppy_memberships
-      WHERE user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
--- UPDATE: Both owner and caretaker can edit weight logs
-CREATE POLICY "Members can update weight logs for their puppies"
-  ON weight_logs FOR UPDATE
-  USING (
-    puppy_id IN (
-      SELECT puppy_id FROM puppy_memberships
-      WHERE user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
--- DELETE: Both owner and caretaker can delete weight logs
--- EXCEPT onboarding entries (is_onboarding = false guard) per D65
-CREATE POLICY "Members can delete weight logs for their puppies"
-  ON weight_logs FOR DELETE
-  USING (
-    is_onboarding = false
-    AND puppy_id IN (
-      SELECT puppy_id FROM puppy_memberships
-      WHERE user_id = auth.uid()
-        AND status = 'active'
-    )
-  );
-
--- ============================================================================
--- TRIGGER: Sync most recent weight to puppies table
--- ============================================================================
-
--- When a weight_log is inserted, updated, or deleted, update
--- puppies.weight_value and puppies.weight_unit to reflect the
--- most recent entry (by logged_at DESC, created_at DESC).
--- This ensures the puppy profile always shows current weight
--- even if the client didn't update it (crash, network error, etc.)
-
-CREATE OR REPLACE FUNCTION update_current_weight()
-RETURNS TRIGGER AS $$
-DECLARE
-  target_puppy_id UUID;
-  latest_weight DECIMAL;
-  latest_unit TEXT;
-BEGIN
-  -- Determine which puppy to update
-  target_puppy_id := COALESCE(NEW.puppy_id, OLD.puppy_id);
-
-  -- Find the most recent weight entry
-  SELECT weight_value, weight_unit
-  INTO latest_weight, latest_unit
-  FROM weight_logs
-  WHERE puppy_id = target_puppy_id
-  ORDER BY logged_at DESC, created_at DESC
-  LIMIT 1;
-
-  -- Update the puppies table
-  -- If all weight logs were deleted, latest_weight will be NULL
-  -- In that case, keep the existing values (should not happen in practice
-  -- because onboarding entries can't be deleted)
-  IF latest_weight IS NOT NULL THEN
-    UPDATE puppies
-    SET weight_value = latest_weight,
-        weight_unit = latest_unit
-    WHERE id = target_puppy_id;
-  END IF;
-
-  RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-CREATE TRIGGER weight_log_sync
-  AFTER INSERT OR UPDATE OR DELETE ON weight_logs
-  FOR EACH ROW EXECUTE FUNCTION update_current_weight();
-
--- ============================================================================
--- UPDATED_AT AUTO-UPDATE TRIGGER
--- ============================================================================
-
--- Automatically set updated_at on row modifications
-CREATE OR REPLACE FUNCTION update_weight_logs_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER weight_logs_updated_at
-  BEFORE UPDATE ON weight_logs
-  FOR EACH ROW EXECUTE FUNCTION update_weight_logs_updated_at();
-```
-
----
-
-### 21.5 Implementation Steps
-
-**Step 1: Create and apply the migration** → unblocks all frontend CRUD
-```bash
-# File: supabase/migrations/20260302000001_weight_logs.sql
-# (contents above)
-supabase db push
-# OR: Apply via Supabase Dashboard > SQL Editor if using hosted Supabase
-```
-
-**Step 2: Verify RLS policies** → unblocks safe multi-user access
-```sql
--- Test as authenticated owner:
--- Should succeed: SELECT, INSERT, UPDATE on own puppy's weight logs
--- Should succeed: DELETE on non-onboarding entries
--- Should FAIL: DELETE on is_onboarding = true entries
-
--- Test as authenticated caretaker:
--- Should succeed: All same operations (equal access per D58)
-
--- Test as unauthenticated:
--- Should FAIL: All operations
-```
-
-**Step 3: Verify trigger fires correctly** → unblocks weight sync
-```sql
--- Insert a weight log → check puppies.weight_value updated
--- Update the weight log → check puppies.weight_value reflects edit
--- Delete a non-onboarding log → check puppies.weight_value reverts to previous
--- Verify onboarding entry survives DELETE attempt (RLS blocks it)
-```
-
-**Step 4: Verify frontend service layer works end-to-end** → unblocks full feature testing
-- Open Settings > Weight card
-- Confirm `ensureOnboardingWeight()` creates first entry
-- Log a new weight → chart updates, Weight card updates
-- Edit an entry → chart and history list reflect changes
-- Delete a non-onboarding entry → entry removed, chart updates
-- Attempt to delete onboarding entry → Delete button hidden (client-side guard)
-
----
-
-### 21.6 Frontend Service ↔ Backend Mapping
-
-| Frontend Function | Supabase Operation | RLS Policy | Trigger Fires? |
-|---|---|---|---|
-| `getWeightLogs(puppyId)` | `SELECT * FROM weight_logs WHERE puppy_id = ? ORDER BY logged_at DESC, created_at DESC` | Members can view | No |
-| `addWeightLog(entry)` | `INSERT INTO weight_logs (...) VALUES (...) RETURNING *` | Members can insert | Yes → `update_current_weight()` |
-| `updateWeightLog(id, updates)` | `UPDATE weight_logs SET ... WHERE id = ? RETURNING *` | Members can update | Yes → `update_current_weight()` |
-| `deleteWeightLog(id)` | `DELETE FROM weight_logs WHERE id = ? AND is_onboarding = false` | Members can delete (+ `is_onboarding = false` guard) | Yes → `update_current_weight()` |
-| `ensureOnboardingWeight(...)` | `SELECT id FROM weight_logs WHERE puppy_id = ? AND is_onboarding = true LIMIT 1` then `INSERT` if none | Members can view + Members can insert | Yes (on insert) |
-
-**Double-guard on onboarding deletion (D65):**
-1. **Client-side:** `LogWeightSheet.tsx` hides the Delete button when `editingEntry?.is_onboarding === true`
-2. **Service-side:** `deleteWeightLog()` includes `.eq('is_onboarding', false)` in the query
-3. **Database-side:** RLS DELETE policy includes `is_onboarding = false` in the USING clause
-
-All three layers independently prevent deletion of onboarding entries.
-
----
-
-### 21.7 Database Schema Update
-
-After migration, the `weight_logs` table should be added to the existing schema documentation. Update `src/lib/database.types.ts` if using Supabase type generation:
-
-```bash
-# Regenerate types from live database
-supabase gen types typescript --project-id <project-id> > src/lib/database.types.ts
-```
-
-**Note:** The frontend already has manually-added `weight_logs` types in `database.types.ts` (added during frontend implementation). After running type generation, verify the auto-generated types match the manual types. If they differ, the auto-generated version takes precedence.
-
----
-
-### 21.8 Summary
-
-| Component | Change Required | Status |
-|---|---|---|
-| Supabase Database (`weight_logs` table) | Create table with CHECK constraints | **Required** (blocking) |
-| Supabase RLS (4 policies) | SELECT, INSERT, UPDATE, DELETE with membership check | **Required** (blocking) |
-| Supabase Index (`idx_weight_logs_puppy_date`) | Composite index for query performance | **Required** |
-| Supabase Index (`idx_weight_logs_onboarding`) | Partial index for onboarding check | **Recommended** |
-| Supabase Trigger (`update_current_weight`) | Sync `puppies.weight_value/unit` after weight CRUD | **Required** |
-| Supabase Trigger (`weight_logs_updated_at`) | Auto-update `updated_at` on row modification | **Recommended** |
-| Supabase Edge Functions | None | No changes needed |
-| Supabase Realtime | None | Not needed (fetch-on-load is sufficient) |
-| Supabase Storage | None | Weight tracking has no file uploads |
-| Firebase / Firestore | None | Weight data lives in Supabase (D58) |
-| Firestore Security Rules | None | No Firestore involvement |
-| Firebase Custom Token | None | No changes |
-| Frontend Service Layer (`weight-logs.ts`) | Already shipped | 5 functions, all tested |
-| Frontend Components | Already shipped | WeightHistory, LogWeightSheet, Settings, App |
-| Deployment | `supabase db push` (one migration file) | **One command** |
-
-**Bottom line:** Weight tracking requires a single Supabase migration file containing the table definition, CHECK constraints, indexes, RLS policies, and two triggers (weight sync + updated_at auto-update). No Edge Functions, no Firebase changes, no new dependencies. The entire frontend is already built and tested — it just needs the database table to exist. Total backend effort: ~1–2 hours (write migration, apply, test RLS, verify trigger).
-
----
-
-### 21.9 Cost Impact
-
-**Minimal.** Weight logging is infrequent — a typical user logs weight once every 3–7 days.
-
-| Resource | Impact |
-|---|---|
-| Supabase Database (rows) | ~50-100 rows per puppy per year. Well within free tier (500MB). |
-| Supabase API calls | ~5-10 extra API calls per session (fetch logs, save entry). Negligible vs. dashboard loads. |
-| Supabase bandwidth | Weight entries are tiny (~200 bytes each). Even fetching 100 entries is <20KB. |
-| Trigger overhead | One extra UPDATE on `puppies` table per weight CRUD operation. Sub-millisecond Postgres operation. |
-| Storage | No file uploads. Zero additional storage cost. |
-
-**At 1000 active users:** ~50K weight_logs rows per year, ~500KB total storage. Zero measurable cost increase.
-
----
-
-### 21.10 Deployment Checklist
-
-**Supabase Database:**
-- [ ] Migration file created: `supabase/migrations/20260302000001_weight_logs.sql`
-- [ ] Migration applied: `supabase db push`
-- [ ] Verified: `weight_logs` table exists with all columns
-- [ ] Verified: CHECK constraints prevent invalid data (negative weight, unknown unit, long notes)
-- [ ] Verified: `idx_weight_logs_puppy_date` index created
-- [ ] Verified: `idx_weight_logs_onboarding` partial index created
-
-**RLS Policies:**
-- [ ] Verified: Authenticated owner can SELECT weight logs for own puppy
-- [ ] Verified: Authenticated caretaker can SELECT weight logs for shared puppy
-- [ ] Verified: Unauthenticated request is rejected on all operations
-- [ ] Verified: Authenticated owner can INSERT weight log for own puppy
-- [ ] Verified: Authenticated caretaker can INSERT weight log for shared puppy
-- [ ] Verified: INSERT for unrelated puppy is rejected
-- [ ] Verified: UPDATE succeeds for own puppy's weight logs
-- [ ] Verified: DELETE succeeds for non-onboarding entries on own puppy
-- [ ] Verified: DELETE is REJECTED for `is_onboarding = true` entries (RLS guard)
-
-**Trigger:**
-- [ ] Verified: INSERT weight_log → `puppies.weight_value` and `weight_unit` updated
-- [ ] Verified: UPDATE weight_log → `puppies.weight_value` and `weight_unit` reflect edit
-- [ ] Verified: DELETE weight_log → `puppies.weight_value` reverts to next most recent
-- [ ] Verified: `updated_at` auto-updates on row modification
-- [ ] Verified: Trigger uses SECURITY DEFINER (bypasses RLS for the puppies UPDATE)
-
-**Frontend Integration (already shipped — verify end-to-end):**
-- [ ] `ensureOnboardingWeight()` creates first entry from `puppies.weight_value/unit`
-- [ ] `getWeightLogs()` returns logs sorted newest-first
-- [ ] `addWeightLog()` inserts entry and triggers puppy weight sync
-- [ ] `updateWeightLog()` updates entry and triggers puppy weight sync
-- [ ] `deleteWeightLog()` deletes non-onboarding entry and triggers puppy weight sync
-- [ ] Weight card on Puppy Profile shows current weight from latest log
-- [ ] Weight History chart renders with correct data points
-- [ ] Log Weight bottom sheet saves and dismisses correctly
-- [ ] Edit Weight Entry bottom sheet pre-populates and saves changes
-- [ ] Delete confirmation modal removes entry from history
-- [ ] Onboarding entry: Delete button hidden, edit allowed
-- [ ] Toast notifications: "Weight logged", "Weight entry updated", "Weight entry deleted"
-- [ ] Build succeeds: `npx vite build` with no errors
-
-**Type Safety:**
-- [ ] Regenerated types match manual types: `supabase gen types typescript`
-- [ ] No TypeScript errors related to `weight_logs` table operations
-
----
-
-### 21.11 Known Limitations & Future Improvements
-
-| Limitation | Impact | Resolution (P1/P2) |
-|---|---|---|
-| No server-side weight validation | Client validates but determined user could bypass via API | P1: Add CHECK constraints (included in migration above) + consider Edge Function validation for sensitive operations |
-| No `logged_by` attribution in UI | History list shows "From onboarding" label only, not who logged each entry | P1: Add profiles JOIN in `getWeightLogs()` query, display in history list |
-| No unit toggle on chart | Chart always shows in puppy's default unit | P1: Add display-only toggle below chart (D63 supports this) |
-| No data point tooltips on chart | Chart data points visible but not tappable | P1: Add touch event handling on SVG circles with tooltip overlay |
-| Straight line segments (not curved) | SVG `<polyline>` with straight segments | P1: Add Bézier curve interpolation for smooth line |
-| No weight alerts | No warning for rapid weight gain/loss | P2: Add gentle nudge if weight changes >20% in one week |
-| No vet integration | Weight data lives only in PupPlan | P2: Export to CSV/PDF for vet visits |
-| `ensureOnboardingWeight()` runs client-side | First-access latency, relies on client to trigger | P2: Migrate to server-side trigger or batch backfill script |
-| No Supabase Realtime subscription | Co-user doesn't see new weight entry until next screen load | P2: Add if multi-user weight logging becomes common usage pattern |
-
----
-
-## 22. D73: LLM Output Constraint — Strip Descriptions from AI Routine Generation
-
-**Added:** 2026-05-30
-**Decision References:** D73, D47 (updated), D70, D71 (decisions-log.md)
-**Product Spec References:** F3 (AI Routine Generation — LLM Output Constraint), F10 (Notes field — empty by default for AI tasks)
-**Priority:** P0 (Launch Blocker — current behavior produces cluttered task cards)
-**Complexity:** Low (prompt change + post-processing + validation update)
-
----
-
-### 22.1 Overview
-
-The LLM currently generates a `description` field for every routine item containing coaching advice, training tips, and behavioral guidance (e.g., *"Take Fat Boy outside immediately upon waking for his morning potty break. Give him a calm cue like 'go potty' and reward with praise when he finishes."*). These descriptions are stored in `routine_items.description` and rendered as subtitle text on every task card in the daily timeline.
-
-**Problem:** Users see a wall of AI-generated coaching text on every single task card, making the timeline feel like a training manual instead of a clean, scannable checklist. The descriptions are repetitive (every potty task says "praise when done"), add visual noise, and were not requested by the user.
-
-**Solution:** Remove the `description` field from the LLM's output contract entirely. Task cards display only the activity name, time, and duration. The Notes field (D47) remains available for users to add their own context, but it starts empty — not pre-populated with AI text.
-
----
-
-### 22.2 What Changes
-
-#### Layer affected: Edge Function (`supabase/functions/generate-routine/index.ts`)
-
-| Component | Current Behavior | New Behavior |
-|-----------|-----------------|--------------|
-| System prompt (`buildSystemPrompt()`) | Line 70: "Each activity gets a 1-2 sentence description with practical guidance for the owner." | Remove this instruction entirely. |
-| System prompt output format | Line 74: `{ "time": "HH:MM", "activity": "Activity Name", "category": "type", "description": "1-2 sentence guidance" }` | `{ "time": "HH:MM", "activity": "Activity Name", "category": "type" }` — no `description` field. |
-| User prompt (`buildUserPrompt()`) | No explicit description instruction (inherits from system prompt). | Add explicit instruction: "Do NOT include a description field. Return only time, activity, and category." |
-| `RoutineActivity` interface | `description: string` (required) | `description?: string` (optional — tolerate if LLM includes it, but strip before saving) |
-| `validateRoutine()` | Line 109: fails if `!activity.description` | Remove description from required field check. |
-| Routine items mapping | Line 286: `description: activity.description` | `description: null` — always set to null regardless of what the LLM returns. |
-
-#### Layer affected: Client-side fallback (`src/app/components/AIRoutineGenerator.tsx`)
-
-| Component | Current Behavior | New Behavior |
-|-----------|-----------------|--------------|
-| Fallback routine activities | Each activity has a hardcoded description (e.g., `"First thing in the morning, take outside for potty break"`) | Set all descriptions to `null` or empty string. |
-
-#### Layer affected: Frontend display (no code change needed)
-
-| Component | Current Behavior | New Behavior (automatic) |
-|-----------|-----------------|--------------------------|
-| `TaskCard.tsx` line 76 | `{task.description ? (<p>...</p>) : null}` | Condition is already falsy when description is null — subtitle won't render. No change needed. |
-| `Dashboard.tsx` line 607 | `{task.description && (<p>...</p>)}` | Same — already handles null/empty correctly. No change needed. |
-| `AddTaskFAB.tsx` line 87 | Pre-populates Notes textarea with `task.description \|\| ''` for AI tasks | Will correctly show empty Notes since description is null. No change needed. |
-
-#### Layer affected: Backend development plan (this document)
-
-| Section | Current Content | Update |
-|---------|----------------|--------|
-| Section 3.1 — Response shape | `description: string` in response `routine_items` | Update to `description: null` |
-| Section 3.1 — Claude Prompt Strategy | Old prompt example with `description` field | Add note referencing Section 22 |
-| Section 5.1 — Validation | "All activities have required fields (time, activity, category, description)" | Remove description from required fields |
-| Section 16.4 — Slim prompt template | Output format includes `"description": "1-2 sentence guidance"` | Remove description from output format |
-| Appendix C — Full prompt example | Output format with `"description": "Take puppy outside..."` | Remove description from output format |
-
----
-
-### 22.3 Implementation Details
-
-#### 22.3.1 Update `buildSystemPrompt()` in `index.ts`
-
-Remove the description requirement from two places:
-
-**Before (line 70):**
-```typescript
-5. Each activity gets a 1-2 sentence description with practical guidance for the owner.
-```
-
-**After:**
-```typescript
-5. Do NOT include a "description" field. Return only time, activity, and category for each entry.
-```
-
-**Before (line 74 — output format):**
-```typescript
-Each element: { "time": "HH:MM", "activity": "Activity Name", "category": "type", "description": "1-2 sentence guidance" }
-```
-
-**After:**
-```typescript
-Each element: { "time": "HH:MM", "activity": "Activity Name", "category": "type" }
-Do NOT include a "description" field. The user wants a clean checklist, not coaching advice.
-```
-
-#### 22.3.2 Update `buildUserPrompt()` in `index.ts`
-
-Add explicit no-description instruction at the end of the user prompt:
-
-**Before (line 98):**
-```typescript
-Return ONLY the JSON array.`;
-```
-
-**After:**
-```typescript
-Each item: { "time": "HH:MM", "activity": "Activity Name", "category": "type" }
-Do NOT include descriptions. Return ONLY the JSON array.`;
-```
-
-#### 22.3.3 Update `RoutineActivity` interface in `index.ts`
-
-**Before (line 24):**
-```typescript
-interface RoutineActivity {
-  time: string;
-  activity: string;
-  category: string;
-  description: string;
-}
-```
-
-**After:**
-```typescript
-interface RoutineActivity {
-  time: string;
-  activity: string;
-  category: string;
-  description?: string;  // Optional — stripped before saving even if LLM includes it
-}
-```
-
-#### 22.3.4 Update `validateRoutine()` in `index.ts`
-
-**Before (line 109):**
-```typescript
-if (!activity.time || !activity.activity || !activity.category || !activity.description) {
-  return false;
-}
-```
-
-**After:**
-```typescript
-if (!activity.time || !activity.activity || !activity.category) {
-  return false;
-}
-```
-
-#### 22.3.5 Update routine items mapping in `index.ts`
-
-**Before (line 282-289):**
-```typescript
-const routineItems = activities.map((activity, index) => ({
-  routine_id: routine.id,
-  activity_type: activity.category,
-  title: activity.activity,
-  description: activity.description,
-  scheduled_time: activity.time + ':00',
-  sort_order: index,
-  is_enabled: true,
-}));
-```
-
-**After:**
-```typescript
-const routineItems = activities.map((activity, index) => ({
-  routine_id: routine.id,
-  activity_type: activity.category,
-  title: activity.activity,
-  description: null,  // D73: no LLM commentary in task descriptions
-  scheduled_time: activity.time + ':00',
-  sort_order: index,
-  is_enabled: true,
-}));
-```
-
-This is the safety net — even if the LLM ignores the prompt instruction and returns descriptions, they are stripped at the persistence layer. The database column remains nullable, so `null` is valid.
-
-#### 22.3.6 Update client-side fallback in `AIRoutineGenerator.tsx`
-
-The fallback routine generator in `AIRoutineGenerator.tsx` (lines 174-182) creates hardcoded activities with descriptions. Update all entries to use `null` or empty string:
-
-**Before (example, line 174):**
-```typescript
-{ time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: "First thing in the morning, take outside for potty break", category: "potty" },
-```
-
-**After:**
-```typescript
-{ time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: null, category: "potty" },
-```
-
-Apply to all entries in the fallback routine array.
-
----
-
-### 22.4 Implementation Plan — Ordered Steps
-
-```
-Step 1: Update Edge Function prompts (index.ts)
-  - Modify buildSystemPrompt(): remove description requirement, add explicit
-    "Do NOT include description" instruction
-  - Modify buildUserPrompt(): add no-description instruction, update output format
-  - Make RoutineActivity.description optional
-  → Unblocks: Step 2
-
-Step 2: Update validation and persistence (index.ts)
-  - Remove description from validateRoutine() required fields check
-  - Set description to null in routineItems mapping (post-processing strip)
-  → Unblocks: Step 3
-
-Step 3: Update client-side fallback (AIRoutineGenerator.tsx)
-  - Set description to null for all hardcoded fallback activities
-  → Unblocks: Step 4
-
-Step 4: Update backend development plan documentation
-  - Update Section 3.1 response shape (description: null)
-  - Update Section 5.1 validation (remove description from required fields)
-  - Update Section 16.4 slim prompt template (remove description from output format)
-  - Update Appendix C prompt example (remove description from output format)
-  → Unblocks: Step 5
-
-Step 5: Deploy and verify
-  - Deploy updated Edge Function: supabase functions deploy generate-routine
-  - Trigger a routine regeneration for a test puppy
-  - Verify: routine_items rows have description = null
-  - Verify: task cards render clean (title + time only, no subtitle text)
-  - Verify: Notes field in Edit Task bottom sheet opens empty for AI tasks
-  - Verify: fallback generation also produces null descriptions
-  → Unblocks: Done
-```
-
----
-
-### 22.5 File Locations (Modified)
-
-```
-MODIFIED FILES:
-  supabase/functions/generate-routine/index.ts   — prompt, interface, validation, persistence
-  src/app/components/AIRoutineGenerator.tsx        — fallback routine descriptions → null
-  docs/backend-development-plan.md                — this section + Sections 3.1, 5.1, 16.4, Appendix C
-
-NO NEW FILES.
-NO DATABASE MIGRATIONS (routine_items.description is already nullable).
-NO FRONTEND COMPONENT CHANGES (conditional rendering already handles null).
-```
-
----
-
-### 22.6 Existing Routine Items (Data Migration)
-
-**Existing `routine_items` rows** in the database still have LLM-generated descriptions from prior routine generations. Two options:
-
-**Option A (Recommended): No backfill — descriptions only appear via Notes field**
-The frontend already shows descriptions only when `task.description` is truthy (`TaskCard.tsx` line 76, `Dashboard.tsx` line 607). Existing routines will continue showing old descriptions until the user regenerates their routine. This is acceptable because:
-1. Most users are still in onboarding — few existing routines in production
-2. Regeneration replaces all routine items (old ones become `is_active = false`)
-3. A backfill migration adds complexity for a cosmetic improvement on stale data
-
-**Option B (If needed): Bulk nullify existing descriptions**
-```sql
--- Only if we want to retroactively clean up existing routine items
-UPDATE routine_items SET description = NULL;
-```
-
-This is safe because the column is nullable and no business logic depends on `description` being non-null. But Option A is sufficient for 0→1 stage.
-
-**Decision: Option A.** No backfill. New routine generations produce null descriptions. Existing routines age out naturally when users regenerate.
-
----
-
-### 22.7 Impact on Related Features
-
-| Feature | Impact | Action Required |
-|---------|--------|-----------------|
-| **F10 — Edit Task (Notes field)** | Notes field for AI tasks now opens empty instead of pre-populated with AI description. | None — `AddTaskFAB.tsx` already reads from `task.description \|\| ''`, which will be `''` when description is null. |
-| **F10 — Custom tasks** | No change. Custom tasks never had AI descriptions. | None. |
-| **F10 — Task card subtitle** | AI task cards no longer show subtitle text below the title. | None — conditional render already handles null. |
-| **Dashboard routine item rendering** | Routine items from Supabase render without description subtitle. | None — conditional render at line 607-608 already handles null. |
-| **Edited routine items (Firebase overlay, D48)** | `editedRoutineItems` collection stores user-edited descriptions in `description` field. User-authored descriptions continue to work. | None — the overlay pattern preserves user edits independently from the AI-generated source. |
-| **LLM token cost** | ~30-40% fewer output tokens per generation (descriptions were the bulk of per-item output). | Positive impact — lower cost and faster response. |
-
----
-
-### 22.8 Risks and Mitigations
-
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| LLM ignores "no description" instruction and returns descriptions anyway | Medium | None | Post-processing safety net: `description: null` in the mapping (Step 2) strips any description before database write. The prompt instruction is defense-in-depth; the code enforces the constraint. |
-| Users miss the coaching tips that were in descriptions | Low | Low | If user feedback indicates demand for tips, add a dedicated "Tips" feature (P2) separate from the task timeline. Coaching advice belongs in its own UI, not embedded in every task card. |
-| Frontend displays stale descriptions from existing routine_items | Low | Low | Only affects existing routines that were generated before this change. Descriptions age out when user regenerates routine. No action needed (Section 22.6, Option A). |
-| Fallback generator descriptions not updated | Low | Medium | Step 3 explicitly addresses this. The fallback generator in `AIRoutineGenerator.tsx` is updated alongside the Edge Function. |
-
----
-
-### 22.9 Verification Checklist
-
-- [ ] Edge Function `buildSystemPrompt()` has no description requirement
-- [ ] Edge Function `buildSystemPrompt()` output format has no description field
-- [ ] Edge Function `buildUserPrompt()` includes "Do NOT include descriptions"
-- [ ] `RoutineActivity.description` is optional (`description?: string`)
-- [ ] `validateRoutine()` does not check for description
-- [ ] Routine items mapping sets `description: null` (post-processing strip)
-- [ ] Client-side fallback activities in `AIRoutineGenerator.tsx` have `description: null`
-- [ ] Edge Function deploys successfully: `supabase functions deploy generate-routine`
-- [ ] Test routine generation: `routine_items` rows have `description = NULL` in database
-- [ ] Task cards render clean: title + time only, no subtitle text on AI-generated tasks
-- [ ] Notes field opens empty when tapping an AI-generated task card
-- [ ] User-added custom tasks with notes still display correctly (no regression)
-- [ ] Edited routine items with user-authored notes still display correctly (no regression)
-- [ ] Build succeeds: `npx vite build` with no errors in modified files
-
----
-
-## 23. F13: Activity Duration Tracking — Backend Plan
-
-**Added:** 2026-05-31
-**Feature Reference:** F13 (product-spec.md), Flow 6I (user-flows.md)
-**Priority:** P0 (Launch Blocker)
-**Complexity:** Medium (Edge Function update + Firebase service layer + Firestore rules + App.tsx pipeline fix)
-
----
-
-### 23.1 Overview
-
-F13 adds duration tracking to the five activity types where "how long" matters: sleeps/naps, walks, play time, calm bonding time, and training. Users input duration via preset chips (5, 10, 15, 30, 60, 120 min) or a custom numeric input. Duration is displayed inline on dashboard timeline cards as a badge between start time and task title (e.g., `9:00 AM · 45 min  Morning Nap`). Point-in-time activities (feeding, potty) are unaffected.
-
-**Duration-applicable activity types:** `nap`, `walk`, `training`, `calm_time`, `play_time`
-**Non-applicable activity types:** `potty_break`, `meal`
-
-**Storage model:** `durationMinutes` (integer, optional) — not end time. Duration is how owners naturally think, survives rescheduling, and can't produce negative values.
-
----
-
-### 23.2 Current State Analysis
-
-The codebase has partial duration infrastructure that was never completed:
-
-| Layer | Has duration? | Details |
-|---|---|---|
-| Supabase `routine_items` table | **Yes** — `duration_minutes INT` column exists | Schema ready, no migration needed |
-| Supabase `database.types.ts` | **Yes** — `duration_minutes: number \| null` typed | Types ready |
-| `routines.ts` service (`saveRoutine`) | **Yes** — passes `duration_minutes` to Supabase | Persistence works |
-| Edge Function `generate-routine` | **No** — Claude tool schema outputs `{ time, activity, category }` only; routine item insertion omits `duration_minutes` | **Must update** |
-| `computeScheduleParams()` | **Yes** — computes `walkDurationMinutes`, `trainingSessionMinutes`, `napDurationMinutes`, `playSessionMinutes`, `calmBondingMinutes` | Params ready but unused at item level |
-| App.tsx legacy format conversion | **No** — maps routine items to `{ id, time, activity, description, category }`, drops `duration_minutes` | **Must fix** |
-| Dashboard.tsx timeline merge | **No** — duration not referenced when merging routine items with edited overlays | **Must update** |
-| Firebase `Task` interface | **No** — no `durationMinutes` field | **Must add** |
-| `addTask()` | **No** — doesn't accept duration | **Must update** |
-| `editTask()` | **No** — doesn't accept duration | **Must update** |
-| `RoutineItemEdit` interface | **No** — no `durationMinutes` field | **Must add** |
-| `saveRoutineItemEdit()` | **No** — doesn't accept duration | **Must update** |
-| `AddTaskFAB.tsx` | **No** — no duration input UI | **Must add** (frontend) |
-| `TaskCard.tsx` / dashboard cards | **No** — no duration display | **Must add** (frontend) |
-| Firestore security rules | **No** — no `durationMinutes` validation | **Should add** (optional) |
-
-**Key insight:** The pre-computed schedule params (`ScheduleParams`) already contain all duration values — `walkDurationMinutes`, `trainingSessionMinutes`, `napDurationMinutes`, `playSessionMinutes`, `calmBondingMinutes`. These are passed to Claude in the slim prompt as constraints (e.g., `Walks: 20 min × 2/day`), but the Claude output doesn't return them per-item, and the Edge Function doesn't populate `duration_minutes` when inserting `routine_items`. The fix is to map the pre-computed duration to each item's `activity_type` during post-processing — no LLM change needed.
-
----
-
-### 23.3 Backend Changes Required
-
-#### 23.3.1 Edge Function: Populate `duration_minutes` on routine items
-
-**File:** `supabase/functions/generate-routine/index.ts`
-
-**Current code (routine item insertion, ~line 311):**
-```typescript
-const routineItems = activities.map((activity, index) => ({
-  routine_id: routine.id,
-  activity_type: activity.category,
-  title: activity.activity,
-  description: null,
-  scheduled_time: activity.time + ':00',
-  sort_order: index,
-  is_enabled: true,
-}));
-```
-
-**Updated code:**
-```typescript
-// Map activity category to its pre-computed duration from ScheduleParams
-function getDurationForActivity(
-  category: string,
-  params: ScheduleParams
-): number | null {
-  switch (category) {
-    case 'exercise': return params.walkDurationMinutes;
-    case 'training': return params.trainingSessionMinutes;
-    case 'rest':     return params.napDurationMinutes;
-    case 'play':     return params.playSessionMinutes;
-    case 'bonding':  return params.calmBondingMinutes;
-    default:         return null;  // feeding, potty — no duration
-  }
-}
-
-const routineItems = activities.map((activity, index) => ({
-  routine_id: routine.id,
-  activity_type: activity.category,
-  title: activity.activity,
-  description: null,
-  scheduled_time: activity.time + ':00',
-  duration_minutes: getDurationForActivity(activity.category, params),
-  sort_order: index,
-  is_enabled: true,
-}));
-```
-
-**Why this works:** The `ScheduleParams` object is already computed before the Claude API call. Each activity's category maps 1:1 to a duration parameter. No LLM output change needed — the LLM assembles the timeline, and we attach the pre-computed duration to each item based on its category. This is deterministic and cannot hallucinate wrong durations.
-
-**Edge case — bedtime/wake-up items:** Activities like "Final potty & bedtime" with category `rest` would get `napDurationMinutes`. This is acceptable because bedtime items are typically the last item and duration is less meaningful. If needed, a title-based check can exclude items containing "bedtime" or "wake up".
-
-**No Claude prompt change needed.** The slim prompt already tells Claude the duration values (e.g., `Walks: 20 min × 2/day`). Claude uses these to space activities correctly. We just need to persist those same values back to the database when inserting routine items.
-
-**No Claude tool schema change needed.** The tool output remains `{ time, activity, category }`. Duration is derived post-hoc from the deterministic params, not from LLM output.
-
----
-
-#### 23.3.2 Client-side fallback: Populate duration in `AIRoutineGenerator.tsx`
-
-**File:** `src/app/components/AIRoutineGenerator.tsx`
-
-The client-side fallback routine generator creates hardcoded activities. These must include `duration_minutes` for applicable types. The fallback should compute params the same way the Edge Function does (using the same `computeScheduleParams` logic or simplified inline values) and attach duration to each applicable activity.
-
-**Approach:** Add `duration_minutes` to each fallback activity entry based on the puppy's age bracket. Since the fallback is hardcoded, use the same lookup tables that `computeScheduleParams()` uses, or inline the values per age bracket.
-
----
-
-#### 23.3.3 Firebase Task interface: Add `durationMinutes`
-
-**File:** `src/lib/services/tasks.ts`
-
-**Current interface:**
-```typescript
-export interface Task {
-  // ... existing fields
-  description?: string;
-  pottyDetails?: { poop: boolean; pee: boolean };
-  // ...
-}
-```
-
-**Updated interface:**
-```typescript
-export interface Task {
-  // ... existing fields
-  description?: string;
-  durationMinutes?: number;  // F13: Only for nap, walk, training, calm_time, play_time
-  pottyDetails?: { poop: boolean; pee: boolean };
-  // ...
-}
-```
-
-**`addTask()` update:**
-```typescript
-export async function addTask(
-  puppyId: string,
-  activityType: Task['activityType'],
-  time: Date,
-  title: string,
-  description?: string,
-  pottyDetails?: { poop: boolean; pee: boolean },
-  durationMinutes?: number,  // NEW
-  date?: string
-): Promise<string> {
-  const taskData: any = {
-    // ... existing fields
-    ...(durationMinutes != null && { durationMinutes }),
-    // ... rest
-  };
-  // ...
-}
-```
-
-**`editTask()` update:**
-```typescript
-export async function editTask(
-  taskId: string,
-  updates: {
-    actualTime?: Timestamp;
-    activityType?: Task['activityType'];
-    title?: string;
-    description?: string;
-    pottyDetails?: { poop: boolean; pee: boolean } | null;
-    durationMinutes?: number | null;  // NEW — null clears it
-  }
-): Promise<void> {
-  const updateData: any = { /* ... */ };
-
-  if ('durationMinutes' in updates) {
-    if (updates.durationMinutes != null) {
-      updateData.durationMinutes = updates.durationMinutes;
-    } else {
-      updateData.durationMinutes = deleteField();
-    }
-  }
-  // ...
-}
-```
-
-**Clearing behavior:** When the user switches from a duration-applicable activity type (e.g., Walk) to a non-applicable type (e.g., Potty), the frontend passes `durationMinutes: null` to `editTask()`, which removes the field from the Firestore document using `deleteField()`. This mirrors the `pottyDetails` pattern.
-
----
-
-#### 23.3.4 Firebase RoutineItemEdit interface: Add `durationMinutes`
-
-**File:** `src/lib/services/edited-routine-items.ts`
-
-**Updated interface:**
-```typescript
-export interface RoutineItemEdit {
-  routineItemId: string;
-  puppyId: string;
-  date: string;
-  time: string;
-  activityType: string;
-  title: string;
-  description: string | null;
-  durationMinutes?: number | null;  // NEW — overrides routine_items.duration_minutes
-  pottyDetails?: { poop: boolean; pee: boolean };
-  editedBy: string;
-  editedAt: Timestamp;
-}
-```
-
-**`saveRoutineItemEdit()` update:** Include `durationMinutes` in the `setDoc()` payload. When the user edits a routine item's duration (e.g., changing a 45 min nap to 90 min), the edit overlay stores the new duration. When the user switches to a non-applicable activity type, `durationMinutes` is set to `null` in the overlay.
-
----
-
-#### 23.3.5 App.tsx: Preserve `duration_minutes` in legacy format conversion
-
-**File:** `src/app/App.tsx` (lines ~409-421)
-
-**Current code (drops duration):**
-```typescript
-const legacyRoutine = routine
-  ? {
-      dailySchedule: routine.routine_items
-        .filter((item) => item.is_enabled)
-        .map((item) => ({
-          id: item.id,
-          time: item.scheduled_time.slice(0, 5),
-          activity: item.title,
-          description: item.description || "",
-          category: item.activity_type,
-        })),
-    }
-  : null;
-```
-
-**Updated code (preserves duration):**
-```typescript
-const legacyRoutine = routine
-  ? {
-      dailySchedule: routine.routine_items
-        .filter((item) => item.is_enabled)
-        .map((item) => ({
-          id: item.id,
-          time: item.scheduled_time.slice(0, 5),
-          activity: item.title,
-          description: item.description || "",
-          category: item.activity_type,
-          durationMinutes: item.duration_minutes ?? null,
-        })),
-    }
-  : null;
-```
-
-**One-line fix.** The `duration_minutes` column already exists in the Supabase response — we just need to stop throwing it away.
-
----
-
-#### 23.3.6 Dashboard.tsx: Merge duration from edit overlays
-
-**File:** `src/app/components/Dashboard.tsx` (lines ~400-410)
-
-**Current merge code:**
-```typescript
-const effectiveItem = edit
-  ? { ...item, time: edit.time, activity: edit.title,
-      description: edit.description, category: edit.activityType,
-      pottyDetails: edit.pottyDetails }
-  : item;
-```
-
-**Updated merge code:**
-```typescript
-const effectiveItem = edit
-  ? { ...item, time: edit.time, activity: edit.title,
-      description: edit.description, category: edit.activityType,
-      pottyDetails: edit.pottyDetails,
-      durationMinutes: edit.durationMinutes ?? item.durationMinutes }
-  : item;
-```
-
-When a routine item has been edited, the overlay's `durationMinutes` takes precedence. If the overlay doesn't have a `durationMinutes` value (e.g., the user only edited the time, not the duration), the original value from Supabase is preserved via `?? item.durationMinutes`.
-
----
-
-#### 23.3.7 Firestore Security Rules: Optional `durationMinutes` validation
-
-**File:** `firebase/firestore.rules`
-
-**Updated `validTaskData()` function:**
-```javascript
-function validTaskData() {
-  let data = request.resource.data;
-  return data.keys().hasAll([
-    'puppyId', 'date', 'scheduledTime', 'actualTime',
-    'activityType', 'title', 'isCompleted', 'isEdited',
-    'isUserAdded', 'lastEditedBy', 'createdAt'
-  ])
-  && data.puppyId is string
-  && data.date is string
-  && data.activityType in ['potty_break', 'meal', 'training', 'nap', 'calm_time', 'play_time', 'walk']
-  && data.lastEditedBy == request.auth.uid
-  && data.lastEditedAt == request.time
-  // Potty details: optional, but if present must be valid (D52)
-  && (!('pottyDetails' in data.keys()) || (
-    data.pottyDetails is map
-    && data.pottyDetails.keys().hasAll(['poop', 'pee'])
-    && data.pottyDetails.poop is bool
-    && data.pottyDetails.pee is bool
-  ))
-  // Duration: optional, but if present must be a positive integer (F13)
-  && (!('durationMinutes' in data.keys()) || (
-    data.durationMinutes is int
-    && data.durationMinutes > 0
-    && data.durationMinutes <= 480
-  ));
-}
-```
-
-**Why 480 max?** 8 hours is the maximum reasonable activity duration (very long nap for a young puppy). Matches the custom input validation range in the frontend (1–480 min).
-
-**Impact:** Same as pottyDetails — `hasAll()` checks required keys, does NOT reject extra keys. Existing tasks without `durationMinutes` continue to pass. The validation only applies to `create` operations. Recommended but not blocking.
-
----
-
-### 23.4 Supabase Database: No Changes Needed
-
-| Component | Change Required | Reason |
-|---|---|---|
-| `routine_items` table | None | `duration_minutes INT` column already exists |
-| `routine_items` RLS policies | None | Duration is just another column in existing rows |
-| `database.types.ts` | None | `duration_minutes: number \| null` already typed |
-| `routines.ts` service | None | `saveRoutine()` already passes `duration_minutes` |
-| `generate-routine` Edge Function schema | None | No new columns needed |
-| `accept-invite` Edge Function | None | Not involved in routine/task CRUD |
-| `get-firebase-token` Edge Function | None | Claims unchanged |
-
----
-
-### 23.5 Implementation Steps
-
-```
-Step 1: Update Edge Function to populate duration_minutes
-  File: supabase/functions/generate-routine/index.ts
-  Change: Add getDurationForActivity() helper. Include duration_minutes
-          in the routineItems mapping using pre-computed ScheduleParams.
-  Deploy: supabase functions deploy generate-routine
-  Verify: Generate routine → routine_items rows have correct
-          duration_minutes values (e.g., walk = 20, nap = 45)
-  Duration: 30 minutes
-  → Unblocks: AI-generated routines now have duration data in DB
-
-Step 2: Update client-side fallback to include duration
-  File: src/app/components/AIRoutineGenerator.tsx
-  Change: Add duration_minutes to each hardcoded fallback activity
-          based on activity type (rest = nap duration, exercise = walk
-          duration, etc.). Values can be simplified constants per
-          age bracket.
-  Verify: Trigger fallback generation → items have correct duration
-  Duration: 20 minutes
-  → Unblocks: Fallback routine also has duration data
-
-Step 3: Fix App.tsx legacy format conversion
-  File: src/app/App.tsx (~line 409)
-  Change: Add `durationMinutes: item.duration_minutes ?? null` to
-          the routine item mapping
-  Verify: Console.log legacyRoutine → items now include durationMinutes
-  Duration: 5 minutes
-  → Unblocks: Duration data flows from Supabase through to Dashboard
-
-Step 4: Add durationMinutes to Firebase Task interface and service layer
-  File: src/lib/services/tasks.ts
-  Change: Add durationMinutes to Task interface, addTask(), editTask()
-  Verify: addTask() with durationMinutes → field persists in Firestore
-          editTask() with durationMinutes: null → field removed
-  Duration: 20 minutes
-  → Unblocks: Custom tasks can store duration
-
-Step 5: Add durationMinutes to RoutineItemEdit interface and service
-  File: src/lib/services/edited-routine-items.ts
-  Change: Add durationMinutes to RoutineItemEdit interface and
-          saveRoutineItemEdit()
-  Verify: Edit a routine nap → durationMinutes appears in
-          editedRoutineItems document
-  Duration: 15 minutes
-  → Unblocks: Edited routine items can override duration
-
-Step 6: Update Dashboard.tsx timeline merge
-  File: src/app/components/Dashboard.tsx (~line 400)
-  Change: Include durationMinutes in the edit overlay merge:
-          durationMinutes: edit.durationMinutes ?? item.durationMinutes
-  Verify: Edit a routine item's duration → dashboard shows updated value
-          Edit only the time (not duration) → original duration preserved
-  Duration: 10 minutes
-  → Unblocks: Dashboard correctly displays duration from all sources
-
-Step 7: Update Firestore security rules (recommended)
-  File: firebase/firestore.rules
-  Change: Add optional durationMinutes validation to validTaskData():
-          must be int, > 0, <= 480
-  Deploy: firebase deploy --only firestore:rules
-  Verify: Create task with durationMinutes: 30 → succeeds
-          Create task with durationMinutes: "invalid" → rejected
-          Create task without durationMinutes → succeeds
-  Duration: 15 minutes
-  → Unblocks: Secure duration field validation
-
-Step 8: End-to-end verification
-  Test A: Generate new routine → routine_items have duration_minutes in DB
-  Test B: Dashboard displays "9:00 AM · 45 min  Morning Nap" for AI tasks
-  Test C: Add custom Walk with 30 min → "3:00 PM · 30 min  Walk" in timeline
-  Test D: Edit routine Nap from 45 min to 90 min → "9:00 AM · 1 hr 30 min" displayed
-  Test E: Switch activity type Walk → Potty → duration cleared, potty details appear
-  Test F: Switch activity type Potty → Nap → potty details cleared, duration section appears
-  Test G: Add Meal task → no duration section in bottom sheet, no badge on timeline
-  Test H: Multi-user sync: User A sets Walk to 30 min → User B sees badge within 3s
-  Test I: Offline: set duration offline → syncs when reconnected
-  Test J: Fallback routine generation → items have correct duration_minutes
-  Duration: 30 minutes
-  → Unblocks: Production confidence
-```
-
-**Total backend effort: ~2.5 hours** (mostly Edge Function + service layer + verification)
-
----
-
-### 23.6 Data Flow Diagram
-
-```
-AI Routine Generation Path:
-  computeScheduleParams()           ← pre-computes walkDurationMinutes, etc.
-    → buildSlimPrompt()             ← passes durations to Claude as constraints
-    → Claude API                    ← outputs { time, activity, category }
-    → getDurationForActivity()      ← maps category back to pre-computed duration  [NEW]
-    → INSERT routine_items          ← duration_minutes populated                   [NEW]
-    → App.tsx legacy conversion     ← durationMinutes preserved                    [FIX]
-    → Dashboard.tsx                 ← durationMinutes displayed as badge           [NEW]
-
-Custom Task Path:
-  AddTaskFAB                        ← user selects duration chip                   [NEW]
-    → addTask(durationMinutes)      ← persists to Firestore                        [NEW]
-    → TaskCard                      ← displays duration badge                      [NEW]
-
-Routine Item Edit Path:
-  AddTaskFAB (edit mode)            ← user changes duration chip                   [NEW]
-    → saveRoutineItemEdit(durMins)  ← persists to editedRoutineItems in Firestore  [NEW]
-    → Dashboard.tsx merge           ← overlay durationMinutes overrides original   [NEW]
-    → Dashboard card                ← displays updated duration badge              [NEW]
-```
-
----
-
-### 23.7 Duration Display Formatting (Frontend Reference)
-
-The backend stores raw integer minutes. The frontend formats for display:
-
-| Stored value | Display format |
-|---|---|
-| `5` | `5 min` |
-| `10` | `10 min` |
-| `15` | `15 min` |
-| `30` | `30 min` |
-| `45` | `45 min` |
-| `60` | `1 hr` |
-| `90` | `1 hr 30 min` |
-| `120` | `2 hr` |
-| `null` / missing | No badge shown |
-
-Formatting function (frontend utility):
-```typescript
-function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const remaining = minutes % 60;
-  if (remaining === 0) return `${hours} hr`;
-  return `${hours} hr ${remaining} min`;
-}
-```
-
----
-
-### 23.8 Impact on Related Features
-
-| Feature | Impact | Action Required |
-|---|---|---|
-| **F10 — Edit Task (bottom sheet)** | Duration section appears between Activity Type and Notes for applicable types. Same slot as Potty Details, but never simultaneously. | Frontend: Add duration chips to AddTaskFAB |
-| **F10 — Add Custom Task** | Duration section appears when user selects a duration-applicable activity type. | Frontend: Same AddTaskFAB changes |
-| **F11 — Potty Details** | No conflict. Potty is not a duration-applicable type. Duration and Details sections never appear simultaneously. | None |
-| **F3 — AI Routine Generation** | Routines now populate `duration_minutes` on applicable items. | Edge Function update (Step 1) |
-| **F4 — Daily Routine View** | Timeline cards show duration badge for applicable items. | Frontend: TaskCard/Dashboard updates |
-| **F5 — Progress Tracking** | No change. Progress tracks completion %, not duration. | None |
-| **D73 — Strip descriptions** | No conflict. Duration and description are independent fields. | None |
-
----
-
-### 23.9 Existing Routine Items (Data Migration)
-
-**Existing `routine_items` rows** in the database have `duration_minutes = NULL` because the Edge Function never populated the field. Two options:
-
-**Option A (Recommended): No backfill — duration appears on next regeneration**
-When users regenerate their routine (or a new routine is generated as the puppy ages), the updated Edge Function populates `duration_minutes`. Existing routines show no duration badge until regenerated. This is acceptable because:
-1. Few existing routines in production (0→1 stage)
-2. Regeneration replaces all routine items
-3. A backfill requires knowing the puppy's current `ScheduleParams`, which means re-running `computeScheduleParams()` for each puppy — possible but unnecessary churn
-
-**Option B (If needed): Backfill existing routine items**
-```sql
--- Backfill walk duration (most visible activity)
--- Would need to run computeScheduleParams per puppy to get correct values
--- Not recommended for 0→1 stage
-```
-
-**Decision: Option A.** No backfill. New routine generations populate `duration_minutes`. Existing routines age out when users regenerate.
-
----
-
-### 23.10 Cost Impact
-
-**Zero additional cost.**
-- `durationMinutes` is a field within existing Firestore documents. Firestore charges per document read/write, not per field. Adding 1 integer to a document has no measurable cost impact.
-- `duration_minutes` in Supabase `routine_items` already exists as a column — populating it doesn't change storage or query costs.
-- No additional Claude API tokens needed — the LLM output format is unchanged. Duration is derived from pre-computed params, not LLM output.
-
----
-
-### 23.11 Summary
-
-| Component | Change Required | Status |
-|---|---|---|
-| Edge Function (`generate-routine`) | Add `getDurationForActivity()` helper, populate `duration_minutes` in routine item insertion | **Required** |
-| Client-side fallback (`AIRoutineGenerator.tsx`) | Add `duration_minutes` to hardcoded fallback activities | **Required** |
-| App.tsx legacy format conversion | Add `durationMinutes: item.duration_minutes ?? null` to mapping | **Required** (one-line fix) |
-| Dashboard.tsx timeline merge | Include `durationMinutes` in edit overlay merge | **Required** |
-| Firebase `Task` interface | Add `durationMinutes?: number` | **Required** |
-| `addTask()` function | Accept and persist `durationMinutes` | **Required** |
-| `editTask()` function | Accept `durationMinutes`, support `null` to clear | **Required** |
-| `RoutineItemEdit` interface | Add `durationMinutes?: number \| null` | **Required** |
-| `saveRoutineItemEdit()` function | Include `durationMinutes` in `setDoc()` payload | **Required** |
-| Firestore security rules (`validTaskData()`) | Add optional `durationMinutes` validation (int, > 0, <= 480) | **Recommended** |
-| Firestore security rules (`editedRoutineItems`) | None — no field-level validation on this collection | None |
-| Firestore indexes | None — `durationMinutes` not used in queries | None |
-| Supabase `routine_items` table | None — `duration_minutes INT` column already exists | None |
-| Supabase `database.types.ts` | None — `duration_minutes: number \| null` already typed | None |
-| Supabase RLS policies | None — duration is just another column | None |
-| Firebase Custom Token Edge Function | None — claims unchanged | None |
-| Frontend components (AddTaskFAB, TaskCard, Dashboard cards) | Duration chip input + duration badge display | **Required** (frontend) |
-
----
-
-### 23.12 Deployment Checklist
-
-**Edge Function:**
-- [ ] `getDurationForActivity()` helper added to `generate-routine/index.ts`
-- [ ] Routine item insertion includes `duration_minutes` field
-- [ ] Deployed: `supabase functions deploy generate-routine`
-- [ ] Verified: new routine generation produces `duration_minutes` values in `routine_items`
-- [ ] Verified: potty and feeding items have `duration_minutes = NULL`
-
-**Client-side fallback:**
-- [ ] `AIRoutineGenerator.tsx` fallback activities include `duration_minutes`
-- [ ] Verified: fallback generation produces correct duration values
-
-**App.tsx pipeline:**
-- [ ] Legacy format conversion preserves `durationMinutes`
-- [ ] Verified: `legacyRoutine.dailySchedule` items include `durationMinutes`
-
-**Firebase service layer:**
-- [ ] `Task` interface includes `durationMinutes?: number`
-- [ ] `RoutineItemEdit` interface includes `durationMinutes?: number | null`
-- [ ] `addTask()` accepts and persists `durationMinutes`
-- [ ] `editTask()` accepts `durationMinutes`, clears with `deleteField()` when `null`
-- [ ] `saveRoutineItemEdit()` includes `durationMinutes` in payload
-
-**Dashboard merge:**
-- [ ] `Dashboard.tsx` overlay merge includes `durationMinutes`
-- [ ] Verified: edited duration overrides original; unedited duration preserved
-
-**Firestore rules (optional):**
-- [ ] `validTaskData()` validates `durationMinutes` if present (int, > 0, <= 480)
-- [ ] Deployed: `firebase deploy --only firestore:rules`
-- [ ] Verified: task with valid `durationMinutes` creates successfully
-- [ ] Verified: task with invalid `durationMinutes` (string, negative, > 480) rejected
-- [ ] Verified: task without `durationMinutes` still creates successfully
-
-**Frontend (separate from backend plan):**
-- [ ] AddTaskFAB: Duration chip section for applicable activity types
-- [ ] TaskCard / Dashboard: Duration badge display (`9:00 AM · 45 min`)
-- [ ] Duration formatting utility (`formatDuration()`)
-
-**Testing:**
-- [ ] AI-generated routine: nap shows `· 45 min`, walk shows `· 20 min`, meal shows no badge
-- [ ] Custom task: add Walk with 30 min → `· 30 min` badge appears
-- [ ] Edit routine item duration: change 45 → 90 → `· 1 hr 30 min` displayed
-- [ ] Activity type switch: Walk (30 min) → Potty → duration cleared, details appear
-- [ ] Activity type switch: Potty (💩) → Nap → potty cleared, duration section appears
-- [ ] Multi-user sync: duration changes appear on co-user's device within 3s
-- [ ] Offline: set duration offline → syncs when reconnected
-- [ ] Build succeeds: `npx vite build` with no errors in modified files
-
----
-
-## 24. F14: Weekly Routine Evolution — Backend Plan
-
-**Added:** 2026-05-31
-**Priority:** P0 (Launch Blocker — core differentiator)
-**References:** Product Spec F14, Decisions D74-D82, User Flows 11A-11D
-
----
-
-### 24.1 Overview
-
-The routine currently generates once at onboarding and never changes. F14 adds automatic weekly regeneration: every 7 days from the last generation, the routine is re-generated using the puppy's current age bracket and the owner's completion patterns from the past week. The trigger is lazy — it fires on dashboard load when the active routine has expired — so inactive users cost nothing.
-
-**What changes:**
-1. Three new columns on the `routines` table: `valid_until`, `regeneration_status`, `generation_context`
-2. The `generate-routine` Edge Function accepts an optional `completionContext` parameter and includes it in the prompt
-3. A new client-side service function checks routine validity on dashboard load and triggers regeneration
-4. Firebase overlay cleanup after successful regeneration
-
-**What stays the same:**
-- The onboarding flow calls `generate-routine` exactly as before (no `completionContext` = first-time generation)
-- `computeScheduleParams()` is unchanged — it already computes fresh params from DOB each time
-- The fallback logic (client-side generation if Edge Function fails) still works
-
----
-
-### 24.2 Database Changes
-
-#### Migration: `routines` table additions (D76, D77, D80)
-
-```sql
--- Add weekly evolution columns to routines table
-ALTER TABLE routines
-  ADD COLUMN valid_until TIMESTAMPTZ,
-  ADD COLUMN regeneration_status TEXT,
-  ADD COLUMN generation_context JSONB;
-
--- Constraint: regeneration_status can only be 'in_progress' or NULL
-ALTER TABLE routines
-  ADD CONSTRAINT chk_regeneration_status
-  CHECK (regeneration_status IS NULL OR regeneration_status = 'in_progress');
-
--- Backfill: set valid_until for existing active routines to NULL
--- NULL is treated as expired, so existing routines will regenerate
--- on next dashboard load post-deploy. This is intentional (D76).
--- No backfill UPDATE needed — the column defaults to NULL.
-
--- Index: find active routine with validity check efficiently
--- (Extends existing idx_routines_puppy_active)
-CREATE INDEX idx_routines_valid_until
-  ON routines(puppy_id, valid_until)
-  WHERE is_active = true;
-```
-
-#### Updated `database.types.ts`
-
-```typescript
-// Updated routines table type (new fields)
-routines: {
-  Row: {
-    id: string;
-    puppy_id: string;
-    generated_at: string;
-    source: string;
-    is_active: boolean;
-    valid_until: string | null;            // ISO timestamp, generated_at + 7 days
-    regeneration_status: string | null;    // 'in_progress' or null
-    generation_context: GenerationContext | null;
-  };
-  Insert: {
-    id?: string;
-    puppy_id: string;
-    generated_at?: string;
-    source?: string;
-    is_active?: boolean;
-    valid_until?: string | null;
-    regeneration_status?: string | null;
-    generation_context?: GenerationContext | null;
-  };
-  Update: {
-    source?: string;
-    is_active?: boolean;
-    valid_until?: string | null;
-    regeneration_status?: string | null;
-    generation_context?: GenerationContext | null;
-  };
-};
-
-// New type for generation context snapshot
-interface GenerationContext {
-  age_bracket: string;
-  age_weeks: number;
-  completion_summary: Record<string, { completed: number; total: number }> | null;
-  schedule_params: Record<string, unknown>;
-}
-```
-
----
-
-### 24.3 Edge Function Changes
-
-The existing `generate-routine` Edge Function (`supabase/functions/generate-routine/index.ts`) is extended — not replaced (D81).
-
-#### New request shape (backward-compatible)
-
-```typescript
-// Existing fields (onboarding flow)
-{
-  puppyId: string;
-  questionnaireData: {
-    puppyName: string;
-    breed: string;
-    dateOfBirth: string;
-    weight: number | null;
-    weightUnit: 'lbs' | 'kg';
-    wakeUpTime: string;
-    bedTime: string;
-  };
-  // NEW: optional field for weekly regeneration
-  completionContext?: {
-    summary: Record<string, { completed: number; total: number }>;
-    // e.g. { "exercise": { completed: 12, total: 14 }, "training": { completed: 3, total: 14 } }
-  };
-}
-```
-
-When `completionContext` is present, the Edge Function:
-1. Includes completion data in the user prompt (new prompt section)
-2. Sets `valid_until = now() + 7 days` on the new routine
-3. Stores `generation_context` JSONB with age bracket, params, and completion summary
-
-When `completionContext` is absent (onboarding), behavior is identical to current — except `valid_until` is now also set.
-
-#### New prompt section for completion context
-
-Added to `buildUserPrompt()` when completion data is available:
-
-```typescript
-function buildUserPrompt(
-  puppyName: string,
-  params: ScheduleParams,
-  completionContext?: { summary: Record<string, { completed: number; total: number }> }
-): string {
-  // ... existing prompt code ...
-
-  // NEW: append completion context if available
-  if (completionContext) {
-    const lines = Object.entries(completionContext.summary)
-      .map(([category, { completed, total }]) => {
-        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
-        return `  ${category}: ${completed}/${total} (${pct}%)`;
-      })
-      .join('\n');
-
-    prompt += `\n\nPAST WEEK COMPLETION DATA:\n${lines}\n`;
-    prompt += `\nAdjust the schedule based on completion patterns:
-- Categories with low completion (<50%): consider moving sessions to different times of day (the current timing may be inconvenient). Do not reduce below minimum thresholds.
-- Categories with high completion (>80%): maintain current frequency. If the puppy is progressing well, consider slightly increasing duration.
-- Categories at 100%: the owner is consistent here — keep this stable.`;
-  }
-
-  return prompt;
-}
-```
-
-#### Updated system prompt addition
-
-Add to `buildSystemPrompt()`:
-
-```typescript
-// Append to existing system prompt
-`
-WEEKLY EVOLUTION CONTEXT (if provided):
-When past week completion data is included, use it to inform activity placement:
-- Do not reduce meal count, potty breaks, or nap count below the pre-computed parameters — these are health-critical.
-- Training, play, walk, and bonding session timing and frequency can be adjusted based on completion patterns.
-- If training completion is consistently low, try placing sessions after naps (when the puppy is most alert) instead of reducing count.
-- The goal is to make the schedule more achievable, not to lower standards.`
-```
-
-#### Routine insert changes
-
-Update the routine insert block to include new columns:
-
-```typescript
-// In the Edge Function, after successful Claude call:
-const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-
-const { data: routine, error: routineError } = await supabase
-  .from('routines')
-  .insert({
-    puppy_id: puppyId,
-    source: 'ai_generated',
-    is_active: true,
-    valid_until: validUntil,
-    generation_context: {
-      age_bracket: params.ageBracket,
-      age_weeks: params.ageWeeks,
-      completion_summary: completionContext?.summary || null,
-      schedule_params: params,
-    },
-  })
-  .select()
-  .single();
-```
-
----
-
-### 24.4 Completion Aggregation (Edge Function)
-
-When the Edge Function receives `completionContext`, it already has the summary from the client. But there's a more reliable approach: **compute it server-side** in the Edge Function from `activity_logs` + `routine_items`. This avoids trusting client-computed data and ensures the summary is always fresh.
-
-#### Server-side aggregation query
-
-```typescript
-// In the Edge Function, before calling Claude:
-async function getCompletionSummary(
-  supabase: SupabaseClient,
-  puppyId: string,
-  routineId: string
-): Promise<Record<string, { completed: number; total: number }>> {
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    .toISOString().split('T')[0];
-  const today = new Date().toISOString().split('T')[0];
-
-  // Get routine items for this routine (the categories and their count)
-  const { data: items } = await supabase
-    .from('routine_items')
-    .select('id, activity_type')
-    .eq('routine_id', routineId)
-    .eq('is_enabled', true);
-
-  if (!items || items.length === 0) return {};
-
-  // Get activity logs for the past 7 days
-  const { data: logs } = await supabase
-    .from('activity_logs')
-    .select('routine_item_id, status')
-    .eq('puppy_id', puppyId)
-    .gte('date', sevenDaysAgo)
-    .lte('date', today)
-    .eq('status', 'completed');
-
-  // Count completions per routine_item_id
-  const completedSet = new Set((logs || []).map(l => l.routine_item_id));
-
-  // Compute days in range (for total = items_per_category * days)
-  const startDate = new Date(sevenDaysAgo);
-  const endDate = new Date(today);
-  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-
-  // Group items by activity_type
-  const categoryItems: Record<string, string[]> = {};
-  for (const item of items) {
-    if (!categoryItems[item.activity_type]) {
-      categoryItems[item.activity_type] = [];
-    }
-    categoryItems[item.activity_type].push(item.id);
-  }
-
-  // Compute summary: total = items_in_category * days, completed = logs matching
-  const summary: Record<string, { completed: number; total: number }> = {};
-  for (const [category, itemIds] of Object.entries(categoryItems)) {
-    const total = itemIds.length * days;
-    let completed = 0;
-    // Count logs where routine_item_id is in this category's items
-    if (logs) {
-      completed = logs.filter(l => itemIds.includes(l.routine_item_id)).length;
-    }
-    summary[category] = { completed, total };
-  }
-
-  return summary;
-}
-```
-
-**Decision: compute server-side, not client-side.** The client passes a boolean `isRegeneration: true` flag (instead of the full summary). The Edge Function reads the data from Supabase directly. This is more trustworthy and avoids inflating the request payload.
-
-Updated request shape:
-
-```typescript
-{
-  puppyId: string;
-  questionnaireData: { ... };
-  isRegeneration?: boolean;   // If true, Edge Function computes completion context
-}
-```
-
----
-
-### 24.5 Regeneration Lock Mechanism (D77)
-
-#### Acquiring the lock
-
-Before calling Claude, the Edge Function acquires a lock using a conditional update:
-
-```typescript
-// Attempt to acquire regeneration lock
-const { data: lockResult, error: lockError } = await supabase
-  .from('routines')
-  .update({ regeneration_status: 'in_progress' })
-  .eq('id', activeRoutineId)
-  .is('regeneration_status', null)
-  .select('id')
-  .single();
-
-if (lockError || !lockResult) {
-  // Lock already held by another caller — skip regeneration
-  return new Response(
-    JSON.stringify({ skipped: true, reason: 'regeneration_already_in_progress' }),
-    { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-  );
-}
-```
-
-#### Releasing the lock
-
-On success or failure, clear the lock:
-
-```typescript
-// In finally block or after routine creation:
-await supabase
-  .from('routines')
-  .update({ regeneration_status: null })
-  .eq('id', activeRoutineId);
-```
-
-#### Stale lock recovery
-
-The client checks for stale locks before triggering:
-
-```typescript
-// Client-side: if regeneration_status is 'in_progress' but generated_at was
-// more than 5 minutes ago, treat the lock as stale
-function isLockStale(routine: Routine): boolean {
-  if (routine.regeneration_status !== 'in_progress') return false;
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  // Use generated_at as proxy — if the routine was generated >5 min ago
-  // and still shows in_progress, the lock is stale
-  return new Date(routine.generated_at).getTime() < fiveMinutesAgo;
-}
-```
-
-If the lock is stale, the client first clears it, then retriggers:
-
-```typescript
-if (isLockStale(routine)) {
-  await supabase
-    .from('routines')
-    .update({ regeneration_status: null })
-    .eq('id', routine.id);
-  // Now proceed to trigger regeneration
-}
-```
-
----
-
-### 24.6 Client-Side Service: `routineEvolution.ts`
-
-New file: `src/lib/services/routineEvolution.ts`
-
-This service handles the dashboard-load check and regeneration trigger.
-
-```typescript
-import { supabase } from '../supabase';
-import type { RoutineWithItems } from './routines';
-import type { Routine } from '../database.types';
-
-/**
- * Check if the active routine needs regeneration (D74, D75, D76)
- * Called on dashboard mount.
- * Returns: { needsRegeneration: boolean, routine: Routine | null }
- */
-export function needsRegeneration(routine: Routine | null): boolean {
-  if (!routine) return false;
-
-  // No valid_until = legacy routine = treat as expired (D76)
-  if (!routine.valid_until) return true;
-
-  // Check if past expiry
-  return new Date() > new Date(routine.valid_until);
-}
-
-/**
- * Check if a regeneration is already in progress (D77)
- */
-export function isRegenerationInProgress(routine: Routine | null): boolean {
-  if (!routine) return false;
-  if (routine.regeneration_status !== 'in_progress') return false;
-
-  // Stale lock check: if in_progress for >5 min, treat as stale
-  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-  return new Date(routine.generated_at).getTime() > fiveMinutesAgo;
-}
-
-/**
- * Trigger routine regeneration via Edge Function (D75, D81)
- * Returns the new routine, or null if skipped/failed.
- */
-export async function triggerRegeneration(
-  puppyId: string,
-  questionnaireData: {
-    puppyName: string;
-    breed: string;
-    dateOfBirth: string;
-    weight: number | null;
-    weightUnit: 'lbs' | 'kg';
-    wakeUpTime: string;
-    bedTime: string;
-  }
-): Promise<RoutineWithItems | null> {
-  try {
-    const { data, error } = await supabase.functions.invoke('generate-routine', {
-      body: {
-        puppyId,
-        questionnaireData,
-        isRegeneration: true,
-      },
-    });
-
-    if (error) {
-      console.error('Regeneration failed:', error);
-      return null; // D82: silent failure, old routine stays
-    }
-
-    // Edge Function returned { skipped: true } — another caller beat us
-    if (data?.skipped) {
-      console.log('Regeneration skipped:', data.reason);
-      return null;
-    }
-
-    if (!data?.routine) {
-      console.error('Invalid regeneration response');
-      return null;
-    }
-
-    return data.routine;
-  } catch (err) {
-    console.error('Regeneration error:', err);
-    return null; // D82: silent failure
-  }
-}
-```
-
----
-
-### 24.7 Dashboard Integration
-
-The Dashboard component adds a regeneration check on mount:
-
-```typescript
-// In Dashboard.tsx, inside useEffect on mount:
-
-const routine = await getActiveRoutine(puppyId);
-
-if (routine && needsRegeneration(routine) && !isRegenerationInProgress(routine)) {
-  setRegenerationBanner(true); // Show "Updating [name]'s routine..."
-
-  // Get questionnaire data from puppy record
-  const questionnaireData = {
-    puppyName: currentPuppy.name,
-    breed: currentPuppy.breed,
-    dateOfBirth: currentPuppy.date_of_birth!,
-    weight: currentPuppy.weight_value,
-    weightUnit: currentPuppy.weight_unit as 'lbs' | 'kg',
-    wakeUpTime: currentPuppy.questionnaire_data?.wakeUpTime || '07:00',
-    bedTime: currentPuppy.questionnaire_data?.bedTime || '21:00',
-  };
-
-  const newRoutine = await triggerRegeneration(puppyId, questionnaireData);
-  setRegenerationBanner(false);
-
-  if (newRoutine) {
-    // Replace current routine in state
-    setCurrentRoutine(newRoutine);
-    // Clean up Firebase overlays for old routine items
-    await cleanupFirebaseOverlays(puppyId, routine.routine_items, newRoutine.routine_items);
-  }
-  // If null (failed/skipped), old routine stays — user sees no change (D82)
-}
-```
-
-#### Regeneration banner UI
-
-```tsx
-{regenerationBanner && (
-  <div className="mx-4 mb-3 rounded-xl bg-accent/10 border border-accent/20 px-4 py-3
-                   flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
-    <Loader2 className="h-4 w-4 animate-spin text-accent" />
-    <span className="text-sm text-foreground/70">
-      Updating {currentPuppy?.name}'s routine for this week...
-    </span>
-  </div>
-)}
-```
-
----
-
-### 24.8 Firebase Overlay Cleanup (D79)
-
-After a successful regeneration, Firebase documents referencing old routine item IDs must be cleaned up.
-
-New utility in `src/lib/services/routineEvolution.ts`:
-
-```typescript
-import { collection, query, where, getDocs, writeBatch, doc } from 'firebase/firestore';
-import { db } from '../firebase';
-
-/**
- * Clean up Firebase overlays that reference old routine items (D79)
- * Called after successful regeneration.
- */
-export async function cleanupFirebaseOverlays(
-  puppyId: string,
-  oldItems: RoutineItem[],
-  newItems: RoutineItem[]
-): Promise<void> {
-  const oldItemIds = new Set(oldItems.map(i => i.id));
-
-  try {
-    const batch = writeBatch(db);
-    let batchCount = 0;
-
-    // Clean editedRoutineItems
-    const editedQuery = query(
-      collection(db, 'editedRoutineItems'),
-      where('puppyId', '==', puppyId)
-    );
-    const editedSnap = await getDocs(editedQuery);
-    editedSnap.forEach(docSnap => {
-      const data = docSnap.data();
-      if (data.routineItemId && oldItemIds.has(data.routineItemId)) {
-        batch.delete(doc(db, 'editedRoutineItems', docSnap.id));
-        batchCount++;
-      }
-    });
-
-    // Clean deletedRoutineItems
-    const deletedQuery = query(
-      collection(db, 'deletedRoutineItems'),
-      where('puppyId', '==', puppyId)
-    );
-    const deletedSnap = await getDocs(deletedQuery);
-    deletedSnap.forEach(docSnap => {
-      const data = docSnap.data();
-      if (data.routineItemId && oldItemIds.has(data.routineItemId)) {
-        batch.delete(doc(db, 'deletedRoutineItems', docSnap.id));
-        batchCount++;
-      }
-    });
-
-    if (batchCount > 0) {
-      await batch.commit();
-      console.log(`Cleaned up ${batchCount} Firebase overlay documents`);
-    }
-  } catch (err) {
-    // Non-critical — stale overlays are harmless (they reference IDs that
-    // no longer match and are ignored by the dashboard merge logic)
-    console.warn('Firebase overlay cleanup failed (non-critical):', err);
-  }
-}
-```
-
-**Note:** Custom user-added tasks in the `tasks` collection are NOT deleted — they have no `routineItemId` reference and persist across routine generations.
-
----
-
-### 24.9 Edge Function: Full Updated Flow
-
-```
-Client: POST /functions/v1/generate-routine
-  Body: { puppyId, questionnaireData, isRegeneration?: true }
-
-Edge Function:
-  1. Auth check (existing)
-  2. Membership check (existing)
-  3. Read puppy record (existing)
-
-  4. IF isRegeneration:
-     a. Find active routine for this puppy
-     b. Acquire regeneration lock (conditional UPDATE where status IS NULL)
-        → If lock fails: return { skipped: true, reason: 'regeneration_already_in_progress' }
-     c. Compute completion summary from activity_logs (past 7 days)
-
-  5. computeScheduleParams() (existing — now uses current DOB age)
-  6. buildSystemPrompt() (existing + weekly evolution addendum)
-  7. buildUserPrompt(params, completionSummary) (existing + completion section)
-  8. Call Claude API (existing)
-  9. Validate response (existing)
-
-  10. Deactivate old routine (existing)
-  11. Insert new routine WITH valid_until and generation_context (UPDATED)
-  12. Insert routine_items (existing)
-
-  13. IF isRegeneration:
-      a. Clear regeneration lock on old routine
-         (old routine is already deactivated in step 10)
-
-  14. Return new routine with items (existing response shape)
-```
-
----
-
-### 24.10 Implementation Steps
-
-```
-Step 1: Database migration — add valid_until, regeneration_status,
-        generation_context columns to routines table
-        → unblocks: Edge Function changes, client-side check
-
-Step 2: Update database.types.ts — add new fields to Routine type
-        → unblocks: TypeScript compilation of client-side code
-
-Step 3: Extend Edge Function — accept isRegeneration flag, compute
-        completion summary, add completion context to prompt, set
-        valid_until on insert, acquire/release regeneration lock
-        → unblocks: client-side regeneration trigger
-
-Step 4: Create routineEvolution.ts service — needsRegeneration(),
-        isRegenerationInProgress(), triggerRegeneration(),
-        cleanupFirebaseOverlays()
-        → unblocks: Dashboard integration
-
-Step 5: Dashboard integration — add regeneration check on mount,
-        regeneration banner UI, state update on completion,
-        Firebase overlay cleanup call
-        → unblocks: end-to-end testing
-
-Step 6: Testing — verify all scenarios (weekly update, inactive
-        user return, deduplication, age bracket transition,
-        failure handling, overlay cleanup)
-        → unblocks: deployment
-```
-
----
-
-### 24.11 Data Flow Diagram
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        DASHBOARD LOAD                            │
-│                                                                  │
-│  getActiveRoutine(puppyId)                                       │
-│       ↓                                                          │
-│  routine.valid_until < now?  ──no──→  Show routine (done)        │
-│       ↓ yes                                                      │
-│  routine.regeneration_status === 'in_progress'?                  │
-│       ↓ no                    ↓ yes (& not stale)                │
-│  Show banner                  Show routine (someone else          │
-│  "Updating..."                is regenerating — wait)             │
-│       ↓                                                          │
-│  triggerRegeneration(puppyId, questionnaireData)                  │
-│       ↓                                                          │
-│  ┌─────────────────────────────────────────────────────────┐     │
-│  │  EDGE FUNCTION: generate-routine                        │     │
-│  │                                                         │     │
-│  │  1. Acquire lock (UPDATE ... WHERE status IS NULL)      │     │
-│  │     → Lock failed? Return { skipped: true }             │     │
-│  │                                                         │     │
-│  │  2. Read activity_logs (past 7 days, grouped by type)   │     │
-│  │     → { exercise: 12/14, training: 3/14, ... }          │     │
-│  │                                                         │     │
-│  │  3. computeScheduleParams(puppy DOB → current bracket)  │     │
-│  │     → Age bracket may have changed since last gen!       │     │
-│  │                                                         │     │
-│  │  4. Build prompt (params + completion context)           │     │
-│  │  5. Call Claude API                                      │     │
-│  │  6. Validate response                                    │     │
-│  │                                                         │     │
-│  │  7. Deactivate old routine                               │     │
-│  │  8. Insert new routine (valid_until = now + 7d)          │     │
-│  │  9. Insert routine_items                                 │     │
-│  │  10. Clear lock on old routine                           │     │
-│  │                                                         │     │
-│  │  Return: { routine: { ...newRoutine, routine_items } }  │     │
-│  └─────────────────────────────────────────────────────────┘     │
-│       ↓                                                          │
-│  Hide banner                                                     │
-│  setCurrentRoutine(newRoutine)                                   │
-│  cleanupFirebaseOverlays(oldItems)                               │
-│       ↓                                                          │
-│  Dashboard renders new routine ✓                                 │
-│  All household members see it via Supabase Realtime              │
-└──────────────────────────────────────────────────────────────────┘
-```
-
----
-
-### 24.12 Cost Impact
-
-| Item | Before F14 | After F14 |
-|------|-----------|-----------|
-| Claude API calls per puppy | 1 (lifetime, at onboarding) | 1 + 1/week (while active) |
-| Cost per call (Sonnet) | ~$0.01-0.02 | ~$0.01-0.02 (slightly more tokens with completion context) |
-| Monthly cost (1,000 active puppies) | ~$15 one-time | ~$60-80/month |
-| Monthly cost (inactive puppies) | $0 | $0 (lazy trigger = no cost) |
-
-**Net impact:** ~$60-80/month for 1,000 weekly-active puppies. This is the feature's core value proposition — the cost is justified if it improves D7→D28 retention by the hypothesized 30%.
-
----
-
-### 24.13 Risks and Mitigations
-
-| Risk | Probability | Impact | Mitigation |
-|------|-------------|--------|------------|
-| Duplicate regenerations from race condition | Medium | Low (extra API cost) | Conditional UPDATE lock (D77) — only one caller wins |
-| Stale lock blocks all regeneration | Low | High | 5-minute stale lock recovery (D77) |
-| Completion summary query is slow on large datasets | Low | Medium | Index on `activity_logs(puppy_id, date)` already exists; query spans only 7 days |
-| LLM produces worse routine with completion context | Low | Medium | Completion adjustments are advisory, not prescriptive; health-critical params (meals, potty) can't be reduced below minimums |
-| Legacy routines (null `valid_until`) regenerate on deploy | Expected | Low (one-time) | Intentional behavior — all active users get a fresh routine on first post-deploy load |
-| Firebase overlay cleanup fails | Low | None | Stale overlays are harmless — they reference IDs that don't match and are silently ignored |
-
----
-
-### 24.14 Deployment Checklist
-
-**Database:**
-- [ ] Run migration: add `valid_until`, `regeneration_status`, `generation_context` columns to `routines`
-- [ ] Add constraint: `regeneration_status IN (NULL, 'in_progress')`
-- [ ] Add index: `idx_routines_valid_until` on `(puppy_id, valid_until) WHERE is_active = true`
-- [ ] Verify: existing active routines have `valid_until = NULL` (will trigger regeneration on next load)
-
-**Edge Function:**
-- [ ] Updated `generate-routine` accepts `isRegeneration` flag
-- [ ] Completion summary aggregation from `activity_logs` works correctly
-- [ ] Lock acquisition: conditional UPDATE returns 0 rows when lock already held
-- [ ] `valid_until` is set to `now + 7 days` on all new routines (including onboarding)
-- [ ] `generation_context` JSONB is populated with age bracket, params, completion summary
-- [ ] Prompt includes completion section when `isRegeneration = true`
-- [ ] Prompt omits completion section during onboarding (`isRegeneration` absent)
-- [ ] Deploy: `supabase functions deploy generate-routine`
-
-**Client — `database.types.ts`:**
-- [ ] `Routine` type includes `valid_until`, `regeneration_status`, `generation_context`
-- [ ] `GenerationContext` interface defined
-
-**Client — `routineEvolution.ts`:**
-- [ ] `needsRegeneration()` returns true when `valid_until` is null or past
-- [ ] `isRegenerationInProgress()` checks status + stale lock (5 min)
-- [ ] `triggerRegeneration()` calls Edge Function with `isRegeneration: true`
-- [ ] `cleanupFirebaseOverlays()` batch-deletes `editedRoutineItems` and `deletedRoutineItems` for old routine item IDs
-- [ ] Custom tasks in `tasks` collection are NOT deleted
-
-**Client — Dashboard:**
-- [ ] Regeneration check runs on dashboard mount (after `getActiveRoutine`)
-- [ ] Banner "Updating [name]'s routine for this week..." shows during regeneration
-- [ ] Banner hides on completion (success or failure)
-- [ ] New routine replaces old in state on success
-- [ ] Firebase overlay cleanup fires after successful regeneration
-- [ ] Silent failure: no error shown to user if regeneration fails (D82)
-
-**Testing:**
-- [ ] Onboarding flow still works (no `isRegeneration` flag, `valid_until` set)
-- [ ] Dashboard with fresh routine (< 7 days): no regeneration triggered
-- [ ] Dashboard with expired routine (> 7 days): regeneration triggers, banner shows, new routine appears
-- [ ] Dashboard with null `valid_until` (legacy): regeneration triggers
-- [ ] Deduplication: two simultaneous calls → only one succeeds, other returns `{ skipped: true }`
-- [ ] Stale lock: lock older than 5 min is cleared and regeneration proceeds
-- [ ] Age bracket transition: puppy crosses bracket boundary → new params used
-- [ ] Completion context: low-completion categories appear in prompt
-- [ ] Claude failure: old routine stays, no error banner, lock cleared
-- [ ] Firebase overlays: old edits/deletes cleaned up, custom tasks preserved
-- [ ] Inactive user return (3+ weeks): exactly one regeneration, not multiple
-- [ ] Build succeeds: `npx vite build` with no errors
-
----
-
-**End of Backend Development Plan**
-
-*This document will be updated as implementation progresses. All technical decisions are subject to revision based on real-world testing and user feedback.*
+*This document reflects the actual codebase as of 2026-06-05. All technical decisions have been implemented unless marked otherwise in Section 5.*

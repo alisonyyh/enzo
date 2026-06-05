@@ -167,27 +167,32 @@ function generateFallbackRoutine(data: QuestionnaireData) {
     ? [fmt(wakeHour, 0), fmt(wakeHour + 4, 0), fmt(wakeHour + 8, 0), fmt(bedHour - 3, 0)]
     : [fmt(wakeHour, 0), fmt(wakeHour + 5, 0), fmt(bedHour - 3, 0)];
 
-  const exerciseDuration = isYoungPuppy ? "15-20 minutes" : "30-40 minutes";
+  // Age-based duration estimates (simplified from computeScheduleParams)
+  const walkMin = Math.min(totalWeeks * 5, 45) || 10;
+  const trainingMin = isYoungPuppy ? 5 : 10;
+  const napMin = isYoungPuppy ? 105 : 75;
+  const playMin = isYoungPuppy ? 10 : 20;
+  const bondingMin = isYoungPuppy ? 5 : 10;
 
   return {
     dailySchedule: [
-      { time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: null, category: "potty" },
-      { time: feedingTimes[0], activity: "Breakfast", description: null, category: "feeding" },
-      { time: fmt(wakeHour + 0.5, 30), activity: "Post-meal Potty Break", description: null, category: "potty" },
-      { time: fmt(wakeHour + 1, 0), activity: "Morning Training Session", description: null, category: "training" },
-      { time: fmt(wakeHour + 2, 0), activity: "Play Session", description: null, category: "play" },
-      { time: fmt(wakeHour + 3, 0), activity: "Nap Time", description: null, category: "rest" },
-      ...(isYoungPuppy ? [{ time: feedingTimes[1], activity: "Lunch", description: null, category: "feeding" }] : []),
-      { time: fmt(wakeHour + 5.5, 30), activity: "Midday Potty & Walk", description: null, category: "exercise" },
-      { time: fmt(wakeHour + 6, 0), activity: "Afternoon Nap", description: null, category: "rest" },
-      ...(isYoungPuppy ? [{ time: fmt(wakeHour + 8, 0), activity: "Afternoon Snack", description: null, category: "feeding" }] : []),
-      { time: fmt(bedHour - 6, 0), activity: "Training & Socialization", description: null, category: "training" },
-      { time: fmt(bedHour - 4.5, 30), activity: "Evening Exercise", description: null, category: "exercise" },
-      { time: feedingTimes[isYoungPuppy ? 3 : 2], activity: "Dinner", description: null, category: "feeding" },
-      { time: fmt(bedHour - 2.5, 30), activity: "Post-dinner Potty", description: null, category: "potty" },
-      { time: fmt(bedHour - 2, 0), activity: "Calm Evening Time", description: null, category: "bonding" },
-      { time: fmt(bedHour - 0.5, 30), activity: "Final Potty Break", description: null, category: "potty" },
-      { time: fmt(bedHour, 0), activity: "Bedtime", description: null, category: "rest" },
+      { time: fmt(wakeHour, 0), activity: "Wake up & Potty Break", description: null, category: "potty", durationMinutes: null },
+      { time: feedingTimes[0], activity: "Breakfast", description: null, category: "feeding", durationMinutes: null },
+      { time: fmt(wakeHour + 0.5, 30), activity: "Post-meal Potty Break", description: null, category: "potty", durationMinutes: null },
+      { time: fmt(wakeHour + 1, 0), activity: "Morning Training Session", description: null, category: "training", durationMinutes: trainingMin },
+      { time: fmt(wakeHour + 2, 0), activity: "Play Session", description: null, category: "play", durationMinutes: playMin },
+      { time: fmt(wakeHour + 3, 0), activity: "Nap Time", description: null, category: "rest", durationMinutes: napMin },
+      ...(isYoungPuppy ? [{ time: feedingTimes[1], activity: "Lunch", description: null, category: "feeding", durationMinutes: null }] : []),
+      { time: fmt(wakeHour + 5.5, 30), activity: "Midday Potty & Walk", description: null, category: "exercise", durationMinutes: walkMin },
+      { time: fmt(wakeHour + 6, 0), activity: "Afternoon Nap", description: null, category: "rest", durationMinutes: napMin },
+      ...(isYoungPuppy ? [{ time: fmt(wakeHour + 8, 0), activity: "Afternoon Snack", description: null, category: "feeding", durationMinutes: null }] : []),
+      { time: fmt(bedHour - 6, 0), activity: "Training & Socialization", description: null, category: "training", durationMinutes: trainingMin },
+      { time: fmt(bedHour - 4.5, 30), activity: "Evening Exercise", description: null, category: "exercise", durationMinutes: walkMin },
+      { time: feedingTimes[isYoungPuppy ? 3 : 2], activity: "Dinner", description: null, category: "feeding", durationMinutes: null },
+      { time: fmt(bedHour - 2.5, 30), activity: "Post-dinner Potty", description: null, category: "potty", durationMinutes: null },
+      { time: fmt(bedHour - 2, 0), activity: "Calm Evening Time", description: null, category: "bonding", durationMinutes: bondingMin },
+      { time: fmt(bedHour - 0.5, 30), activity: "Final Potty Break", description: null, category: "potty", durationMinutes: null },
+      { time: fmt(bedHour, 0), activity: "Bedtime", description: null, category: "rest", durationMinutes: null },
     ],
   };
 }
