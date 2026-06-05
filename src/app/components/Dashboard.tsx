@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { CheckCircle2, Circle, Settings, ChevronDown, ArrowLeft } from "lucide-react";
+import { CheckCircle2, Circle, Settings, ChevronDown, ArrowLeft, Loader2 } from "lucide-react";
 import { RoutineReveal } from "./RoutineReveal";
 import { SwipeableTaskCard } from "./SwipeableTaskCard";
 import { AddTaskFAB, type EditingItem } from "./AddTaskFAB";
@@ -31,6 +31,8 @@ interface DashboardProps {
   onOpenSettings: () => void;
   /** Puppy creation date string (ISO) — used as calendar min bound (D59) */
   puppyCreatedAt?: string;
+  /** F14: Whether a weekly routine regeneration is in progress */
+  isRegenerating?: boolean;
 }
 
 function formatDuration(minutes: number): string {
@@ -64,7 +66,8 @@ export function Dashboard({
   userRole,
   isFirstTime = false,
   onOpenSettings,
-  puppyCreatedAt
+  puppyCreatedAt,
+  isRegenerating = false
 }: DashboardProps) {
   // Day Navigation — Calendar Picker state (D58, Flow 8)
   const [selectedDate, setSelectedDate] = useState<Date>(() => {
@@ -448,6 +451,16 @@ export function Dashboard({
       <div className="w-[390px] h-screen bg-background flex flex-col overflow-hidden" style={{ paddingTop: '48px', paddingBottom: '34px' }}>
         {/* Network Status Banner */}
         <NetworkStatusBanner />
+
+        {/* F14: Regeneration banner */}
+        {isRegenerating && (
+          <div className="mx-4 mb-1 rounded-xl bg-accent/10 border border-accent/20 px-4 py-3 flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+            <Loader2 className="h-4 w-4 animate-spin text-accent flex-shrink-0" />
+            <span className="text-sm text-foreground/70">
+              Updating {puppyName}'s routine for this week...
+            </span>
+          </div>
+        )}
 
         {/* Header */}
         <div className="px-5 py-4">

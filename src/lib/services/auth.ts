@@ -1,8 +1,26 @@
 import { supabase } from '../supabase';
+import { Capacitor } from '@capacitor/core';
 import type { User, Session } from '@supabase/supabase-js';
 import type { Profile } from '../database.types';
 
 export async function signInWithGoogle() {
+  if (Capacitor.isNativePlatform()) {
+    const { Browser } = await import('@capacitor/browser');
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: 'com.pupplan.app://login-callback',
+        skipBrowserRedirect: true,
+      },
+    });
+    if (error) throw error;
+    if (data.url) {
+      await Browser.open({ url: data.url });
+    }
+    return data;
+  }
+
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
@@ -11,6 +29,20 @@ export async function signInWithGoogle() {
   });
   if (error) throw error;
   return data;
+}
+
+export async function handleOAuthDeepLink(url: string): Promise<void> {
+  const parsed = new URL(url);
+  const code = parsed.searchParams.get('code');
+  if (!code) return;
+
+  const { error } = await supabase.auth.exchangeCodeForSession(code);
+  if (error) throw error;
+
+  if (Capacitor.isNativePlatform()) {
+    const { Browser } = await import('@capacitor/browser');
+    await Browser.close();
+  }
 }
 
 export async function signOut() {

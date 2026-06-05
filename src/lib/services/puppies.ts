@@ -58,6 +58,8 @@ export async function createPuppy(userId: string, data: CreatePuppyData): Promis
 
   if (memberError) {
     console.error('createPuppy: error creating membership:', memberError);
+    // Clean up the orphaned puppy row
+    await supabase.from('puppies').delete().eq('id', puppy.id);
     throw memberError;
   }
   console.log('createPuppy: owner membership created');

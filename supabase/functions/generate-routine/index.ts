@@ -67,15 +67,26 @@ RESPONSE RULES:
 2. Every potty trip and every nap must appear explicitly in the output with time and duration.
 3. Output exactly ONE timeline. Resolve all conflicts (meal-nap overlaps, potty consolidation, activity spacing) internally before producing output.
 4. Use only these activity types: Potty, Meal, Walk, Training, Play, Calm bonding, Nap, Overnight sleep. No "free time," "settle," "rest," or filler entries.
-5. Use the generate_schedule tool to output the schedule. Categories: feeding, potty, exercise, training, rest, play, bonding.`;
+5. Use the generate_schedule tool to output the schedule. Categories: feeding, potty, exercise, training, rest, play, bonding.
+
+WEEKLY EVOLUTION CONTEXT (if provided):
+When past week completion data is included, use it to inform activity placement:
+- Do not reduce meal count, potty breaks, or nap count below the pre-computed parameters — these are health-critical.
+- Training, play, walk, and bonding session timing and frequency can be adjusted based on completion patterns.
+- If training completion is consistently low, try placing sessions after naps (when the puppy is most alert) instead of reducing count.
+- The goal is to make the schedule more achievable, not to lower standards.`;
 }
 
-function buildUserPrompt(puppyName: string, params: ScheduleParams): string {
+function buildUserPrompt(
+  puppyName: string,
+  params: ScheduleParams,
+  completionSummary?: Record<string, { completed: number; total: number }>
+): string {
   const pottyLine = params.pottyModel === 'event_based'
     ? `  Wake-up potty + pre-nap potty each awake window. Post-meal potty only if 45+ min from adjacent potties.`
     : `  Max daytime gap: ${params.pottyMaxDaytimeGapHours}h. Wake-up + final potty always. Post-meal potty if 45+ min from previous.`;
 
-  return `Generate a daily schedule for ${puppyName}.
+  let prompt = `Generate a daily schedule for ${puppyName}.
 
 SCHEDULE: ${params.wakeUpTime} wake -> ${params.bedTime} bed (${params.wakingHours} waking hours)
 
@@ -91,6 +102,23 @@ ${pottyLine}
 - Calm bonding: ${params.calmBondingMinutes} min x ${params.calmBondingSessions}/day
 
 Call generate_schedule with the optimal number of activities for this puppy's needs.`;
+
+  if (completionSummary && Object.keys(completionSummary).length > 0) {
+    const lines = Object.entries(completionSummary)
+      .map(([category, { completed, total }]) => {
+        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        return `  ${category}: ${completed}/${total} (${pct}%)`;
+      })
+      .join('\n');
+
+    prompt += `\n\nPAST WEEK COMPLETION DATA:\n${lines}\n`;
+    prompt += `\nAdjust the schedule based on completion patterns:
+- Categories with low completion (<50%): consider moving sessions to different times of day (the current timing may be inconvenient). Do not reduce below minimum thresholds.
+- Categories with high completion (>80%): maintain current frequency. If the puppy is progressing well, consider slightly increasing duration.
+- Categories at 100%: the owner is consistent here — keep this stable.`;
+  }
+
+  return prompt;
 }
 
 /** Tool schema — forces Claude to return structured output via tool_use */
@@ -132,7 +160,7 @@ const SCHEDULE_TOOL = {
 };
 
 function validateRoutine(activities: RoutineActivity[]): boolean {
-  if (!Array.isArray(activities) || activities.length < 10 || activities.length > 40) {
+  if (!Array.isArray(activities) || activities.length < 10 || activities.length > 50) {
     return false;
   }
 
@@ -153,6 +181,56 @@ function validateRoutine(activities: RoutineActivity[]): boolean {
   return true;
 }
 
+async function getCompletionSummary(
+  supabase: ReturnType<typeof createClient>,
+  puppyId: string,
+  routineId: string
+): Promise<Record<string, { completed: number; total: number }>> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    .toISOString().split('T')[0];
+  const today = new Date().toISOString().split('T')[0];
+
+  const { data: items } = await supabase
+    .from('routine_items')
+    .select('id, activity_type')
+    .eq('routine_id', routineId)
+    .eq('is_enabled', true);
+
+  if (!items || items.length === 0) return {};
+
+  const { data: logs } = await supabase
+    .from('activity_logs')
+    .select('routine_item_id, status')
+    .eq('puppy_id', puppyId)
+    .gte('date', sevenDaysAgo)
+    .lte('date', today)
+    .eq('status', 'completed');
+
+  const startDate = new Date(sevenDaysAgo);
+  const endDate = new Date(today);
+  const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+  const categoryItems: Record<string, string[]> = {};
+  for (const item of items) {
+    if (!categoryItems[item.activity_type]) {
+      categoryItems[item.activity_type] = [];
+    }
+    categoryItems[item.activity_type].push(item.id);
+  }
+
+  const summary: Record<string, { completed: number; total: number }> = {};
+  for (const [category, itemIds] of Object.entries(categoryItems)) {
+    const total = itemIds.length * days;
+    let completed = 0;
+    if (logs) {
+      completed = logs.filter(l => itemIds.includes(l.routine_item_id)).length;
+    }
+    summary[category] = { completed, total };
+  }
+
+  return summary;
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -167,7 +245,7 @@ serve(async (req) => {
       );
     }
 
-    const { puppyId, questionnaireData } = await req.json();
+    const { puppyId, questionnaireData, isRegeneration } = await req.json();
 
     if (!puppyId || !questionnaireData) {
       return new Response(
@@ -217,6 +295,50 @@ serve(async (req) => {
     const energyLevel = (puppy.energy_level || 'moderate') as EnergyLevel;
     const isBrachycephalic = puppy.is_brachycephalic ?? false;
 
+    // Regeneration-specific: lock acquisition + completion aggregation
+    let activeRoutineId: string | null = null;
+    let completionSummary: Record<string, { completed: number; total: number }> | undefined;
+
+    if (isRegeneration) {
+      const { data: activeRoutine } = await supabase
+        .from('routines')
+        .select('id')
+        .eq('puppy_id', puppyId)
+        .eq('is_active', true)
+        .single();
+
+      if (!activeRoutine) {
+        return new Response(
+          JSON.stringify({ error: 'No active routine found for regeneration' }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      activeRoutineId = activeRoutine.id;
+
+      // Acquire regeneration lock (D77)
+      const { data: lockResult, error: lockError } = await supabase
+        .from('routines')
+        .update({ regeneration_status: 'in_progress' })
+        .eq('id', activeRoutineId)
+        .is('regeneration_status', null)
+        .select('id')
+        .single();
+
+      if (lockError || !lockResult) {
+        return new Response(
+          JSON.stringify({ skipped: true, reason: 'regeneration_already_in_progress' }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      console.log('Regeneration lock acquired for routine:', activeRoutineId);
+
+      // Compute completion summary from activity_logs (D78)
+      completionSummary = await getCompletionSummary(supabase, puppyId, activeRoutineId);
+      console.log('Completion summary:', JSON.stringify(completionSummary));
+    }
+
     console.log('Computing schedule params for puppy:', puppyId);
 
     // Layer 1: Deterministic parameter computation
@@ -238,7 +360,7 @@ serve(async (req) => {
     }
 
     const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt(data.puppyName, params);
+    const userPrompt = buildUserPrompt(data.puppyName, params, completionSummary);
 
     console.log('Calling Claude API with tool_use...');
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -293,12 +415,21 @@ serve(async (req) => {
       .eq('puppy_id', puppyId)
       .eq('is_active', true);
 
+    const validUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const { data: routine, error: routineError } = await supabase
       .from('routines')
       .insert({
         puppy_id: puppyId,
         source: 'ai_generated',
         is_active: true,
+        valid_until: validUntil,
+        generation_context: {
+          age_bracket: params.ageBracket,
+          age_weeks: params.ageWeeks,
+          completion_summary: completionSummary || null,
+          schedule_params: params,
+        },
       })
       .select()
       .single();
@@ -341,6 +472,14 @@ serve(async (req) => {
     }
 
     console.log('Inserted', insertedItems?.length, 'routine items');
+
+    // Release regeneration lock on old routine (D77)
+    if (isRegeneration && activeRoutineId) {
+      await supabase
+        .from('routines')
+        .update({ regeneration_status: null })
+        .eq('id', activeRoutineId);
+    }
 
     const result = {
       routine: {
