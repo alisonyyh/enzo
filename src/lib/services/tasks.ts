@@ -130,9 +130,9 @@ export async function editTask(
   const taskRef = doc(db, 'tasks', taskId);
 
   await updateDoc(taskRef, {
-    ...(updates.actualTime && { actualTime: Timestamp.fromDate(updates.actualTime) }),
-    ...(updates.activityType && { activityType: updates.activityType }),
-    ...(updates.title && { title: updates.title }),
+    ...(updates.actualTime !== undefined && { actualTime: Timestamp.fromDate(updates.actualTime) }),
+    ...(updates.activityType !== undefined && { activityType: updates.activityType }),
+    ...(updates.title !== undefined && { title: updates.title }),
     ...(updates.description !== undefined && { description: updates.description }),
     ...(updates.pottyDetails !== undefined && { pottyDetails: updates.pottyDetails }),
     ...(updates.durationMinutes !== undefined && { durationMinutes: updates.durationMinutes }),

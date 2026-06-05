@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, inMemoryPersistence, browserLocalPersistence, setPersistence } from 'firebase/auth';
-import { getFirestore, enableIndexedDbPersistence } from 'firebase/firestore';
+import { initializeAuth, signInWithCustomToken, browserLocalPersistence, indexedDBLocalPersistence } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { supabase } from './supabase';
 
@@ -11,29 +11,18 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const firebaseAuth = getAuth(app);
-export const db = getFirestore(app);
 
-// On native platforms, use in-memory persistence to avoid IndexedDB hangs in WKWebView.
-// Auth state is re-established each session via custom token from Supabase anyway.
-if (Capacitor.isNativePlatform()) {
-  setPersistence(firebaseAuth, inMemoryPersistence).catch((err) => {
-    console.warn('Firebase: failed to set inMemoryPersistence:', err);
-  });
-}
-
-// Enable offline persistence for Firestore (not Auth)
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    console.warn('Offline persistence: multiple tabs open');
-  } else if (err.code === 'unimplemented') {
-    console.warn('Offline persistence: not supported in this browser');
-  }
+// Use localStorage persistence on native platforms (IndexedDB hangs in WKWebView)
+const isNative = Capacitor.isNativePlatform();
+export const firebaseAuth = initializeAuth(app, {
+  persistence: isNative ? browserLocalPersistence : indexedDBLocalPersistence,
 });
+
+export const db = getFirestore(app);
 
 // Sign in to Firebase with Custom Token from Supabase
 export async function signInToFirebase() {
-  console.log('Firebase auth: signInToFirebase() called');
+  console.log('Firebase auth: signInToFirebase() called, native:', isNative);
 
   // First try to get the current session
   let { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -59,15 +48,8 @@ export async function signInToFirebase() {
   }
 
   console.log('Firebase auth: Supabase session valid, requesting Custom Token...');
-  console.log('Firebase auth: Session user ID:', session.user.id);
-  console.log('Firebase auth: Access token present:', !!session.access_token);
-  console.log('Firebase auth: Access token type:', typeof session.access_token);
 
   // Call Edge Function to get Firebase Custom Token
-  // Note: Using direct fetch() instead of supabase.functions.invoke() because
-  // the Supabase JS client doesn't properly forward custom Authorization headers
-  console.log('Firebase auth: Calling Edge Function...');
-
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
@@ -97,16 +79,7 @@ export async function signInToFirebase() {
 
   console.log('Firebase auth: Custom Token received, signing in...');
 
-  // Sign in to Firebase with the Custom Token
-  // Timeout guard: signInWithCustomToken can hang on iOS WKWebView
-  // due to IndexedDB persistence issues in Capacitor
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Firebase signInWithCustomToken timed out after 10s')), 10000)
-  );
-  await Promise.race([
-    signInWithCustomToken(firebaseAuth, data.firebaseToken),
-    timeout,
-  ]);
+  await signInWithCustomToken(firebaseAuth, data.firebaseToken);
 
-  console.log('Firebase auth: Successfully signed in to Firebase');
+  console.log('Firebase auth: Successfully signed in to Firebase, uid:', firebaseAuth.currentUser?.uid);
 }

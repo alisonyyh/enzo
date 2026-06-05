@@ -192,9 +192,10 @@ export function AddTaskFAB({ puppyId, editingItem, onEditDone, date }: AddTaskFA
       }
 
       resetAndClose();
-    } catch (error) {
+    } catch (error: any) {
+      const errMsg = error?.message || error?.code || String(error);
       console.error(isEditMode ? 'Failed to edit task:' : 'Failed to add task:', error);
-      alert(isEditMode ? 'Failed to save changes. Please try again.' : 'Failed to add task. Please try again.');
+      alert(`${isEditMode ? 'Failed to save changes' : 'Failed to add task'}: ${errMsg}`);
     } finally {
       setIsSaving(false);
     }
