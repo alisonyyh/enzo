@@ -1,0 +1,16 @@
+{
+  "appId": "com.pupplan.app",
+  "appName": "PupPlan",
+  "webDir": "dist",
+  "server": {
+    "allowNavigation": [
+      "*.supabase.co"
+    ]
+  },
+  "plugins": {
+    "Browser": {}
+  },
+  "ios": {
+    "scheme": "com.pupplan.app"
+  }
+}
