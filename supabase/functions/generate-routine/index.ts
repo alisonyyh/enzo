@@ -439,7 +439,12 @@ serve(async (req) => {
       throw routineError;
     }
 
-    const getDurationForActivity = (category: string): number | null => {
+    const getDurationForActivity = (category: string, title: string): number | null => {
+      // Bedtime / overnight sleep are point-in-time markers, not duration-based
+      const lowerTitle = title.toLowerCase();
+      if (lowerTitle.includes('overnight') || lowerTitle.includes('bedtime')) {
+        return null;
+      }
       switch (category) {
         case 'exercise': return params.walkDurationMinutes;
         case 'training': return params.trainingSessionMinutes;
@@ -456,7 +461,7 @@ serve(async (req) => {
       title: activity.activity,
       description: null,
       scheduled_time: activity.time + ':00',
-      duration_minutes: getDurationForActivity(activity.category),
+      duration_minutes: getDurationForActivity(activity.category, activity.activity),
       sort_order: index,
       is_enabled: true,
     }));

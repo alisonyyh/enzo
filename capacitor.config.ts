@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.pupplan.app',
-  appName: 'PupPlan',
+  appId: 'app.getenzo.enzo',
+  appName: 'Enzo',
   webDir: 'dist',
   server: {
     // Allow navigation to the custom scheme callback
@@ -14,7 +14,7 @@ const config: CapacitorConfig = {
     },
   },
   ios: {
-    scheme: 'com.pupplan.app',
+    scheme: 'app.getenzo.enzo',
   },
 };
 

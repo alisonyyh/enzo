@@ -458,6 +458,7 @@ export default function App() {
           title: item.activity,
           description: item.description,
           scheduled_time: item.time + ":00",
+          duration_minutes: item.durationMinutes ?? undefined,
           sort_order: index,
         }));
 
