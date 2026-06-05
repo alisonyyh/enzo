@@ -21,6 +21,7 @@ interface RoutineActivity {
   time: string;
   activity: string;
   category: string;
+  duration_minutes: number | null;
   description?: string;
 }
 
@@ -68,6 +69,7 @@ RESPONSE RULES:
 3. Output exactly ONE timeline. Resolve all conflicts (meal-nap overlaps, potty consolidation, activity spacing) internally before producing output.
 4. Use only these activity types: Potty, Meal, Walk, Training, Play, Calm bonding, Nap, Overnight sleep. No "free time," "settle," "rest," or filler entries.
 5. Use the generate_schedule tool to output the schedule. Categories: feeding, potty, exercise, training, rest, play, bonding.
+6. Set duration_minutes for each activity: use the exact pre-computed values for walks, training, naps, play, and bonding. For overnight sleep, calculate from bedtime to wake time. Set null for point-in-time activities (potty breaks, meals).
 
 WEEKLY EVOLUTION CONTEXT (if provided):
 When past week completion data is included, use it to inform activity placement:
@@ -148,8 +150,12 @@ const SCHEDULE_TOOL = {
               enum: ['feeding', 'potty', 'exercise', 'training', 'rest', 'play', 'bonding'],
               description: 'Activity category',
             },
+            duration_minutes: {
+              type: ['integer', 'null'] as const,
+              description: 'Duration in minutes. Use the exact pre-computed values for exercise, training, nap, play, and bonding. Calculate overnight sleep from bedtime to wake time. Null for point-in-time activities (potty, meals).',
+            },
           },
-          required: ['time', 'activity', 'category'],
+          required: ['time', 'activity', 'category', 'duration_minutes'],
         },
         minItems: 12,
         maxItems: 50,
@@ -439,29 +445,13 @@ serve(async (req) => {
       throw routineError;
     }
 
-    const getDurationForActivity = (category: string, title: string): number | null => {
-      // Bedtime / overnight sleep are point-in-time markers, not duration-based
-      const lowerTitle = title.toLowerCase();
-      if (lowerTitle.includes('overnight') || lowerTitle.includes('bedtime')) {
-        return null;
-      }
-      switch (category) {
-        case 'exercise': return params.walkDurationMinutes;
-        case 'training': return params.trainingSessionMinutes;
-        case 'rest':     return params.napDurationMinutes;
-        case 'play':     return params.playSessionMinutes;
-        case 'bonding':  return params.calmBondingMinutes;
-        default:         return null;
-      }
-    };
-
     const routineItems = activities.map((activity, index) => ({
       routine_id: routine.id,
       activity_type: activity.category,
       title: activity.activity,
       description: null,
       scheduled_time: activity.time + ':00',
-      duration_minutes: getDurationForActivity(activity.category, activity.activity),
+      duration_minutes: activity.duration_minutes ?? null,
       sort_order: index,
       is_enabled: true,
     }));
